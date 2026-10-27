@@ -113,11 +113,12 @@ The project's OTA flag steers the build automatically:
 
   On the **OpenMV Cam H7** (`OPENMV4`) the OTA firmware does not fit as-is — the frozen
   boot script, recovery installer and PEM parsing overflow its 1664 KB code region by
-  about 41 KB — so the build turns off `find_barcodes()` and `find_datamatrices()`, the
-  decoders with the least overlap with an OTA product. It does that with a temporary
-  copy of the board directory (`make OMV_BOARD_CONFIG_DIR=<copy>`), so the firmware tree
-  is still not touched. The stock firmware for that board keeps both; an app that calls
-  either is refused by [`build romfs`](06-building.md#build-romfs) rather than failing
+  about 45 KB — so the build turns off `find_barcodes()`, `find_datamatrices()`,
+  `find_displacement()` and `find_lbp()`, the methods with the least overlap with an
+  OTA product. It does that with a temporary copy of the board directory
+  (`make OMV_BOARD_CONFIG_DIR=<copy>`), so the firmware tree is still not touched. The
+  stock firmware for that board keeps all four; an app that calls any of them is
+  refused by [`build romfs`](06-building.md#build-romfs) rather than failing
   on the camera.
 
 The build is **clean by default** (`make clean` first), so a stale tree can't

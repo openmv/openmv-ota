@@ -67,6 +67,7 @@ where = ["src"]
     "data/flashloaders/**/*",    # prebuilt i.MX RT sdphost/blhost flashloaders
     "data/n6_bootloader/*",      # static N6 CubeProgrammer FSBL/loader + FlashLayout.tsv
     "build/device/*.c",          # the ECDSA verify C module dropped into modules/
+    "build/device/stub/**/*",    # the boot stub: C sources, Makefiles, linker scripts
     "build/device/openmv_ota/data/*",  # the installer source, scaffolded into projects
     "server/deploy/*",           # Dockerfile + compose stack for self-hosters
     "server/docs_static/*",      # self-hosted /docs API reference (ReDoc bundle + logo)

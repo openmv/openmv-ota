@@ -11,6 +11,9 @@ from openmv_ota.build.errors import BuildError
 from openmv_ota.ota import geometry
 from openmv_ota.romfs.builder import read_image
 
+import hashlib
+from pathlib import Path
+
 import pytest
 
 
@@ -372,32 +375,38 @@ def test_ota_build_signs_and_verifies(make_project):
     t = parse_trailer(trailer_bytes)
     assert t.payload_version == encode_app_version("1.2.3")
     assert t.product_id == 999
-    assert t.body_sha256 == hashlib.sha256(body).digest()
+    assert t.body_sha256 == hashlib.sha256(body[:t.body_size]).digest()   # the filesystem only
     assert t.meta["vendor"] == "Acme" and t.meta["app_version"] == "1.2.3"
     assert t.meta["firmware"]["version"] == "5.0.0"
 
     # The signature verifies against the project's committed trusted public key.
     entry = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
-                 if k.key_id == t.key_id)
+                 if k.pubkey == t.cert.pubkey.hex())
     alg = algorithm_for(entry.alg)
     pub = public_key_from_hex(entry.pubkey, alg)
     assert verify_region(pub, signed_region(trailer_bytes), t.signature, alg) is True
 
 
-def test_ota_trailer_pad_size_is_correct_and_signed(make_project):
-    # pad_size is computed from the slot geometry and lands in the signed region:
-    # body_size + pad_size == the status-sector offset (front_size - 2 blocks).
-    from openmv_ota.ota import geometry, parse_trailer
-    from openmv_ota.project import load_project
+def test_ota_trailer_carries_the_signing_keys_certificate(make_project):
+    """The camera embeds only the roots: the trailer must bring the certificate that chains
+    the signing key to one of them, and the whole thing must verify against keys/root_keys.json."""
+    from openmv_ota.ota import certificate as cert_mod
+    from openmv_ota.ota import parse_trailer, read_root_keys, read_trusted_keys, root_keys_map
+    from openmv_ota.ota.verify import verify_image
+    from openmv_ota.project.project import ProjectPaths
 
     root, repo, app = _build_ota(make_project)
-    target = load_project(root, firmware=repo).board("OPENMV_N6")
     r = build_mod.build_romfs(root, app=app, firmware=repo,
                               compile_py=False, convert_models=False)[0]
-    t = parse_trailer(_read_bundle(r)[1])
-    overhead = geometry.slot_overhead(target.erase_size)
-    assert t.body_size == r.size
-    assert t.body_size + t.pad_size == target.front_size - overhead
+    body, trailer_bytes = _read_bundle(r)
+    t = parse_trailer(trailer_bytes)
+    assert t.body_size == r.size and len(t.components) == 1   # the firmware rides along
+    roots = read_root_keys(ProjectPaths(root).root_keys)
+    cert = cert_mod.verify(t.certificate, root_keys_map(roots))
+    signer = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
+                  if k.role == "ota")
+    assert cert.pubkey.hex() == signer.pubkey and cert.kind == cert_mod.KIND_OTA
+    assert verify_image(body, trailer_bytes, roots)[0]
 
 
 def test_ota_trailer_meta_mirrors_system_json(make_project):
@@ -431,7 +440,7 @@ def test_ota_build_stamps_a_64_bit_product_id(make_project):
     t = parse_trailer(_read_bundle(r)[1])
     assert t.payload_version == encode_app_version("2.5.0")
     assert t.product_id.bit_length() > 32          # a real 64-bit id, not the old crc32
-    assert (HEADER_SIZE, HEADER_VERSION) == (96, 3)
+    assert (HEADER_SIZE, HEADER_VERSION) == (96, 4)
 
 
 def test_product_id_zero_is_refused_unless_the_project_means_it(make_project, capsys):
@@ -501,6 +510,64 @@ def test_ota_build_refuses_revoked_signing_key(make_project):
         build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
 
 
+def test_ota_image_carries_the_firmware_as_a_component(make_project):
+    """On a board with a boot stub the slot image is the filesystem plus the firmware the
+    stub installs: LZMA'd, placed after the body, named by one trailer component whose hash
+    is over the compressed bytes. body_sha256 still covers only the filesystem."""
+    from openmv_ota.ota import components as C
+    from openmv_ota.ota import parse_trailer, read_root_keys
+    from openmv_ota.ota.verify import verify_image
+    from openmv_ota.project.project import ProjectPaths
+    from tests.build.conftest import FAKE_FIRMWARE
+
+    root, repo, app = _build_ota(make_project)
+    r = build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)[0]
+    image, trailer_bytes = _read_bundle(r)
+    t = parse_trailer(trailer_bytes)
+    assert t.body_size == r.size and len(image) > t.body_size
+    assert hashlib.sha256(image[:t.body_size]).digest() == t.body_sha256
+    [c] = t.components
+    assert c.dest == 0x70090000 and c.offset % 16 == 0 and c.offset >= t.body_size
+    assert c.installed_size == len(FAKE_FIRMWARE) and c.size < len(FAKE_FIRMWARE)
+    blob = image[c.offset:c.offset + c.size]
+    assert hashlib.sha256(blob).digest() == c.sha256
+    assert C.decompress(blob, c.installed_size) == FAKE_FIRMWARE
+    assert hashlib.sha256(FAKE_FIRMWARE).digest() == c.installed_sha256
+    assert len(image) == c.offset + c.size                       # the blob ends the image
+    assert "main.py" in {p for p, _e in read_image(image).walk()}  # the filesystem still reads
+    assert verify_image(image, trailer_bytes, read_root_keys(ProjectPaths(root).root_keys))[0]
+
+
+def test_ota_build_needs_the_firmware_built_first(make_project):
+    root, repo, app = _build_ota(make_project)
+    (Path(root) / "build" / "OPENMV_N6-firmware.bin").unlink()
+    with pytest.raises(BuildError, match="run `openmv-ota build firmware` first"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
+def test_ota_build_refuses_a_firmware_the_stub_cannot_install(make_project):
+    root, repo, app = _build_ota(make_project)
+    (Path(root) / "build" / "OPENMV_N6-firmware.bin").write_bytes(b"\x00" * (0x36F000 + 1))
+    with pytest.raises(BuildError, match="boot stub's window holds 3600384 \\(1 over\\)"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
+def test_ota_build_refuses_a_key_without_a_certificate(make_project):
+    """A camera trusts a signing key only through its root-signed certificate, so a key that
+    has none (an entry edited by hand, or an old set) cannot sign an installable image."""
+    from openmv_ota.ota import read_trusted_keys, write_trusted_keys
+    from openmv_ota.project import ProjectPaths
+    root, repo, app = _build_ota(make_project)
+    tk = ProjectPaths(root).trusted_keys
+    keys = read_trusted_keys(tk)
+    for k in keys:
+        k.cert = ""
+    write_trusted_keys(tk, keys)
+    with pytest.raises(BuildError, match="has no certificate"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
 def test_ota_build_unknown_signing_key(make_project):
     from openmv_ota.project import ProjectPaths
     root, repo, app = _build_ota(make_project)
@@ -530,6 +597,10 @@ def test_factory_build_composes_dual_slot(make_project):
     # both slots carry the same body, factory-signed
     assert parse_trailer(img[slot - block:]).product_id == 7           # slot A trailer
     assert parse_trailer(img[2 * slot - block:]).product_id == 7       # slot B trailer
+    # ...and the firmware the boot stub installs, in both slots at the same place
+    [c] = parse_trailer(img[slot - block:]).components
+    assert c.dest == 0x70090000 and c.size > 0
+    assert img[c.offset:c.offset + c.size] == img[slot + c.offset:slot + c.offset + c.size]
 
     a = img[slot - 2 * block: slot - block]                           # slot A status sector
     b = img[2 * slot - 2 * block: 2 * slot - block]                   # slot B status sector
@@ -541,6 +612,10 @@ def test_factory_build_composes_dual_slot(make_project):
     co, cn = status.COUNTER_OFFSET, status.COUNTER_SIZE
     assert a[co:co + cn] == status.encode_counter(2)
     assert b[co:co + cn] == status.encode_counter(1)
+    # both slots seed the certificate-epoch floor with the factory key's epoch (0 at birth)
+    from openmv_ota.ota import rollback
+    eo = status.EPOCH_OFFSET
+    assert a[eo:eo + 16] == b[eo:eo + 16] == rollback.encode_entry(0)
 
     # THE PUBLISHABLE PAIR: build/factory/ holds the same bytes in release form -- the
     # gzipped download image + a manifest signed with the FACTORY key -- so `client
@@ -603,7 +678,7 @@ def test_factory_signed_by_factory_key(make_project):
     sector = r.output.read_bytes()[2 * target.front_size - block:]  # slot B trailer
     t = parse_trailer(sector)
     entry = next(k for k in read_trusted_keys(ProjectPaths(root).trusted_keys)
-                 if k.key_id == t.key_id)
+                 if k.pubkey == t.cert.pubkey.hex())
     assert entry.role == "factory"
     alg = algorithm_for(entry.alg)
     pub = public_key_from_hex(entry.pubkey, alg)
@@ -1722,3 +1797,47 @@ def test_per_camera_firmware_carries_no_payload_key(make_project, tmp_path):
     from openmv_ota.project.project import load_project
     p = load_project(root, firmware=_repo)
     assert fw._payload_keys(p, ["OPENMV_N6"], None) == {}
+
+
+# --- the trailer's stub fields come from the project's device modules -----------------
+
+def test_stub_settings_read_the_device_modules_as_text(tmp_path):
+    from openmv_ota.build.romfs import stub_settings
+    dev = tmp_path / "device"
+    dev.mkdir()
+    off = dict(uart_en=0, uart_id=0, baud=0, wdt_en=0, wdt_id=0, wdt_timeout_ms=0)
+    assert stub_settings(tmp_path) == off                               # no modules at all
+    (dev / "openmv_log.py").write_text("ENABLED = False\nUART = 3\nBAUD = 115200\n")
+    (dev / "openmv_wdt.py").write_text("STUB_WDT_ID = 0\nSTUB_TIMEOUT_MS = 0\n")
+    assert stub_settings(tmp_path) == off                               # present but off
+    (dev / "openmv_log.py").write_text("ENABLED = True\nUART = None\nBAUD = 115200\n")
+    assert stub_settings(tmp_path)["uart_en"] == 0                      # the USB REPL is not a UART
+    (dev / "openmv_log.py").write_text("ENABLED = True\nUART = 3\nBAUD = 921600\nx = 1\n")
+    (dev / "openmv_wdt.py").write_text("STUB_WDT_ID = 0\nSTUB_TIMEOUT_MS = 8000\n")
+    assert stub_settings(tmp_path) == dict(uart_en=1, uart_id=3, baud=921600,
+                                           wdt_en=1, wdt_id=0, wdt_timeout_ms=8000)
+    (dev / "openmv_log.py").write_text("ENABLED = True\nUART = machine_id\nBAUD = 0x1C200\n")
+    assert stub_settings(tmp_path)["uart_en"] == 0                      # not a literal: off
+    (dev / "openmv_log.py").write_text("ENABLED = True\nBAUD = 115200\n")
+    assert stub_settings(tmp_path)["uart_en"] == 0                      # UART line missing: off
+    (dev / "openmv_wdt.py").write_text("STUB_WDT_ID = True\nSTUB_TIMEOUT_MS = 8000\n")
+    assert stub_settings(tmp_path)["wdt_en"] == 0                       # a bool is not an id
+
+
+def test_ota_trailer_carries_the_stub_uart_and_watchdog(make_project):
+    from openmv_ota.build.romfs import build_romfs
+    from openmv_ota.ota import parse_trailer
+    from openmv_ota.project import ProjectPaths
+
+    root, repo, app = _build_ota(make_project)
+    dev = ProjectPaths(root).root / "device"
+    log = dev / "openmv_log.py"
+    log.write_text(log.read_text().replace("ENABLED = False", "ENABLED = True", 1)
+                   .replace("UART = None", "UART = 3", 1))
+    wdt = dev / "openmv_wdt.py"
+    wdt.write_text(wdt.read_text().replace("STUB_TIMEOUT_MS = 0", "STUB_TIMEOUT_MS = 8000", 1))
+    r = build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)[0]
+    _body, trailer_bytes = _read_bundle(r)
+    t = parse_trailer(trailer_bytes)
+    assert (t.uart_en, t.uart_id, t.baud) == (1, 3, 115200)
+    assert (t.wdt_en, t.wdt_id, t.wdt_timeout_ms) == (1, 0, 8000)

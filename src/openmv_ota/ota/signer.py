@@ -29,6 +29,7 @@ class Signer(abc.ABC):
     sig_alg: int          # COSE id
     alg: AlgSpec
     is_dev_key: bool = False
+    certificate: bytes = b""   # the key's packed certificate (set by build_signer from the entry)
 
     @abc.abstractmethod
     def sign(self, region: bytes) -> bytes:
@@ -64,16 +65,21 @@ def build_signer(entry, alg: AlgSpec, *, private_keys_dir: Path, backend: dict |
     ``OtaError`` for an unknown tag or an unreachable/mis-typed key."""
     tag = (backend or {}).get("backend") or "encrypted-pem"
     if tag == "encrypted-pem":
-        return _local_signer(entry, alg, private_keys_dir, passphrase_provider)
-    if tag == "pkcs11":
+        signer = _local_signer(entry, alg, private_keys_dir, passphrase_provider)
+    elif tag == "pkcs11":
         from . import signer_pkcs11
-        return signer_pkcs11.build(entry, alg, backend)
-    if tag in ("aws-kms", "gcp-kms", "azure-kms"):
+        signer = signer_pkcs11.build(entry, alg, backend)
+    elif tag in ("aws-kms", "gcp-kms", "azure-kms"):
         from . import signer_kms
-        return signer_kms.build(entry, alg, backend)
-    if tag == "custom":
-        return _custom_signer(entry, alg, backend or {})
-    raise OtaError("unknown signer backend: %r" % tag)
+        signer = signer_kms.build(entry, alg, backend)
+    elif tag == "custom":
+        signer = _custom_signer(entry, alg, backend or {})
+    else:
+        raise OtaError("unknown signer backend: %r" % tag)
+    # The certificate rides with the key: it is what the trailer carries so a camera that
+    # embeds only the roots trusts this signer. Desk keys (registration records) have none.
+    signer.certificate = bytes.fromhex(getattr(entry, "cert", "") or "")
+    return signer
 
 
 def _local_signer(entry, alg, private_keys_dir, passphrase_provider):
@@ -99,11 +105,12 @@ class KeyProvisioner(abc.ABC):
 
 
 def provision_external_key_set(alg: AlgSpec, n_factory: int, n_ota: int,
-                               provisioner: KeyProvisioner):
-    """Mint the whole pool in an external backend. Returns ``(trusted_keys, backend_records,
-    signing_key_id)`` -- the public set for ``keys/trusted_keys.json`` and the per-key records for
-    ``keys/backends.json``. No private PEM is ever produced."""
-    from .keys import FACTORY_KEY_ID_BASE, OTA_KEY_ID_BASE, TrustedKey
+                               provisioner: KeyProvisioner, root_private_key, root_id: int = 0):
+    """Mint the whole pool in an external backend and certify it with the project's root.
+    Returns ``(trusted_keys, backend_records, signing_key_id)`` -- the public set for
+    ``keys/trusted_keys.json`` and the per-key records for ``keys/backends.json``. No signing
+    key's private PEM is ever produced; the root stays the local, offline one."""
+    from .keys import FACTORY_KEY_ID_BASE, OTA_KEY_ID_BASE, TrustedKey, certify
     trusted: list = []
     records: dict[int, dict] = {}
 
@@ -116,6 +123,7 @@ def provision_external_key_set(alg: AlgSpec, n_factory: int, n_ota: int,
         _mint(FACTORY_KEY_ID_BASE + i, "factory")
     for i in range(n_ota):
         _mint(OTA_KEY_ID_BASE + i, "ota")
+    certify(root_private_key, root_id, trusted)
     return trusted, records, OTA_KEY_ID_BASE
 
 

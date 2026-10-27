@@ -56,6 +56,15 @@ _LAZY = {
     "write_trusted_keys": "keys",
     "ProvisionedKeys": "keys",
     "provision_key_set": "keys",
+    "RootKey": "keys",
+    "read_root_keys": "keys",
+    "write_root_keys": "keys",
+    "root_keys_map": "keys",
+    "certify": "keys",
+    "Component": "trailer",
+    "Certificate": "certificate",
+    "KIND_OTA": "certificate",
+    "KIND_FACTORY": "certificate",
 }
 
 
@@ -96,4 +105,13 @@ __all__ = [
     "write_trusted_keys",
     "ProvisionedKeys",
     "provision_key_set",
+    "RootKey",
+    "read_root_keys",
+    "write_root_keys",
+    "root_keys_map",
+    "certify",
+    "Component",
+    "Certificate",
+    "KIND_OTA",
+    "KIND_FACTORY",
 ]

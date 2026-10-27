@@ -56,13 +56,40 @@ except ImportError:                    # host / tests / a build without logging 
 # --- Trailer format (mirror of openmv_ota.ota.trailer) ----------------------
 
 MAGIC = b"OMVR"                         # ROMFS application image
-HEADER_VERSION = 3
-_HEADER_STRUCT = "<4sIIIIIQQQIIIi32s"
+HEADER_VERSION = 4
+_HEADER_STRUCT = "<4sIIIIIIBBBBIIQQQ32s"
 _HEADER_SIZE = struct.calcsize(_HEADER_STRUCT)   # 96
-_META_SIZE_OFFSET = struct.calcsize("<4sIII")    # 16
+_COMP_STRUCT = "<IIII32s32s"              # dest offset size installed_size sha256 installed_sha256
+_COMP_SIZE = struct.calcsize(_COMP_STRUCT)       # 80
+_MAX_COMPONENTS = 16                             # a bound on an unverified count, not a budget
 _CRC_SIZE = 4
 # COSE alg id -> raw R||S signature length (mirror of openmv_ota.ota.algorithms).
 _ALG_SIG_SIZE = {-7: 64, -35: 96, -36: 132}
+_ES256 = -7
+
+# --- Certificate format (mirror of openmv_ota.ota.certificate) -------------
+# The key that signed the image, certified by one of the roots the firmware embeds
+# (ROOT_KEYS). "7s" where the host writes "7x": MicroPython's struct has no pad code.
+_CERT_MAGIC = b"OMVC"
+_CERT_VERSION = 1
+_CERT_STRUCT = "<4sIIIIi65s7s64s"
+_CERT_SIZE = struct.calcsize(_CERT_STRUCT)       # 160
+_CERT_SIGNED = 96                                # the root signs bytes 0..95
+_KIND_OTA = 0
+_KIND_FACTORY = 1
+
+# --- The boot stub's install record (mirror of openmv_ota.ota.install_record) ---
+# The last 4 KiB of the firmware area on a board with a stub: which slot's components the
+# stub installed, and why it booted. boot.py mounts THAT slot and burns no attempt (the stub
+# did). An erased or torn record simply means "no stub": the slot choice below runs as usual.
+_RECORD_MAGIC = b"OMVI"
+_RECORD_VERSION = 1
+_RECORD_STRUCT = "<4sIIIIIQ"
+_RECORD_FIXED = struct.calcsize(_RECORD_STRUCT)   # 32
+_RECORD_ENTRY_STRUCT = "<II32s"                   # dest installed_size installed_sha256
+_RECORD_ENTRY = struct.calcsize(_RECORD_ENTRY_STRUCT)   # 40
+_RECORD_BLOCK = 4096
+_REASON_TRIAL = 1
 
 # --- Status markers (mirror of openmv_ota.ota.status) -----------------------
 
@@ -114,13 +141,19 @@ _BLANK_ATTEMPT = b"\xff" * _ATTEMPT_UNIT
 _ROLLBACK_ENTRY = 16                    # u64 key || u64 ~key (one flash write unit)
 _ROLLBACK_STRIDE = 16                   # entry spacing; stride-sized on ECC-word flash
 _MASK64 = 0xFFFFFFFFFFFFFFFF
+_FLOOR_ENTRIES = 64                     # entries per floor region (openmv_ota.ota.status);
+_MIN_SECTOR = 4096                      # ...fewer where two regions would not fit this
 _FLOOR_OFF = 80 + 64 * 16               # attempts end; _set_stride re-derives
+# The certificate-epoch floor: the same entries, right after the anti-rollback floor's
+# region. confirm() raises it to the running image's certificate epoch; a certificate below
+# the highest epoch across the slots is a retired signing key (evaluate_slot: "epoch").
+_EPOCH_OFF = _FLOOR_OFF + 64 * 16
 
 
 def _set_stride(stride):
     """Re-derive the module geometry for ``stride`` (no-op at the default 16)."""
     global _TRIED_OFF, _CONFIRMED_OFF, _COUNTER_OFF, _ATTEMPT_UNIT, _ATTEMPTS_OFF
-    global _BLANK_ATTEMPT, _ROLLBACK_STRIDE, _FLOOR_OFF
+    global _BLANK_ATTEMPT, _ROLLBACK_STRIDE, _FLOOR_OFF, _EPOCH_OFF
     _TRIED_OFF = stride
     _CONFIRMED_OFF = 2 * stride
     _COUNTER_OFF = 4 * stride
@@ -129,6 +162,8 @@ def _set_stride(stride):
     _BLANK_ATTEMPT = b"\xff" * _ATTEMPT_UNIT
     _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
     _FLOOR_OFF = _ATTEMPTS_OFF + 64 * _ATTEMPT_UNIT
+    entries = min(_FLOOR_ENTRIES, (_MIN_SECTOR - _FLOOR_OFF) // (2 * _ROLLBACK_STRIDE))
+    _EPOCH_OFF = _FLOOR_OFF + entries * _ROLLBACK_STRIDE
 
 
 def _rollback_floor_of(sector):
@@ -169,25 +204,35 @@ class Trailer:
 def parse_trailer(data):
     """Structurally parse + CRC-check a trailer block, returning a :class:`Trailer`.
 
-    Validates only what can be checked without keys -- magic, header version, a
-    known algorithm with the matching signature length, framing, and the CRC. The
-    header fields are NOT yet trustworthy: they become authentic only once
-    :func:`evaluate_slot` verifies the signature over the signed region. Raises
-    :class:`OtaReject` with a reason code on any malformation.
+    Validates only what can be checked without keys -- magic, header version, the
+    component count, a well-formed P-256 certificate, framing, and the CRC. The header
+    fields are NOT yet trustworthy: they become authentic only once :func:`evaluate_slot`
+    verifies the certificate against a root and the signature over the signed region.
+    Raises :class:`OtaReject` with a reason code on any malformation.
     """
     if len(data) < _HEADER_SIZE:
         raise OtaReject("trunc")
-    (magic, header_version, body_size, pad_size, meta_size, sig_size, product_id,
-     publish_seq, _reserved0, min_platform_version, payload_version, key_id, sig_alg,
-     body_sha256) = struct.unpack_from(_HEADER_STRUCT, data, 0)
+    (magic, header_version, body_size, comp_count, meta_size, min_stub, payload_version,
+     uart_en, uart_id, wdt_en, wdt_id, baud, wdt_timeout_ms, product_id, publish_seq,
+     _reserved, body_sha256) = struct.unpack_from(_HEADER_STRUCT, data, 0)
     if magic != MAGIC:
         raise OtaReject("magic")
     if header_version != HEADER_VERSION:
         raise OtaReject("version")
-    expect_sig = _ALG_SIG_SIZE.get(sig_alg)
-    if expect_sig is None or sig_size != expect_sig:
-        raise OtaReject("alg")
-    body_end = _HEADER_SIZE + meta_size + sig_size
+    if comp_count > _MAX_COMPONENTS:
+        raise OtaReject("components")
+    cert_off = _HEADER_SIZE + comp_count * _COMP_SIZE
+    meta_end = cert_off + _CERT_SIZE + meta_size
+    if meta_end > len(data):
+        raise OtaReject("trunc")
+    (cmagic, cversion, kind, root_id, epoch, alg, pubkey, _pad,
+     cert_sig) = struct.unpack_from(_CERT_STRUCT, data, cert_off)
+    # P-256 only: the 65-byte key slot and 64-byte root signature are sized for it.
+    if cmagic != _CERT_MAGIC or cversion != _CERT_VERSION or alg != _ES256 \
+            or kind not in (_KIND_OTA, _KIND_FACTORY) or pubkey[0] != 0x04:
+        raise OtaReject("cert")
+    sig_size = _ALG_SIG_SIZE[alg]
+    body_end = meta_end + sig_size
     if body_end + _CRC_SIZE > len(data):
         raise OtaReject("trunc")
     crc_stored = struct.unpack_from("<I", data, body_end)[0]
@@ -196,17 +241,45 @@ def parse_trailer(data):
 
     t = Trailer()
     t.body_size = body_size
-    t.pad_size = pad_size
     t.product_id = product_id
     t.publish_seq = publish_seq
-    t.min_platform_version = min_platform_version
     t.payload_version = payload_version
-    t.key_id = key_id
-    t.sig_alg = sig_alg
+    t.min_stub = min_stub
+    t.uart_en, t.uart_id, t.baud = uart_en, uart_id, baud
+    t.wdt_en, t.wdt_id, t.wdt_timeout_ms = wdt_en, wdt_id, wdt_timeout_ms
     t.body_sha256 = bytes(body_sha256)
-    t.signed_region = bytes(data[:_HEADER_SIZE + meta_size])
-    t.signature = bytes(data[_HEADER_SIZE + meta_size:body_end])
+    t.components = [struct.unpack_from(_COMP_STRUCT, data, _HEADER_SIZE + i * _COMP_SIZE)
+                    for i in range(comp_count)]        # (dest, offset, size, installed_size, sha, installed_sha)
+    t.kind, t.root_id, t.epoch, t.sig_alg = kind, root_id, epoch, alg
+    t.pubkey = bytes(pubkey)
+    t.cert_region = bytes(data[cert_off:cert_off + _CERT_SIGNED])
+    t.cert_signature = bytes(cert_sig)
+    t.signed_region = bytes(data[:meta_end])
+    t.signature = bytes(data[meta_end:body_end])
     return t
+
+
+def parse_record(data):
+    """``(stub_version, slot, reason, components)`` from the stub's install record --
+    components as ``(dest, installed_size, installed_sha256)`` -- or None when the block
+    holds no complete, CRC-valid record of a known version. Pure."""
+    if data is None or len(data) < _RECORD_FIXED:
+        return None
+    magic, version, stub_version, slot, comp_count, reason, _r = struct.unpack_from(
+        _RECORD_STRUCT, data, 0)
+    if magic != _RECORD_MAGIC or version != _RECORD_VERSION or comp_count > _MAX_COMPONENTS \
+            or slot not in (0, 1):
+        return None
+    end = _RECORD_FIXED + comp_count * _RECORD_ENTRY
+    if end + _CRC_SIZE > len(data):
+        return None
+    if (binascii.crc32(bytes(data[:end])) & 0xFFFFFFFF) != struct.unpack_from("<I", data, end)[0]:
+        return None
+    components = []
+    for i in range(comp_count):
+        dest, size, h = struct.unpack_from(_RECORD_ENTRY_STRUCT, data, _RECORD_FIXED + i * _RECORD_ENTRY)
+        components.append((dest, size, bytes(h)))
+    return stub_version, slot, reason, components
 
 
 def _sha256(data):
@@ -307,8 +380,8 @@ def select_slot(candidates):
 
 
 def evaluate_slot(body, status, trailer_bytes, rollback_floor,
-                  product_id, trusted_keys, platform_version, verify,
-                  max_attempts=DEFAULT_MAX_ATTEMPTS):
+                  product_id, root_keys, verify,
+                  max_attempts=DEFAULT_MAX_ATTEMPTS, epoch_floor=0):
     """Verify one slot and decide whether it may be mounted.
 
     Returns ``(trailer, consume_attempt)`` -- ``consume_attempt`` is True when this is a trial
@@ -316,23 +389,27 @@ def evaluate_slot(body, status, trailer_bytes, rollback_floor,
     Raises :class:`OtaReject` (reason code) on any failure. ``body`` is the slot's
     body region (a memoryview on device); ``status`` is its status sector.
 
-    The signature is verified *before* any header field is trusted -- ``product_id``,
-    sizes, and versions are only acted on once the signature over ``header || meta``
-    checks out.
+    Two signatures, in order: a root in ``root_keys`` (``{root_id: pubkey}``, the set the
+    firmware embeds) over the trailer's certificate, then the certified key over the
+    signed region. Only then is any header field trusted -- ``product_id``, sizes, and
+    versions are acted on after both check out. ``epoch_floor`` is the certificate epoch
+    this device has confirmed; an older certificate is a retired key.
     """
     t = parse_trailer(trailer_bytes)
 
-    pubkey = trusted_keys.get(t.key_id)
-    if pubkey is None:                                  # unknown or revoked key
-        raise OtaReject("key")
-    if not verify(t.sig_alg, pubkey, t.signature, t.signed_region):
+    root = root_keys.get(t.root_id)
+    if root is None:                                    # a root this firmware does not embed
+        raise OtaReject("root")
+    if not verify(_ES256, root, t.cert_signature, t.cert_region):
+        raise OtaReject("cert-sig")
+    if t.epoch < epoch_floor:                           # a retired key
+        raise OtaReject("epoch")
+    if not verify(t.sig_alg, t.pubkey, t.signature, t.signed_region):
         raise OtaReject("sig")
     # The header is authentic from here on.
 
     if product_id and t.product_id != product_id:             # cross-flash guard (0 = off)
         raise OtaReject("board")
-    if t.min_platform_version and t.min_platform_version > platform_version:
-        raise OtaReject("compat")
     if t.body_size > len(body):
         raise OtaReject("size")
     if _sha256(memoryview(body)[:t.body_size]) != t.body_sha256:
@@ -380,17 +457,23 @@ def evaluate_slot(body, status, trailer_bytes, rollback_floor,
     raise OtaReject("status")
 
 
+# evaluate_slot rejections that are this firmware's mark POLICY (not a verification failure):
+# the slot's bytes are authentic and for this board, only its status sector says it should not
+# be tried. On a stub board the stub applied its own policy before installing (see OtaBoot.run).
+_POLICY_REJECTS = ("rollback", "trial-failed", "status")
+
+
 class OtaBoot:
     """Wires the pure logic to a device's flash I/O and build-time constants.
 
     ``read``/``verify``/``mount``/``write_marker`` are the injected I/O; the rest
-    are constants the firmware build bakes in (geometry + the trusted key set +
-    this device's board id + the running firmware's platform version).
+    are constants the firmware build bakes in (geometry + the root keys + this
+    device's board id).
     """
 
     def __init__(self, read, verify, mount, write_marker, partition_size,
-                 front_size, block, product_id, trusted_keys, platform_version,
-                 max_attempts=DEFAULT_MAX_ATTEMPTS):
+                 front_size, block, product_id, root_keys,
+                 max_attempts=DEFAULT_MAX_ATTEMPTS, record=None):
         self.read = read
         self.verify = verify
         self.mount = mount
@@ -399,9 +482,10 @@ class OtaBoot:
         self.front_size = front_size
         self.block = block
         self.product_id = product_id
-        self.trusted_keys = trusted_keys
-        self.platform_version = platform_version
+        self.root_keys = root_keys
         self.max_attempts = max_attempts
+        self.record = parse_record(record)   # the stub's install record block, if any
+        self.stub = None                     # (stub_version, reason) when the record was followed
         self._pending = {}
 
     def _slots(self):
@@ -430,10 +514,18 @@ class OtaBoot:
         as long as an install carries the current floor into the slot it writes -- which is the
         installer's job (step 4), and the reason the floor is read from every slot here rather
         than from a designated one."""
+        return self._floor(_FLOOR_OFF, _EPOCH_OFF)
+
+    def _epoch_floor(self):
+        """The certificate-epoch floor: the highest epoch any slot has recorded as confirmed.
+        Kept the way the anti-rollback floor is, for the same reasons."""
+        return self._floor(_EPOCH_OFF, self.block)
+
+    def _floor(self, start, end):
         floor = 0
         for _name, offset, size in self._slots():
             status = self.read(offset + size - 2 * self.block, self.block)
-            logged = _rollback_floor_of(status[_FLOOR_OFF:])
+            logged = _rollback_floor_of(status[start:end])
             if logged > floor:
                 floor = logged
         return floor
@@ -454,20 +546,47 @@ class OtaBoot:
         to the firmware-resident recovery flow, which re-downloads until a working image exists.
         """
         floor = self._rollback_floor()
-        candidates, rejects = [], []
+        epoch_floor = self._epoch_floor()
+        candidates, rejects, policy = [], [], {}
         for name, offset, size in self._slots():
             body, status, trailer = self._read_slot(offset, size)
             try:
                 t, consume = evaluate_slot(
-                    body, status, trailer, floor, self.product_id, self.trusted_keys,
-                    self.platform_version, self.verify, self.max_attempts)
+                    body, status, trailer, floor, self.product_id, self.root_keys,
+                    self.verify, self.max_attempts, epoch_floor)
             except OtaReject as e:
                 rejects.append("%s:%s" % (name, e))
+                if str(e) in _POLICY_REJECTS:
+                    # Verified, but this firmware's mark policy says no. Kept for the record
+                    # path below: a stub that installed this slot already applied ITS policy.
+                    policy[name] = (offset, size, body, status, parse_trailer(trailer), False)
                 continue
             _p, _tr, confirmed = _markers(status)
             candidates.append((name, install_counter(status), bool(confirmed)))
             self._pending[name] = (offset, size, body, status, t, consume)
 
+        # A boot stub chose first: it installed one slot's components into the firmware area and
+        # the firmware now running IS that slot's. Mount that slot -- mounting the other would run
+        # an app on a firmware it was not built with -- and burn nothing: the stub burned the
+        # attempt before it installed. Only a record naming exactly the components the slot's
+        # trailer lists (destination, installed size and hash) counts; anything else (no
+        # stub, an erased sector, a stale record, a slot that fails a signature or identity
+        # check) falls through to the choice below. The slot's MARK policy is the stub's call,
+        # not this firmware's: its attempt budget, the floors it read, "pending or confirmed"
+        # all live in the stub that burned the attempt and installed, and the two binaries are
+        # updated independently (seen: a firmware built with max_attempts 3 refusing the slot a
+        # stub with 20 had just installed -- and mounting the OTHER slot's app over it).
+        if self.record is not None:
+            stub_version, slot, reason, components = self.record
+            name = ("A", "B")[slot]
+            chosen = self._pending.get(name) or policy.get(name)
+            if chosen is not None:
+                t = chosen[4]
+                if components == [(c[0], c[3], c[5]) for c in t.components]:
+                    self._pending[name] = chosen[:5] + (False,)
+                    self.stub = (stub_version, reason)
+                    rejects = [r for r in rejects if not r.startswith(name + ":")]
+                    return self._mount(name, rejects)
         # Try the newest, and if it cannot be ARMED fall through to the next-newest rather than
         # abandoning the boot. Failing to record an attempt is a reason to distrust that slot, not
         # a reason to strand a device that has another valid image sitting right there.
@@ -506,12 +625,14 @@ last_slot = None              # 'A' or 'B'
 last_payload_version = 0      # the mounted image's payload_version
 last_publish_seq = 0          # ...and its publish_seq; confirm() raises the floor to
                               # whichever of the two this camera orders by
+last_epoch = 0                # the mounted image's certificate epoch; confirm() raises the
+                              # epoch floor to it
 last_failure_reason = None    # why the OTHER slot was rejected, if this one is a fallback
 
 
 # --- The camera's keys, on a factory image's boot ---------------------------
 # A factory image is written only by `openmv-ota flash factory`, at a desk, and is signed with a
-# factory key (below the OTA key range). Booting one, before the app runs, is where the camera's
+# factory key (one whose certificate says so). Booting one, before the app runs, is where the camera's
 # keys are made if it has none (``openmv_se.provision``, which never replaces keys it has) --
 # never by the app, so a camera in the field can't make or change keys, and never by a host
 # breaking into a running app, which on an app that arms a watchdog resets the board. For a
@@ -527,7 +648,6 @@ last_failure_reason = None    # why the OTHER slot was rejected, if this one is 
 # QSPI flash) and the radio fails, or hangs. The tool, if it misses the window, soft-resets the
 # camera with the console held open, and the next boot waits for it.
 
-_OTA_KEY_ID_BASE = 0x0100        # factory images are signed below this (openmv_ota.ota.keys)
 _KEYS_WINDOW_MS = 2000           # how long a factory boot waits for the flashing tool's request
 _KEYS_REQUEST = "OMVKEYS "       # ...followed by 64 hex digits: the 32-byte challenge
 _KEYS_GRACE_MS = 750             # how long it waits for a host to open the console at all
@@ -567,13 +687,13 @@ def keys_challenge(stream, poll, elapsed, window_ms=_KEYS_WINDOW_MS, attended=No
             line += c
 
 
-def factory_keys(key_id, se, challenge, device_id=""):
-    """Make the camera's keys if it has none, when booting a factory image (``key_id``, the
-    image's signing key, below the OTA range); the answer line for the flashing tool -- printed
+def factory_keys(kind, se, challenge, device_id=""):
+    """Make the camera's keys if it has none, when booting a factory image (``kind``, the
+    image's certificate kind, is ``_KIND_FACTORY``); the answer line for the flashing tool -- printed
     by the caller only if it asked (``challenge``) -- or None when there is nothing to do: an OTA
     image, or a firmware without ``openmv_se`` (``se`` None). The answer ends with the camera's
     ``device_id``, which the desk registers the keys under."""
-    if key_id >= _OTA_KEY_ID_BASE or se is None:
+    if kind != _KIND_FACTORY or se is None:
         return None
     try:
         r = se.provision()
@@ -672,11 +792,14 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         log.warning("boot: se recovery failed: %r" % (e,))  # hil-residual: inject-only, as the line above
 
     _set_stride(getattr(cfg, "CONTROL_STRIDE", 16))
+    record_addr = getattr(cfg, "STUB_RECORD_ADDR", None)
+    record = uctypes.bytearray_at(record_addr, _RECORD_BLOCK) if record_addr else None  # hil-residual: boards with a boot stub only
     try:
-        slot, trailer, reject_reason = OtaBoot(
+        ob = OtaBoot(
             read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
-            cfg.CONTROL_BLOCK, cfg.PRODUCT_ID, cfg.TRUSTED_KEYS, cfg.PLATFORM_VERSION,
-            getattr(cfg, "MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)).run()
+            cfg.CONTROL_BLOCK, cfg.PRODUCT_ID, cfg.ROOT_KEYS,
+            getattr(cfg, "MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS), record)
+        slot, trailer, reject_reason = ob.run()
     except OtaReject as e:
         log.error("boot: no bootable slot: %s" % e)
         # NOT the end of the road under v2. There is no factory image to retreat to, so hand
@@ -690,6 +813,8 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
             raise e from None  # hil-residual: bare re-raise; boot.no_slot above is the witness
         openmv_recovery.run(cfg)  # hil-residual: recovery never returns (installs + reboots, or retries forever)
         raise  # hil-residual: unreachable unless recovery declined (no SERVER_URL stamped)
+    if ob.stub is not None:  # hil-residual: boards with a boot stub only
+        log.info("boot: stub %d installed %s, reason %d" % (ob.stub[0], slot, ob.stub[1]))  # hil-residual: same
     if reject_reason is None:
         log.info("boot: mounted %s (payload %d)" % (slot, trailer.payload_version))
     else:
@@ -699,20 +824,23 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         log.warning("boot: rejected %s -> mounted %s (payload %d)"
                     % (reject_reason, slot, trailer.payload_version))
 
-    global last_slot, last_payload_version, last_publish_seq, last_failure_reason
+    global last_slot, last_payload_version, last_publish_seq, last_failure_reason, last_epoch
     last_slot, last_payload_version, last_publish_seq, last_failure_reason = (
         slot, trailer.payload_version, trailer.publish_seq, reject_reason)
+    last_epoch = trailer.epoch
     # Mirror onto _ota_config, the module the app's openmv_ota lib reads (both import it,
     # and modules are cached, so this persists in-VM without re-running boot.py).
     cfg.last_slot = slot
     cfg.last_payload_version = trailer.payload_version
     cfg.last_publish_seq = trailer.publish_seq
+    cfg.last_epoch = trailer.epoch
     cfg.last_failure_reason = reject_reason
+    cfg.last_stub = ob.stub                        # (stub_version, reason), or None
 
     os.chdir("/rom")
     sys.path.append("/rom")
     sys.path.append("/rom/lib")
-    if trailer.key_id < _OTA_KEY_ID_BASE:          # a factory image: the camera's keys
+    if trailer.kind == _KIND_FACTORY:              # a factory image: the camera's keys
         try:
             import openmv_se as se                 # frozen: the keys don't depend on the romfs
         except ImportError:  # hil-residual: a firmware without openmv_se (a board with no keys, e.g. the Nano RP2040 Connect); boot.keys after it reads "None"
@@ -737,7 +865,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
                 device_id = openmv_ota.identity().get("device_id", "")  # hil-residual: same
             except Exception:  # hil-residual: a factory romfs without openmv_ota can't name the camera; the desk then refuses to register it
                 pass  # hil-residual: same branch as the line above
-        answer = factory_keys(trailer.key_id, se, challenge, device_id)
+        answer = factory_keys(trailer.kind, se, challenge, device_id)
         if challenge is not None:
             # ONE write, newline included, then a beat for USB to send it: print() writes the
             # newline separately, and on the N6 that last write could still be queued when the app

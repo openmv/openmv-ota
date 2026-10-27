@@ -39,9 +39,11 @@ import tempfile
 import time
 from pathlib import Path
 
+from openmv_ota.ota import certificate as host_cert
 from openmv_ota.ota import status as host_status
 from openmv_ota.ota import trailer as host_trailer
 from openmv_ota.ota.algorithms import ES256, algorithm_for
+from openmv_ota.ota.keys import generate_private_key, public_point_hex
 from openmv_ota.romfs.builder import build_image
 
 BOOT_PY = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
@@ -49,8 +51,15 @@ BOOT_PY = (Path(__file__).resolve().parent.parent / "src" / "openmv_ota"
 BLOCK = 4096
 BOARD = 0x1234_5678_9ABC  # the trailer product_id the path cases use: a 64-bit
                           # value, so a narrowed field would fail here too
-PLAT = 5 << 24
 V1 = 1 << 24
+
+# One root for every trailer here: the certificate is real (issued offline by this key), the
+# image signature is arbitrary -- verify is injected on-device (no mbedtls on the qemu port).
+_ROOT_PRIV = generate_private_key(algorithm_for(ES256))
+ROOT_PUB = bytes.fromhex(public_point_hex(_ROOT_PRIV.public_key()))     # 65-byte point
+_LEAF_PRIV = generate_private_key(algorithm_for(ES256))                  # the certified key
+LEAF_PUB = bytes.fromhex(public_point_hex(_LEAF_PRIV.public_key()))     # (never the root's)
+ROOT_KEYS_PY = "{0: binascii.unhexlify(%r)}" % ROOT_PUB.hex()
 
 # Per-board: qemu machine, romfs XIP origin, and partition + per-slot sizes.
 BOARDS = {
@@ -61,13 +70,14 @@ BOARDS = {
 
 # --- host-side fixture builders --------------------------------------------
 
-def _trailer(body, *, board=BOARD, minplat=0, pv=V1, body_size=None, key_id=0x100):
+def _trailer(body, *, board=BOARD, pv=V1, body_size=None, root_id=0, epoch=0):
     spec = algorithm_for(ES256)
+    cert = host_cert.issue(_ROOT_PRIV, root_id, host_cert.KIND_OTA, epoch, LEAF_PUB)
     t = host_trailer.Trailer(
-        body_size=len(body) if body_size is None else body_size, pad_size=0,
-        meta={"k": 1}, product_id=board, min_platform_version=minplat, payload_version=pv,
-        key_id=key_id, sig_alg=ES256,
-        body_sha256=hashlib.sha256(body).digest())
+        body_size=len(body) if body_size is None else body_size,
+        meta={"k": 1}, product_id=board, payload_version=pv,
+        body_sha256=hashlib.sha256(body).digest(),
+        certificate=host_cert.pack(cert))
     t.signature = b"\x11" * spec.sig_size       # arbitrary; verify is injected on-device
     return host_trailer.pack_trailer(t)
 
@@ -83,8 +93,10 @@ def _confirmed_status(counter):
 
 
 def _path_cases():
-    """(label, body, status, trailer, floor, board, plat, verify_ret, expected).
-    Board-independent: exercises evaluate_slot/parse_trailer with in-memory bytes.
+    """(label, body, status, trailer, floor, board, epoch_floor, verify, expected).
+    Board-independent: exercises evaluate_slot/parse_trailer with in-memory bytes. ``verify``
+    is 1 (every signature good), 0 (every signature bad: the certificate fails first) or 2
+    (only the root's signature good: the image signature fails).
 
     v2 dropped the ``is_front`` parameter: both slots are real, updatable images evaluated by
     ONE rule, and which of them wins is the caller's job (``select_slot``), not this
@@ -105,33 +117,35 @@ def _path_cases():
         _o = host_status.ATTEMPTS_OFFSET + _i * host_status.ATTEMPT_UNIT
         spent[_o:_o + host_status.ATTEMPT_UNIT] = host_status.ATTEMPT
     C = [
-        ("confirmed", b, _status(1, 1, 1), tb, 0, BOARD, PLAT, True, "OK"),
-        ("trial_with_attempts", b, _status(1, 0, 0), tb, 0, BOARD, PLAT, True, "OK"),
-        ("sig_reject", b, _status(1, 1, 1), tb, 0, BOARD, PLAT, False, "sig"),
-        ("key_unknown", b, _status(1, 1, 1), tb, 0, BOARD, PLAT, True, "key"),
-        ("bad_magic", b, _status(1, 1, 1), b"XX" + tb[2:], 0, BOARD, PLAT, True, "magic"),
-        ("bad_crc", b, _status(1, 1, 1), bad_crc, 0, BOARD, PLAT, True, "crc"),
-        ("board_mismatch", b, _status(1, 1, 1), _trailer(b, board=0x9999), 0, BOARD, PLAT, True, "board"),
-        ("compat_old", b, _status(1, 1, 1), _trailer(b, minplat=6 << 24), 0, BOARD, PLAT, True, "compat"),
-        ("body_sha", bytes(corrupt), _status(1, 1, 1), tb, 0, BOARD, PLAT, True, "body-sha"),
+        ("confirmed", b, _status(1, 1, 1), tb, 0, BOARD, 0, 1, "OK"),
+        ("trial_with_attempts", b, _status(1, 0, 0), tb, 0, BOARD, 0, 1, "OK"),
+        ("cert_sig_reject", b, _status(1, 1, 1), tb, 0, BOARD, 0, 0, "cert-sig"),
+        ("sig_reject", b, _status(1, 1, 1), tb, 0, BOARD, 0, 2, "sig"),
+        ("root_unknown", b, _status(1, 1, 1), _trailer(b, root_id=1), 0, BOARD, 0, 1, "root"),
+        ("epoch_retired", b, _status(1, 1, 1), _trailer(b, epoch=1), 0, BOARD, 2, 1, "epoch"),
+        ("epoch_current", b, _status(1, 1, 1), _trailer(b, epoch=2), 0, BOARD, 2, 1, "OK"),
+        ("bad_magic", b, _status(1, 1, 1), b"XX" + tb[2:], 0, BOARD, 0, 1, "magic"),
+        ("bad_crc", b, _status(1, 1, 1), bad_crc, 0, BOARD, 0, 1, "crc"),
+        ("board_mismatch", b, _status(1, 1, 1), _trailer(b, board=0x9999), 0, BOARD, 0, 1, "board"),
+        ("body_sha", bytes(corrupt), _status(1, 1, 1), tb, 0, BOARD, 0, 1, "body-sha"),
         # ANTI-ROLLBACK GATES THE UNPROVEN, NOT THE PROVEN. This case used to hand in a
         # CONFIRMED slot below the floor and expect a rejection; on hardware that is exactly the
         # fallback A/B exists to keep, and rejecting it cost the fleet its fallback on the first
         # successful update (a Nicla confirmed 1.1.0 and immediately logged `boot: rejected
         # A:rollback`). A confirmed slot is now exempt, so the floor is exercised with an
         # UNCONFIRMED one -- which is where a replayed release actually arrives.
-        ("rollback", b, _status(1, 1, 0), tb, 2 << 24, BOARD, PLAT, True, "rollback"),
+        ("rollback", b, _status(1, 1, 0), tb, 2 << 24, BOARD, 0, 1, "rollback"),
         # ...and the exemption itself, so it cannot regress silently in the other direction.
-        ("confirmed_below_floor", b, _status(1, 1, 1), tb, 2 << 24, BOARD, PLAT, True, "OK"),
+        ("confirmed_below_floor", b, _status(1, 1, 1), tb, 2 << 24, BOARD, 0, 1, "OK"),
         # v2: a trial fails once its ATTEMPTS are spent, not on the second boot
-        ("trial_failed", bytes(b), bytes(spent), tb, 0, BOARD, PLAT, True, "trial-failed"),
-        ("status_none", b, _status(0, 0, 0), tb, 0, BOARD, PLAT, True, "status"),
+        ("trial_failed", bytes(b), bytes(spent), tb, 0, BOARD, 0, 1, "trial-failed"),
+        ("status_none", b, _status(0, 0, 0), tb, 0, BOARD, 0, 1, "status"),
         # ...and the shape v1 called `forged-confirm` (confirmed, never pending) is now
         # legitimate: it is exactly what a provisioned slot looks like.
-        ("provisioned", b, _status(0, 0, 1), tb, 0, BOARD, PLAT, True, "OK"),
+        ("provisioned", b, _status(0, 0, 1), tb, 0, BOARD, 0, 1, "OK"),
     ]
-    return [(lbl, body.hex(), st.hex(), tr.hex(), fl, bd, pl, vr, exp)
-            for (lbl, body, st, tr, fl, bd, pl, vr, exp) in C]
+    return [(lbl, body.hex(), st.hex(), tr.hex(), fl, bd, ef, vr, exp)
+            for (lbl, body, st, tr, fl, bd, ef, vr, exp) in C]
 
 
 def _vfsrom(marker: str) -> bytes:
@@ -191,14 +205,16 @@ def _paths_script() -> str:
 import binascii
 def _h(s): return binascii.unhexlify(s)
 _CASES = %r
-_PUB = _h("04" + "00" * 64)
+_ROOTS = %s
+_ROOTPUB = _ROOTS[0]
 _fail = 0; _n = 0
-for (label, bh, sh, th, fl, bd, pl, vr, exp) in _CASES:
+for (label, bh, sh, th, fl, bd, ef, vr, exp) in _CASES:
     _n += 1
-    trusted = {} if label == "key_unknown" else {0x100: _PUB}
+    # 1: every signature verifies; 0: none (the certificate fails first); 2: only the
+    # root's (the image signature, checked with the certified key, fails)
+    vf = (lambda a, p, s, m, _v=vr: _v == 1 or (_v == 2 and p == _ROOTPUB))
     try:
-        evaluate_slot(_h(bh), _h(sh), _h(th), fl, bd, trusted, pl,
-                      (lambda a, p, s, m, _v=vr: _v))
+        evaluate_slot(_h(bh), _h(sh), _h(th), fl, bd, _ROOTS, vf, 3, ef)
         got = "OK"
     except OtaReject as e:
         got = str(e)
@@ -206,7 +222,7 @@ for (label, bh, sh, th, fl, bd, pl, vr, exp) in _CASES:
         _fail += 1
     print(("PASS " if got == exp else "FAIL ") + label + " got=" + got + " want=" + exp)
 print("RESULT", "PASS" if _fail == 0 else "FAIL", str(_n - _fail) + "/" + str(_n))
-''' % (_path_cases(),)
+''' % (_path_cases(), ROOT_KEYS_PY)
     return BOOT_PY.read_text() + "\n" + runner
 
 
@@ -219,12 +235,12 @@ def _mnt(body):
     try: vfs.umount("/rom")
     except Exception: pass
     vfs.mount(vfs.VfsRom(body), "/rom")
-_T = {0x100: binascii.unhexlify("04" + "00" * 64)}
+_R = %s
 slot, tr, reason = OtaBoot(_read, (lambda a, p, s, m: True), _mnt, (lambda o, m: None),
-                          %d, %d, %d, 0, _T, 0x7fffffff).run()
+                          %d, %d, %d, 0, _R, 0x7fffffff).run()
 mk = open("/rom/slot_marker.txt").read().strip()
 print("SLOT", slot, "REASON", reason, "MARKER", mk)
-''' % (part, front, BLOCK)
+''' % (ROOT_KEYS_PY, part, front, BLOCK)
     return BOOT_PY.read_text() + "\n" + runner
 
 
@@ -244,9 +260,9 @@ def _mnt(body):
     try: vfs.umount("/rom")
     except Exception: pass
     vfs.mount(vfs.VfsRom(body), "/rom")
-_T = {0x100: binascii.unhexlify("04" + "00" * 64)}
+_R = %s
 _b = OtaBoot(_read, (lambda a, p, s, m: True), _mnt, (lambda o, m: None),
-             %d, %d, %d, 0, _T, 0x7fffffff)
+             %d, %d, %d, 0, _R, 0x7fffffff)
 print("SLOTS", [s[0] for s in _b._slots()], "SIZES", [s[2] for s in _b._slots()])
 try:
     slot, tr, reason = _b.run()
@@ -254,7 +270,7 @@ try:
     print("SINGLE SLOT", slot, "REASON", reason, "MARKER", mk)
 except Exception as e:
     print("SINGLE NOSLOT", e)
-''' % (part, part, BLOCK)                    # front == part -> SINGLE
+''' % (ROOT_KEYS_PY, part, part, BLOCK)       # front == part -> SINGLE
     return BOOT_PY.read_text() + "\n" + runner
 
 
@@ -274,12 +290,12 @@ def _mnt(body):
 def _wm(off, marker):
     if vfs.rom_ioctl(4, 0, off, marker) < 0: raise OSError("write failed")
     if _read(off, len(marker)) != marker: raise OSError("verify failed")
-_T = {0x100: binascii.unhexlify("04" + "00" * 64)}
+_R = %s
 slot, tr, reason = OtaBoot(_read, (lambda a, p, s, m: True), _mnt, _wm,
-                          %d, %d, %d, 0, _T, 0x7fffffff).run()
+                          %d, %d, %d, 0, _R, 0x7fffffff).run()
 mk = open("/rom/slot_marker.txt").read().strip()
 print("SLOT", slot, "REASON", reason, "MARKER", mk)
-''' % (part, front, BLOCK)
+''' % (ROOT_KEYS_PY, part, front, BLOCK)
     return BOOT_PY.read_text() + "\n" + runner
 
 
@@ -302,7 +318,7 @@ def _runtime_partition(part: int, front: int) -> bytes:
     (src / "system.json").write_text('{"board": "qemu", "app_version": "1.2.3"}')
     (src / "_ota_config.py").write_text(
         "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nCONTROL_BLOCK=%d\n"
-        "PRODUCT_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
+        "PRODUCT_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\nROOT_KEYS={}\n" % (part, front, BLOCK))
     body = build_image(str(src))
     shutil.rmtree(src, ignore_errors=True)
     img = bytearray(b"\xff" * part)
@@ -382,7 +398,7 @@ def _installer_partition(fw: Path, part: int, front: int) -> bytes:
     (src / "logging.py").write_text(logging_lib.read_text())
     (src / "_ota_config.py").write_text(
         "PARTITION_SIZE=%d\nFRONT_SIZE=%d\nCONTROL_BLOCK=%d\n"
-        "PRODUCT_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\n" % (part, front, BLOCK))
+        "PRODUCT_ID=0\nPLATFORM_VERSION=0\nTRUSTED_KEYS={}\nROOT_KEYS={}\n" % (part, front, BLOCK))
     body = build_image(str(src))
     shutil.rmtree(src, ignore_errors=True)
     img = bytearray(b"\xff" * part)

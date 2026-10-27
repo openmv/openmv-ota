@@ -6,6 +6,75 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Trailer v4 and signing-key certificates.** A camera now embeds only two **root** public
+  keys (`keys/root_keys.json`, `ROOT_KEYS` in the firmware); every signing key reaches it as a
+  160-byte certificate in the image trailer, signed by a root (`openmv_ota.ota.certificate`:
+  kind, root id, epoch, P-256 key). `boot.py` verifies the certificate, then the image. The
+  trailer header is a new 96-byte layout with a **component table** (blobs the boot stub
+  installs to flash addresses, each with its own hash) and the stub's UART/watchdog settings;
+  `pad_size`, `min_platform_version`, `key_id` and `sig_alg` are gone from it, the latter two
+  now coming from the certificate. `new --ota` mints the roots and certifies every key;
+  `build verify` takes `--root-keys`; `inspect` prints the certificate and components.
+  A clean break: v3 images and firmware do not interoperate with v4. Certified keys are
+  P-256 only.
+- **OTA images carry the firmware.** On a board with a boot-stub layout in the board table
+  (the N6 first: firmware at `0x70090000`, 3516 KiB), `build romfs` and `build factory-romfs`
+  append the firmware `build firmware` produced -- raw LZMA1, 256 KiB dictionary -- after the
+  filesystem and list it as a trailer component; `build firmware` relinks the firmware at the
+  stub's destination through the board overlay. A component entry (80 bytes) carries two
+  hashes: of the compressed blob (what may reach the decoder) and of the installed bytes (the
+  signed digest the stub checks the decoder's output against, and what its install record
+  names). `build verify` checks every component's bytes and that each decompresses to its
+  installed size and hash; `partition.slots()` returns the whole body region of a slot.
+- **`boot.py` follows the boot stub's install record.** On a board with a stub the firmware
+  stamps `STUB_RECORD_ADDR` (the sector after the install window); `boot.py` reads the record
+  the stub wrote there (`openmv_ota.ota.install_record`: stub version, slot, reason, and per
+  component its destination, installed size and installed hash) and mounts the slot it names
+  without burning an attempt --
+  the stub did, before it installed. A record that is missing, erased, torn, or names other
+  components than the slot's trailer lists is ignored and the slot choice runs as before.
+- **The certificate-epoch floor.** The status sector's tail now holds two floor regions:
+  the anti-rollback floor's entries (64; 29 on a stride-32 board, so both regions fit a 4 KiB
+  sector), then the certificate-epoch floor's. `confirm()` raises
+  the epoch floor to the running image's signing-key epoch, the installer carries it into every
+  slot it writes, the factory image seeds it, and `boot.py` rejects a slot whose certificate is
+  below the highest epoch across the slots (`epoch`): a retired signing key stays refused once
+  a release that retired it has been kept.
+- **The boot stub, and `build stub`.** `src/openmv_ota/build/device/stub/` is the C loader
+  that sits at the firmware address on a stub board (the N6 first): its own Makefile and
+  linker script per board, built against the HAL/CMSIS in the project's firmware checkout,
+  with the LZMA decoder (LZMA SDK), P-256 (p256-m) and SHA-256 vendored beside it. It verifies
+  both slots (root key -> certificate -> image signature -> component hashes), picks a slot
+  the way `boot.py` would, installs the components into the firmware area when the install
+  record does not already vouch for them, writes the record and jumps; the trailer's UART
+  and watchdog fields pick its debug output and the watchdog it arms. `build stub` bakes the
+  project's root keys, product id and attempt budget into it and emits `<board>-stub.bin`.
+  Bench-verified on the N6: trial install (~4 s for a 2.2 MB firmware), confirm, fast path,
+  revert + reinstall after a failed trial, and 14 resets at random points mid-install without
+  a brick. The trailer's UART and watchdog fields are filled from the project's `openmv_log`
+  (`ENABLED`, `UART`, `BAUD`) and `openmv_wdt` (new `STUB_WDT_ID`, `STUB_TIMEOUT_MS`).
+- **Provisioning a stub board.** `build firmware` on a board with a stub layout also builds the
+  stub (`<board>-stub.bin`, beside `<board>-firmware.bin`); `flash firmware` and `flash factory`
+  write the two as one image -- `stub || 0xFF || firmware`, composed into
+  `<board>-firmware-with-stub.bin` -- to the FIRMWARE partition, since the firmware is linked to
+  run behind the stub and neither is flashable alone. The board table's stub layout gains
+  `origin`, the stub's own address.
+- **OpenMV Cam H7 OTA firmware drops two more methods.** The v4 `boot.py` (certificates,
+  the install record, the epoch floor) and the embedded root keys grew the H7's OTA firmware
+  past its 1664 KB code region by 2 KB; the board overlay now also turns off
+  `find_displacement()` and `find_lbp()` (the smallest self-contained features), and
+  `build romfs` refuses an app that calls them, as for `find_barcodes()`/`find_datamatrices()`.
+- **The check-in names the boot stub.** `openmv_ota.status()` and the check-in body carry
+  `stub: {version, reason}` from the install record `boot.py` followed (None without a stub),
+  so the server can see which stubs the fleet runs before a release raises `min_stub`.
+- **`boot.py` follows a stub record past its own mark policy.** A record naming a slot that
+  verifies (signature, certificate, board, body hash) is followed even when this firmware's
+  attempt budget, floors or pending/confirmed marks would refuse the slot: the stub applied
+  its policy when it installed, and mounting the other slot's app over the installed firmware
+  is the one outcome the record exists to prevent.
+
 ### Added
 
 - **The rollout and release pages' answers, from the API.** `GET /rollouts/{id}/devices`

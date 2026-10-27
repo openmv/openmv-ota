@@ -39,6 +39,8 @@ H7_BOARD = (      # a classic: ROMFS in ONE internal-flash sector (partition == 
 )
 N6_BOARD = (
     '#define OMV_BOARD_TYPE "N6"\n'
+    "#define OMV_FLASH_TXT_ORIGIN                0x70080000\n"   # the OTA build relinks these
+    "#define OMV_FLASH_TXT_LENGTH                3584K\n"        # for the boot stub
     "#define OMV_ROMFS_PART0_ORIGIN 0x70800000\n"
     "#define OMV_ROMFS_PART0_LENGTH 0x01800000\n"
 )
@@ -126,12 +128,15 @@ def make_firmware(tmp_path):
             d.mkdir(parents=True)
             (d / "board_config.h").write_text(content)
             (d / "board_config.mk").write_text(
-                "PORT=%s\n" % ("alif" if board == "OPENMV_AE3" else "stm32"))
+                "PORT=%s\n" % ("alif" if board == "OPENMV_AE3" else "stm32")
+                + ("OMV_FIRM_BASE=0x70000000\nOMV_FIRM_ADDR=0x70080000\n"
+                   if board == "OPENMV_N6" else ""))
             if board == "OPENMV4":       # the features an OTA build turns off live here
                 (d / "imlib_config.h").write_text(
                     "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"
                     "#define IMLIB_ENABLE_QRCODES\n#define IMLIB_ENABLE_DATAMATRICES\n"
-                    "#define IMLIB_ENABLE_BARCODES\n#endif\n")
+                    "#define IMLIB_ENABLE_BARCODES\n#define IMLIB_ENABLE_FIND_DISPLACEMENT\n"
+                    "#define IMLIB_ENABLE_FIND_LBP\n#endif\n")
         if with_mpy_cross:
             mc = repo / "lib" / "micropython" / "mpy-cross" / "build"
             mc.mkdir(parents=True)

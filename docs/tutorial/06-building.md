@@ -25,7 +25,10 @@ For a **non-OTA** project the output is the ROMFS body,
 partition as a plain `<board>-coprocessor-romfs.img`, and an OTA build nests that
 image inside the main one for
 [`openmv_ota.sync()`](04-ota-projects.md#multi-core-boards-a-coprocessor-partition)
-to apply on-device.
+to apply on-device. On a board with a boot stub (the N6) an OTA image also carries
+the firmware its stub installs, taken from `build/<board>-firmware.bin`, so run
+[`build firmware`](07-factory-and-firmware.md) first; `build romfs` refuses to sign
+without it.
 
 Every image carries the generated, read-only
 [`/rom/system.json`](02-projects.md#systemjson-generated-read-only) — identity and
@@ -36,9 +39,10 @@ otherwise; the build summary reports usage against whichever bound applies.
 The app source defaults to `<project>/app`; pass `--app` for another directory.
 
 An OTA project's app is also checked against what its board's OTA firmware carries: on
-the OpenMV Cam H7 the OTA firmware has no `find_barcodes()` or `find_datamatrices()`
+the OpenMV Cam H7 the OTA firmware has no `find_barcodes()`, `find_datamatrices()`,
+`find_displacement()` or `find_lbp()`
 ([Factory & firmware](07-factory-and-firmware.md#build-firmware)), so an app that calls
-either is refused here, with the file and line, instead of raising on the camera the
+any of them is refused here, with the file and line, instead of raising on the camera the
 first time a frame reaches that call. A mention in a comment or a string is not a call.
 
 The pegged firmware checkout must match the lock and be clean. The app is

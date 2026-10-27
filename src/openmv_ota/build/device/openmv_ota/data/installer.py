@@ -126,12 +126,14 @@ def _set_stride(stride):
     """Space control records ``stride`` apart and pad each write to it -- on ECC-word
     flash (H7-classic internal: 32) every record owns one one-shot flash word.
     Mirrors boot._set_stride; contents never change, only spacing + write width."""
-    global _STRIDE, _REPR_OFF, _COUNTER_OFF, _ROLLBACK_STRIDE, _FLOOR_OFF
+    global _STRIDE, _REPR_OFF, _COUNTER_OFF, _ROLLBACK_STRIDE, _FLOOR_OFF, _EPOCH_OFF
     _STRIDE = stride
     _REPR_OFF = 3 * stride
     _COUNTER_OFF = 4 * stride
     _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
     _FLOOR_OFF = 5 * stride + 64 * max(16, stride)   # the floor region: past the attempt region
+    entries = min(64, (4096 - _FLOOR_OFF) // (2 * _ROLLBACK_STRIDE))  # two regions must fit
+    _EPOCH_OFF = _FLOOR_OFF + entries * _ROLLBACK_STRIDE  # the epoch floor's region, after it
 
 
 def _pad(record):
@@ -589,10 +591,13 @@ _MANIFEST_HEADER_SIZE = struct.calcsize(_MANIFEST_HEADER_STRUCT)   # 24
 _MANIFEST_MAX = 8192
 # COSE alg id -> raw R||S signature length (mirror of openmv_ota.ota.algorithms / boot.py).
 _ALG_SIG_SIZE = {-7: 64, -35: 96, -36: 132}
-# Image trailer header (mirror of openmv_ota.ota.trailer) -- only payload_version is read.
+# Image trailer header (mirror of openmv_ota.ota.trailer v4) -- only payload_version and
+# body_sha256 are read here.
 _TRAILER_MAGIC = b"OMVR"
-# header v3: product_id, publish_seq and reserved0 are the three 64-bit fields at 24/32/40
-_TRAILER_HEADER_STRUCT = "<4sIIIIIQQQIIIi32s"
+# framing | versions | stub resources | identity (three u64 at 40/48/56) | body_sha256 at 64
+_TRAILER_HEADER_STRUCT = "<4sIIIIIIBBBBIIQQQ32s"
+_TRAILER_PAYLOAD_VERSION = 6                      # field index of payload_version
+_TRAILER_BODY_SHA = 16                            # field index of body_sha256 (the last field)
 
 
 def _manifest_parse(data):
@@ -684,7 +689,7 @@ def _trailer_version(trailer):
     fields = struct.unpack_from(_TRAILER_HEADER_STRUCT, trailer, 0)
     if fields[0] != _TRAILER_MAGIC:
         return 0
-    return fields[10]                             # payload_version (11th header field)
+    return fields[_TRAILER_PAYLOAD_VERSION]
 
 
 def _trailer_body_sha(trailer):
@@ -697,13 +702,14 @@ def _trailer_body_sha(trailer):
     fields = struct.unpack_from(_TRAILER_HEADER_STRUCT, trailer, 0)
     if fields[0] != _TRAILER_MAGIC:
         return ""
-    return binascii.hexlify(fields[13]).decode()  # body_sha256 (last header field)
+    return binascii.hexlify(fields[_TRAILER_BODY_SHA]).decode()
 
 
 # --- pure: A/B slot arithmetic (mirror of boot.py; pinned by a test) ---------
 
 _ROLLBACK_ENTRY = 16                              # u64 key || u64 ~key
 _FLOOR_OFF = 80 + 64 * 16                         # floor entries: the status sector's tail
+_EPOCH_OFF = _FLOOR_OFF + 64 * 16                 # certificate-epoch floor entries, after them
 _ROLLBACK_STRIDE = 16                             # entry spacing; stride-sized on ECC flash
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 _COUNTER_OFF = 64                                 # within the status sector
@@ -1085,7 +1091,7 @@ def _fill(source, mv, want, feed):
 
 def _install_stream(source, write, readback, slot_size, block, feed,
                     progress=None, expect_sha=None, repr_marker=None, gc_collect=None,
-                    work=None, counter=None, floor=0, primed=0):
+                    work=None, counter=None, floor=0, primed=0, epoch=0):
     """Stream the decompressed image into the ALREADY-ERASED TARGET slot 1:1
     (verifying every write by read-back, skipping already-erased 0xFF runs), then
     arm the trial.
@@ -1094,6 +1100,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     partition offset, so this function is identical for slot A, slot B and SINGLE mode.
     ``counter`` is the install counter to stamp (what makes this slot the newest) and ``floor``
     the anti-rollback floor to carry forward into it -- see the arm sequence at the bottom.
+    ``epoch`` is the certificate-epoch floor, carried the same way into its own region.
 
     The caller MUST erase the target slot BEFORE calling this AND, for a download, before
     opening the stream ``source`` draws from -- so the download socket is never left idle
@@ -1143,6 +1150,14 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         if readback(floor_at, len(entry)) != entry:
             raise OSError("carried floor verify failed")
         log.debug("install: floor carried")           # HIL path witness (every install, pre-download)
+    if epoch:
+        # The certificate-epoch floor, carried for the same reason into its own region.
+        entry = _rollback_entry(epoch)
+        epoch_at = slot_size - 2 * block + _EPOCH_OFF
+        write(epoch_at, _pad(entry))
+        if readback(epoch_at, len(entry)) != entry:
+            raise OSError("carried epoch verify failed")
+        log.debug("install: epoch carried")           # HIL path witness (installs on a certified fleet)
 
     # ENTER THE WRITE LOOP ON A FULL WINDOW. The two allocations below -- the sha256 state and the
     # 4 KiB write buffer -- can each trigger an AUTOMATIC collect, and on the N6's multi-MB heap any
@@ -2114,17 +2129,19 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     # depends on which slot happens to be running.
     slots = _slot_table(cfg.PARTITION_SIZE, cfg.FRONT_SIZE)
     running = getattr(cfg, "last_slot", None)         # set by boot.py when it mounted a slot
-    counters, floors, versions, offsets, shas = {}, {}, {}, {}, {}
+    counters, floors, epochs, versions, offsets, shas = {}, {}, {}, {}, {}, {}
     for _name, _off, _size in slots:
-        _st = read_at(_off + _size - 2 * block, block)   # the status sector: counter + floor
+        _st = read_at(_off + _size - 2 * block, block)   # the status sector: counter + floors
         counters[_name] = _install_counter(_st)
-        floors[_name] = _rollback_floor_of(_st[_FLOOR_OFF:])
+        floors[_name] = _rollback_floor_of(_st[_FLOOR_OFF:_EPOCH_OFF])
+        epochs[_name] = _rollback_floor_of(_st[_EPOCH_OFF:])
         _tr = read_at(_off + _size - block, block)
         versions[_name] = _trailer_version(_tr)
         shas[_name] = _trailer_body_sha(_tr)          # names the slot's exact bytes (one field)
         offsets[_name] = _off
         log.debug("install: slot surveyed")            # bounded: once per slot (at most twice)
     floor = max(floors.values())                      # the floor is the MAX across slots...
+    epoch = max(epochs.values())                      # (and so is the certificate-epoch floor)
     base_off = offsets.get(running, 0)                # ...and the delta base is the running slot
     base_version = versions.get(running, 0)
     base_body_sha = shas.get(running, "")
@@ -2326,7 +2343,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
             log.info("install: writing %s" % target)
             _install_stream(source, write, readback, slot_size, block, feed,
                             progress, expect_sha, repr_marker, gc_collect, work,
-                            counter=counter, floor=floor, primed=primed)
+                            counter=counter, floor=floor, primed=primed, epoch=epoch)
             # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
             # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
             # ports cache the final sub-page writes -- the trailer + arm markers -- and

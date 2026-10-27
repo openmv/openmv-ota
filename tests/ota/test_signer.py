@@ -177,14 +177,21 @@ class _FakeProvisioner:
 
     def provision(self, key_id, role, alg):
         self.calls.append((key_id, role))
-        return "04%02x" % (key_id & 0xFF), {"backend": "pkcs11", "object_label": "%s-%04x" % (role, key_id)}
+        pub = public_point_hex(generate_private_key(alg).public_key())   # a real point: it gets certified
+        return pub, {"backend": "pkcs11", "object_label": "%s-%04x" % (role, key_id)}
 
 
 def test_provision_external_key_set():
+    from openmv_ota.ota import certificate as cert_mod
     from openmv_ota.ota.keys import FACTORY_KEY_ID_BASE, OTA_KEY_ID_BASE
     from openmv_ota.ota.signer import provision_external_key_set
     fake = _FakeProvisioner()
-    trusted, records, signing = provision_external_key_set(ALG, 2, 3, fake)
+    root = generate_private_key(ALG)
+    trusted, records, signing = provision_external_key_set(ALG, 2, 3, fake, root, 1)
+    roots = {1: bytes.fromhex(public_point_hex(root.public_key()))}
+    for k in trusted:                       # every external key certified by the local root
+        c = cert_mod.verify(bytes.fromhex(k.cert), roots)
+        assert c.pubkey.hex() == k.pubkey and c.root_id == 1
     assert [k.role for k in trusted] == ["factory", "factory", "ota", "ota", "ota"]
     assert [k.key_id for k in trusted] == [
         FACTORY_KEY_ID_BASE, FACTORY_KEY_ID_BASE + 1,

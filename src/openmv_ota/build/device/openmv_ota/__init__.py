@@ -113,7 +113,7 @@ def _set_stride(stride):
     like the H7-classic's internal romfs, where each record owns one one-shot flash
     word). Mirrors boot._set_stride; record contents never change."""
     global _TRIED_OFF, _CONFIRMED_OFF, _REPR_OFF, _STATUS_READ, _COUNTER_OFF
-    global _SLOT_READ, _ROLLBACK_STRIDE, _FLOOR_OFF
+    global _SLOT_READ, _ROLLBACK_STRIDE, _FLOOR_OFF, _EPOCH_OFF
     _TRIED_OFF = stride
     _CONFIRMED_OFF = 2 * stride
     _REPR_OFF = 3 * stride
@@ -122,6 +122,8 @@ def _set_stride(stride):
     _SLOT_READ = _COUNTER_OFF + _COUNTER_LEN
     _ROLLBACK_STRIDE = max(_ROLLBACK_ENTRY, stride)
     _FLOOR_OFF = 5 * stride + 64 * max(16, stride)   # the floor region: past the attempt region
+    entries = min(64, (4096 - _FLOOR_OFF) // (2 * _ROLLBACK_STRIDE))  # two regions must fit
+    _EPOCH_OFF = _FLOOR_OFF + entries * _ROLLBACK_STRIDE  # the epoch floor's: right after it
 
 
 def _use_cfg_stride(cfg):
@@ -158,11 +160,11 @@ _SLOT_READ = _COUNTER_OFF + _COUNTER_LEN         # markers + repr + counter
 # decision -- the sha lets the fleet see which exact BYTES each slot holds (the operator's
 # answer to "which delta bases must this release cover?").
 _TRAILER_MAGIC = b"OMVR"
-_TRAILER_VERSION_OFF = 52                        # payload_version (pinned by a test)
-# Header version 3 put three 64-bit fields together at 24/32/40 -- product_id, the
-# account's publish_seq and the reserved word -- so everything from min_platform_version
-# on sits sixteen bytes later than it did, and the header is 96 rather than 80.
-_TRAILER_SHA_OFF = 64                            # body_sha256, 32 raw bytes (pinned by a test)
+# Header version 4: framing (magic, version, body_size, comp_count, meta_size), then the
+# versions (min_stub, payload_version), the stub's resources, the three 64-bit identity
+# fields at 40/48/56, and body_sha256 at 64 (openmv_ota.ota.trailer; pinned by a test).
+_TRAILER_VERSION_OFF = 24                        # payload_version
+_TRAILER_SHA_OFF = 64                            # body_sha256, 32 raw bytes
 _TRAILER_READ = _TRAILER_SHA_OFF + 32
 
 
@@ -205,6 +207,7 @@ _ROLLBACK_ENTRY = 16                              # u64 key || u64 ~key
 _ROLLBACK_STRIDE = 16
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 _FLOOR_OFF = 80 + 64 * 16                         # floor entries: the status sector's tail
+_EPOCH_OFF = _FLOOR_OFF + 64 * 16                 # certificate-epoch floor entries, after them
 
 
 def _rollback_entry(key):
@@ -463,8 +466,20 @@ def status():  # pragma: no cover
     s["publish_seq"] = int(getattr(_ota_config, "last_publish_seq", 0) or 0)
     s["orders_by_seq"] = _ota_config.PRODUCT_ID == 0
     s["representation"] = _representation_of(sector)
+    s["stub"] = _stub_state(_ota_config)
     log.debug("status: read")                         # HIL path witness (runs every boot/checkin)
     return s  # hil-residual: bare return of the status dict
+
+
+def _stub_state(cfg):
+    """The boot stub that chose this boot, from the install record boot.py read
+    (``cfg.last_stub = (stub_version, reason)``): ``{"version", "reason"}``, or None on a board
+    without a stub or when no record was followed. The fleet carries mixed stub versions
+    forever, so the server needs this to know which releases (``min_stub``) a camera can take."""
+    last = getattr(cfg, "last_stub", None)
+    if not last:
+        return None
+    return {"version": int(last[0]), "reason": int(last[1])}
 
 
 def _slot_names(cfg):
@@ -925,6 +940,10 @@ def _checkin_body(info, st, slot_states=None):
         # What the SDK on this camera will do (its firmware's level). The server knows the
         # board's level from its name; this says what the firmware was actually built with.
         "cloud_level": cloud_level(),
+        # The boot stub that installed and chose the running firmware (stub boards): its version
+        # bounds the releases this camera can take (`min_stub`), and `reason` says why it
+        # installed. None where no stub chose (no stub, or no record followed).
+        "stub": st.get("stub"),
     }
 
 
@@ -1651,11 +1670,11 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
 # --- NETWORK RUNTIME: end ----------------------------------------------------
 
 
-def _advance_rollback(cfg, slot, key):  # pragma: no cover (device)
-    """Raise the anti-rollback floor to ``key`` by appending it to the RUNNING slot's
-    rollback sector (a 1->0 program, no erase). A no-op if the floor already covers
-    ``version`` or the log is full (the floor then stays frozen at its max -- still
-    protective).
+def _advance_rollback(cfg, slot, key, start=None, end=None):  # pragma: no cover (device)
+    """Raise a floor to ``key`` by appending it to the RUNNING slot's floor region (a 1->0
+    program, no erase): the anti-rollback floor's region by default, or ``start..end`` within
+    the status sector (the epoch floor's). A no-op if the floor already covers ``key`` or the
+    region is full (the floor then stays frozen at its max -- still protective).
 
     Under A/B every slot is erased in turn, so the floor is written into the slot being
     confirmed and boot.py reads the max across slots; the installer carries the floor forward
@@ -1667,14 +1686,15 @@ def _advance_rollback(cfg, slot, key):  # pragma: no cover (device)
     soff, size = _slot_bounds(cfg, slot)
     off = soff + size - 2 * cfg.CONTROL_BLOCK            # this slot's status sector (absolute)
     sector = uctypes.bytearray_at(base + off, cfg.CONTROL_BLOCK)
-    region = sector[_FLOOR_OFF:]
+    start = _FLOOR_OFF if start is None else start
+    region = sector[start:_EPOCH_OFF if end is None else end]
     if _rollback_floor_of(region) >= key:
         return  # hil-residual: bare early return (nothing to advance)
     pos = _rollback_append_offset(region)
     if pos is None:
         return  # hil-residual: bare early return (floor already current)
     pad = _ROLLBACK_STRIDE - _ROLLBACK_ENTRY
-    _write_verified(0, off + _FLOOR_OFF + pos, _rollback_entry(key) + b"\xff" * pad)
+    _write_verified(0, off + start + pos, _rollback_entry(key) + b"\xff" * pad)
     log.debug("confirm: floor advanced")             # HIL path witness (the confirm write path)
 
 
@@ -1704,6 +1724,10 @@ def confirm():  # pragma: no cover
         _advance_rollback(_ota_config, slot,
                           getattr(_ota_config, "last_publish_seq", 0)
                           if _ota_config.PRODUCT_ID == 0 else version)
+        # ...and the certificate-epoch floor to the running image's signing key epoch, so a
+        # key retired by this release stays refused once the release is kept.
+        _advance_rollback(_ota_config, slot, getattr(_ota_config, "last_epoch", 0),
+                          _EPOCH_OFF, _ota_config.CONTROL_BLOCK)
         _write_verified(0, off + _CONFIRMED_OFF,
                         CONFIRMED + b"\xff" * (_TRIED_OFF - MARKER_SIZE))  # pad to the stride
         log.info("confirm: kept the running image (slot %s)" % slot)

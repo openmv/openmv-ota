@@ -20,7 +20,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from .algorithms import AlgSpec
+from .algorithms import AlgSpec, algorithm_for
 from .errors import OtaError
 
 # cryptography curve objects per COSE/mbedtls curve name (supported algs only).
@@ -107,16 +107,19 @@ class TrustedKey:
     pubkey: str         # uncompressed EC point, hex
     revoked: bool = False  # kept in the set (never deleted) but rejected; honored by
     #                        the firmware build's device reject-list and the host signer
+    cert: str = ""      # the key's certificate (openmv_ota.ota.certificate), hex: what the
+    #                     trailer carries so a camera that embeds only the roots trusts this key
 
     def to_dict(self) -> dict:
         return {"key_id": self.key_id, "alg": self.alg, "role": self.role,
-                "pubkey": self.pubkey, "revoked": self.revoked}
+                "pubkey": self.pubkey, "revoked": self.revoked, "cert": self.cert}
 
     @classmethod
     def from_dict(cls, d: dict) -> "TrustedKey":
         return cls(
             key_id=int(d["key_id"]), alg=int(d["alg"]), role=str(d["role"]),
             pubkey=str(d["pubkey"]), revoked=bool(d.get("revoked", False)),
+            cert=str(d.get("cert", "")),
         )
 
 
@@ -137,6 +140,72 @@ def write_trusted_keys(path: Path, keys: list[TrustedKey]) -> None:
     Path(path).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
+# --- root keys ----------------------------------------------------------------
+
+ROOT_KEYS_NAME = "root_keys.json"
+ROOT_KEYS_SCHEMA = 1
+ROOT_COUNT = 2            # a primary (0) and a backup (1); the camera embeds both
+
+
+@dataclass
+class RootKey:
+    """One root public key: what the camera (its boot stub and firmware) embeds. Roots sign
+    certificates and nothing else; the private half stays offline."""
+
+    root_id: int
+    alg: int            # COSE algorithm id (ES256: certificates carry P-256 keys only)
+    pubkey: str         # uncompressed EC point, hex
+
+    def to_dict(self) -> dict:
+        return {"root_id": self.root_id, "alg": self.alg, "pubkey": self.pubkey}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RootKey":
+        return cls(root_id=int(d["root_id"]), alg=int(d["alg"]), pubkey=str(d["pubkey"]))
+
+
+def read_root_keys(path: Path) -> list[RootKey]:
+    """Load the root-key set, or raise ``OtaError`` if it is missing/corrupt."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError:
+        raise OtaError("no %s found" % ROOT_KEYS_NAME) from None
+    except json.JSONDecodeError as e:
+        raise OtaError("%s is not valid JSON: %s" % (ROOT_KEYS_NAME, e)) from None
+    return [RootKey.from_dict(k) for k in data.get("roots", [])]
+
+
+def write_root_keys(path: Path, roots: list[RootKey]) -> None:
+    """Write the root-key set (committed, public)."""
+    doc = {"schema": ROOT_KEYS_SCHEMA, "roots": [r.to_dict() for r in roots]}
+    Path(path).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+def root_keys_map(roots: list[RootKey]) -> dict[int, bytes]:
+    """``{root_id: raw public point}`` -- the shape the camera embeds and
+    :func:`certificate.verify` takes."""
+    return {r.root_id: bytes.fromhex(r.pubkey) for r in roots}
+
+
+def root_pem_name(root_id: int) -> str:
+    return "root-%d.pem" % root_id
+
+
+def certify(root_private_key, root_id: int, keys: list[TrustedKey], *, epoch: int = 0) -> None:
+    """Issue a certificate for every key in ``keys`` (in place): ``role`` picks the
+    certificate's kind, so a factory key can never sign a release and an OTA key can never
+    open a camera's key-provisioning window."""
+    from . import certificate as certificate_mod
+
+    kinds = {"ota": certificate_mod.KIND_OTA, "factory": certificate_mod.KIND_FACTORY}
+    for k in keys:
+        if k.role not in kinds:
+            raise OtaError("no certificate kind for a %r key" % k.role)
+        c = certificate_mod.issue(root_private_key, root_id, kinds[k.role], epoch,
+                                  bytes.fromhex(k.pubkey))
+        k.cert = certificate_mod.pack(c).hex()
+
+
 # --- provisioning -----------------------------------------------------------
 
 # key_id ranges, well-separated so role pools don't collide at realistic counts.
@@ -146,17 +215,42 @@ OTA_KEY_ID_BASE = 0x0100
 
 @dataclass
 class ProvisionedKeys:
-    """A freshly provisioned key set: public entries + their private PEMs."""
+    """A freshly provisioned key set: public entries + their private PEMs, and the roots
+    that certified them."""
 
-    trusted: list[TrustedKey]       # public set -> keys/trusted_keys.json
+    trusted: list[TrustedKey]       # public set -> keys/trusted_keys.json (each with its cert)
     private_pems: dict[int, bytes]  # key_id -> PKCS#8 PEM (secured, gitignored)
     signing_key_id: int             # the current OTA signer (first ota key)
+    roots: list[RootKey] = None     # public roots -> keys/root_keys.json
+    root_pems: dict[int, bytes] = None  # root_id -> PKCS#8 PEM (keep OFFLINE)
+
+
+def provision_roots(passphrase: str) -> tuple[list[RootKey], dict[int, bytes]]:
+    """Mint the :data:`ROOT_COUNT` roots (P-256): the public set and the encrypted PEMs."""
+    from .algorithms import ES256
+
+    spec = algorithm_for(ES256)
+    roots, pems = [], {}
+    for root_id in range(ROOT_COUNT):
+        priv = generate_private_key(spec)
+        roots.append(RootKey(root_id, ES256, public_point_hex(priv.public_key())))
+        pems[root_id] = private_key_pem(priv, passphrase)
+    return roots, pems
+
+
+def _certify_with(root_pems: dict[int, bytes], passphrase: str, keys: list[TrustedKey]) -> None:
+    certify(load_private_key_pem(root_pems[0], passphrase), 0, keys)
 
 
 def provision_key_set(alg: AlgSpec, n_factory: int, n_ota: int, passphrase: str) -> ProvisionedKeys:
-    """Generate the whole key set for a new OTA project: ``n_factory`` factory keys
-    + an ``n_ota`` OTA rotation pool, all on ``alg``'s curve. Private PEMs are encrypted
-    under ``passphrase``. The device trusts the public set; the current signer is the first OTA key."""
+    """Generate the whole key set for a new OTA project: two roots, then ``n_factory`` factory
+    keys + an ``n_ota`` OTA rotation pool, each certified by root 0. Private PEMs are encrypted
+    under ``passphrase``. The device embeds the roots; the current signer is the first OTA key.
+    Certified keys are P-256, so ``alg`` must be ES256."""
+    from .algorithms import ES256
+
+    if alg.cose_id != ES256:
+        raise OtaError("certificates carry P-256 keys only: the signing algorithm must be ES256")
     trusted: list[TrustedKey] = []
     private_pems: dict[int, bytes] = {}
 
@@ -172,4 +266,6 @@ def provision_key_set(alg: AlgSpec, n_factory: int, n_ota: int, passphrase: str)
     for i in range(n_ota):
         _mint(OTA_KEY_ID_BASE + i, "ota")
 
-    return ProvisionedKeys(trusted, private_pems, OTA_KEY_ID_BASE)
+    roots, root_pems = provision_roots(passphrase)
+    _certify_with(root_pems, passphrase, trusted)
+    return ProvisionedKeys(trusted, private_pems, OTA_KEY_ID_BASE, roots, root_pems)

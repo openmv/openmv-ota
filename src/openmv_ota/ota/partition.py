@@ -49,14 +49,15 @@ def slots(image: bytes, step: int = SCAN_STEP) -> list[tuple[str, bytes, bytes]]
     """Each slot as ``(label, body, trailer_bytes)``. Empty when the image carries
     no trailer (a plain, unsigned romfs).
 
-    A slot's body is the ``body_size`` bytes at its start; the next slot begins
-    after this slot's trailer block (``len(image) - last_trailer_offset``)."""
+    A slot's body is everything from its start up to its status sector -- the filesystem
+    image, then the components the trailer lists (and the 0xFF between them and the control
+    sectors); the next slot begins after this slot's trailer block."""
     found = find_trailers(image, step)
     if not found:
         return []
     block = len(image) - found[-1][0]   # the last trailer fills the last erase block
     out, start = [], 0
-    for (off, t), label in zip(found, slot_labels(len(found)), strict=True):
-        out.append((label, bytes(image[start:start + t.body_size]), bytes(image[off:])))
+    for (off, _t), label in zip(found, slot_labels(len(found)), strict=True):
+        out.append((label, bytes(image[start:off - block]), bytes(image[off:])))
         start = off + block
     return out

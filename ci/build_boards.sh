@@ -204,6 +204,7 @@ do_full() {  # board  work
     expect_file "hosted-cloud roots scaffolded (certs/root.pem)" "$proj/certs/root.pem"
   fi
   keys="$proj/keys/trusted_keys.json"
+  roots="$proj/keys/root_keys.json"   # v4 images verify against the ROOT keys (certificates)
 
   # The SBOM renders from the committed lock alone -- prove that against the REAL
   # lock this project just resolved (the CI CVE-scan step consumes this file).
@@ -219,7 +220,7 @@ do_full() {  # board  work
   [ -f "$zip" ] || return 0
 
   expect_success "build inspect decodes the bundle" $OTA build inspect "$zip"
-  expect_success "build verify (bundle)" $OTA build verify "$zip" --trusted-keys "$keys"
+  expect_success "build verify (bundle)" $OTA build verify "$zip" --root-keys "$roots"
 
   # Multi-core boards (e.g. AE3) also build a plain coprocessor romfs from
   # app-coprocessor/ for the slaved second core, alongside the main OTA bundle.
@@ -233,10 +234,12 @@ do_full() {  # board  work
   # minimal self-hosted HIL runners don't need the `unzip` binary installed.
   expect_success "unzip bundle -> romfs.img + trailer.bin" "$PY" -m zipfile -e "$zip" "$ud"
   expect_success "build verify (loose body + trailer)" \
-    $OTA build verify "$ud/romfs.img" "$ud/trailer.bin" --trusted-keys "$keys"
-  printf 'X' >> "$ud/romfs.img"   # append one byte: body no longer matches the trailer
+    $OTA build verify "$ud/romfs.img" "$ud/trailer.bin" --root-keys "$roots"
+  # Wreck the first 32 bytes of the filesystem: inside the signed body. (A byte APPENDED
+  # past the last component is padding under trailer v4 and verifies clean.)
+  dd if=/dev/zero of="$ud/romfs.img" bs=1 seek=0 count=32 conv=notrunc 2>/dev/null
   expect_verify_reject "build verify REJECTS a corrupted body (exit 1)" \
-    $OTA build verify "$ud/romfs.img" "$ud/trailer.bin" --trusted-keys "$keys"
+    $OTA build verify "$ud/romfs.img" "$ud/trailer.bin" --root-keys "$roots"
 
   rm -f "$cimg"   # so the next check proves factory-romfs regenerates it too
   # --no-account: CI burns a self-host golden on purpose (no [product].account_id).
@@ -249,11 +252,11 @@ do_full() {  # board  work
     # The factory image is signed too: inspect decodes both slots, verify checks both.
     expect_success "build inspect (factory FRONT+BACK)" $OTA build inspect "$img"
     expect_success "build verify (factory image, both slots)" \
-      $OTA build verify "$img" --trusted-keys "$keys"
+      $OTA build verify "$img" --root-keys "$roots"
     local fbad="$work/factory-corrupt.img"; cp "$img" "$fbad"
     dd if=/dev/zero of="$fbad" bs=1 seek=0 count=32 conv=notrunc 2>/dev/null  # wreck FRONT body
     expect_verify_reject "build verify REJECTS a corrupted factory slot (exit 1)" \
-      $OTA build verify "$fbad" --trusted-keys "$keys"
+      $OTA build verify "$fbad" --root-keys "$roots"
   fi
   # factory-romfs also emits the plain coprocessor image (it has no golden/trial form).
   if has_coprocessor "$proj" "$board"; then

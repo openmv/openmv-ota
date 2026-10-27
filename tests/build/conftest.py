@@ -6,6 +6,8 @@ import pytest
 
 NOW = "2026-01-01T00:00:00Z"
 
+FAKE_FIRMWARE = (bytes(range(256)) * 64 + b"\x00" * 4096 + b"OpenMV firmware " * 256)
+
 DEFAULT_APP = {
     "main.py": "print(1)\n",
     "lib/util.py": "U = 1\n",
@@ -48,6 +50,14 @@ def make_project(tmp_path, make_firmware, make_sdk):
             proj.sync_project(root, firmware=repo, sdk_home_override=home,
                               install_sdk=False, allow_dirty=True, now=NOW)
 
+        if ota:
+            # A board with a boot stub builds images that carry its firmware: what `build
+            # firmware` would have left in build/. Patterned, so it compresses like code does.
+            from openmv_ota.romfs.boards import get_board
+            for b in boards:
+                if get_board(b).stub is not None:
+                    (root / "build").mkdir(exist_ok=True)
+                    (root / "build" / ("%s-firmware.bin" % b)).write_bytes(FAKE_FIRMWARE)
         app = tmp_path / "appsrc"
         app.mkdir()
         files = dict(DEFAULT_APP if app_files is None else app_files)
@@ -69,3 +79,22 @@ def _fresh_cloud_level_caches():
     _lib._lvl, csi._cap = None, 0
     yield
     _lib._lvl, csi._cap = None, 0
+
+
+@pytest.fixture(autouse=True)
+def _fake_stub_make(request, monkeypatch):
+    """`build firmware` on a stub board also builds the boot stub (C, via make). No test here
+    has a cross toolchain: stand in for the stub's make with one that drops a stub.bin. The
+    tests about the stub build itself (test_stub.py) install their own fakes, or test the
+    real `_run_make` against a stubbed subprocess, so they are left alone."""
+    from pathlib import Path
+
+    from openmv_ota.build import stub as stub_mod
+    if request.node.path.name == "test_stub.py":
+        return
+
+    def fake(args):
+        kv = dict(a.split("=", 1) for a in args if "=" in a)
+        Path(kv["BUILD"]).mkdir(parents=True, exist_ok=True)
+        (Path(kv["BUILD"]) / "stub.bin").write_bytes(b"STUB" * 64)
+    monkeypatch.setattr(stub_mod, "_run_make", fake)

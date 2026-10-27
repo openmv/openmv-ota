@@ -41,16 +41,21 @@ context comes from the project:
   reachable server — see
   [Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter).
 - **Signed with the current OTA key.** The signer is `[ota].signing_key_id` from
-  `openmv-ota.toml`; the trailer records `key_id` + the COSE algorithm so the
-  device selects the matching trusted public key.
+  `openmv-ota.toml`; the trailer carries that key's root-signed certificate, which
+  is how the device comes to trust it.
+- **Carries the firmware.** On a board with a boot stub (the N6 first), the image is
+  the filesystem followed by the firmware `build firmware` left in `build/`,
+  LZMA-compressed and listed in the trailer as a component the stub installs
+  ([the trailer format](../reference/trailer.md#components)). Build the firmware
+  before the image; a release is what a camera runs, platform and app together.
 - **Identity + provenance stamped in.** `product_id` / `board_name` come from the
   `[targets.<BOARD>]` tables, versions and commits from the lock — exactly the
   `system.json` fields, and the trailer's metadata carries a **verbatim copy of
   `system.json`**, so host tools read an image's identity without mounting the
-  ROMFS. `min_platform_version` is the pegged firmware's version code.
+  ROMFS.
 
-Every field in the trailer's header and metadata is signed — `pad_size`
-included — and a trailing crc32 over the whole trailer catches plain corruption
+Every field in the trailer's header, components, certificate and metadata is
+signed, and a trailing crc32 over the whole trailer catches plain corruption
 before the slower signature check runs.
 
 A signing build fails (exit 1) on an incomplete signing context — a missing or
@@ -262,18 +267,18 @@ openmv-ota build verify build/OPENMV_N6-romfs.zip
 
 The host-side **authenticity + integrity** gate — the mirror of what the device's
 `boot.py` checks, for CI or pre-publish. It confirms the trailer parses, the
-signing `key_id` is trusted **and not revoked**, the algorithm matches, the
+signing key's **certificate chains to one of the project's roots**, the
 **signature verifies**, and the body matches the signed size + SHA-256. Exit 0 on
 success, 1 on a verification failure (with the reason), 2 on a bad argument. For
 a factory image every slot is verified and any failing slot fails the command
-(a two-slot image prints `A:` / `B:` prefixes). Trusted keys come from
+(a two-slot image prints `A:` / `B:` prefixes). The roots come from `--root-keys`
+(default `keys/root_keys.json`) and, for a manifest, the trusted keys from
 `--trusted-keys` (default `keys/trusted_keys.json`), so running from a project
 root just works.
 
 It deliberately does **not** check the device-relative fields — `product_id`
-against a device, `payload_version` against the installed image,
-`min_platform_version` against the running firmware — those need a device, and
-remain `boot.py`'s job.
+against a device, `payload_version` against the installed image — those need a
+device, and remain `boot.py`'s job.
 
 ## See also
 

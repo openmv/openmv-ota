@@ -4,15 +4,17 @@
 
 ---
 
-A camera trusts exactly the public keys baked into its firmware — nothing can be added
-later without re-flashing. That single fact shapes everything on this page: the whole
-key set is provisioned up front at `new --ota`, and `openmv-ota project keys` manages it
-for the product's life.
+A camera trusts exactly two **root** public keys baked into its firmware and its boot
+stub — nothing can replace them without re-flashing. Every key that signs an image is
+introduced to the camera by a **certificate** the root signed, carried in the image's
+[trailer](../reference/trailer.md#certificate). So `new --ota` mints the roots and a
+signing-key set, certifies every key, and `openmv-ota project keys` manages the set for
+the product's life. The root private keys sign certificates and nothing else; keep them
+offline.
 
 ## The key set
 
-The key set has two roles, generated on the curve `--sig-alg` selects (ES256 →
-P-256 by default; ES384/ES512 raise the curve and signature size):
+The signing keys have two roles, on P-256 (ES256 — certified keys carry no other curve):
 
 | Role | id range | Default count | Purpose |
 |---|---|---|---|
@@ -23,19 +25,33 @@ The two ranges are well-separated so the pools never collide at realistic counts
 The current signer is the first OTA key (`0x0100`), recorded as `signing_key_id`
 in `openmv-ota.toml`'s `[ota]` section
 ([OTA projects](04-ota-projects.md#files-an-ota-project-adds)).
-`build romfs` signs with that key, and a trailer records *which* key signed
-(`key_id`) so the device picks the matching public key.
+`build romfs` signs with that key and puts the key's certificate in the trailer, so
+the device chains it to a root rather than looking it up by id.
 
-`keys/trusted_keys.json` is the committed public set the firmware build will bake
-into its `TRUSTED_KEYS` table. Each entry is a key id, its COSE algorithm, its
-role, and the public key as an uncompressed EC point in hex:
+`keys/trusted_keys.json` is the committed signing-key set. Each entry is a key id, its
+COSE algorithm, its role, the public key as an uncompressed EC point in hex, and its
+certificate (160 bytes, hex) — the `kind` inside the certificate follows the role:
 
 ```json
 {
   "schema": 1,
   "keys": [
-    {"key_id": 1,   "alg": -7, "role": "factory", "pubkey": "04…"},
-    {"key_id": 256, "alg": -7, "role": "ota",     "pubkey": "04…"}
+    {"key_id": 1,   "alg": -7, "role": "factory", "pubkey": "04…", "revoked": false, "cert": "4f4d5643…"},
+    {"key_id": 256, "alg": -7, "role": "ota",     "pubkey": "04…", "revoked": false, "cert": "4f4d5643…"}
+  ]
+}
+```
+
+`keys/root_keys.json` is the committed root set, the one the firmware build bakes into
+its `ROOT_KEYS` table: root `0` (the primary, which certifies the keys above) and root
+`1` (a backup):
+
+```json
+{
+  "schema": 1,
+  "roots": [
+    {"root_id": 0, "alg": -7, "pubkey": "04…"},
+    {"root_id": 1, "alg": -7, "pubkey": "04…"}
   ]
 }
 ```
