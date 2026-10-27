@@ -630,18 +630,21 @@ def test_a_stalled_dfu_device_is_reset_out_of_dfu_not_just_retried():
     because nothing ever cleared the state. Confirmed by hand: once cleared it reports "dfuIDLE,
     No error condition" and erases normally.
 
-    So the retry has to RECOVER, not repeat: double-tap the board into a fresh DFU (booting out of
-    DFU is wrong when the torn write was the firmware's -- MCUboot runs the torn image and the board
-    is gone from USB), with a core reset + boot only as the fallback.
+    So the retry has to RECOVER, not repeat: core-reset out of DFU (never the nRST pin -- the
+    stay-in-bootloader flag lives in RAM and survives it), let the APP boot, and let the next
+    attempt re-enter with the 1200-baud touch. The app boot is the cure: its QSPI init resets the
+    external flash chip, which MCUboot's does not -- a double-tap straight into a fresh DFU kept
+    the Giga's stalled erase stalled fifteen times running (run 40456056047). A board whose app
+    cannot boot comes up with neither port nor DFU, and _arduino_dfu_run double-taps THAT case.
     """
     import inspect
     src = inspect.getsource(ota_cycle._flash_arduino_cli)
     body = "\n".join(line.split("#")[0] for line in src.splitlines())
     assert "LIBUSB_ERROR_PIPE" in body, "the wedged case must be detected"
     at = body.index("LIBUSB_ERROR_PIPE")
-    assert "arduino_revive(board)" in body[at:], "and recovered by a double-tap into a fresh DFU"
-    assert body.index("arduino_revive(board)", at) < body.index("jlink_core_reset(board)", at), (
-        "the core reset is the fallback, not the first move")
+    assert "jlink_core_reset(board)" in body[at:], "and recovered by resetting out of DFU"
+    assert "arduino_revive(board)" not in body[at:], (
+        "no double-tap here: it skips the app boot that clears the flash chip")
     assert "jlink_reset_pulse" not in body, "never the single nRST pulse on an Arduino board"
 
 

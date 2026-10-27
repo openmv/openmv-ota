@@ -2367,16 +2367,20 @@ def _flash_arduino_cli(board, bad_romfs=False):
             # EVERY later scenario in the leg failed the same way, on both legs, because nothing
             # ever cleared the state. Confirmed by hand -- once cleared the device reports
             # "dfuIDLE, No error condition" and erases fine.
-            # Double-tap it back into a FRESH DFU (dfuIDLE) rather than resetting it out of DFU:
-            # booting is exactly the wrong move when the failed write was the firmware's -- MCUboot
-            # jumps into the torn image and the board is gone from USB (the Nicla, run 40444283788).
-            # The next attempt then writes from DFU directly. A core reset + boot stays as the
-            # fallback for a board whose double-tap showed nothing.
-            log("flash: %s is in dfuERROR (stalled control transfer) -- reset double-tap into a "
-                "fresh DFU" % board)
-            if not arduino_revive(board):
-                jlink_core_reset(board)
-                _await_boot(board, budget=90)
+            # Reset it out of DFU through the debug core (no nRST: the stay-in-bootloader flag
+            # lives in RAM and survives the pin), let the APP boot, and let the next attempt
+            # re-enter DFU with the 1200-baud touch from a clean state. The app boot is the
+            # cure, not a detour: the firmware's QSPI init resets the external flash chip and
+            # MCUboot's does not, so a double-tap straight into a fresh DFU keeps whatever state
+            # the chip was left in. Measured on the Giga (run 40456056047): fifteen attempts, each
+            # after a double-tap into dfuIDLE, all stalled on the first QSPI ERASE_PAGE; one app
+            # boot later the same erase worked, from a touch AND from a double-tap. A board whose
+            # app cannot boot (a torn firmware) comes up with neither a port nor DFU, and
+            # _arduino_dfu_run double-taps that case into DFU on its own.
+            log("flash: %s is in dfuERROR (stalled control transfer) -- core-resetting out of DFU "
+                "so the app's QSPI init clears it" % board)
+            jlink_core_reset(board)
+            _await_boot(board, budget=90)
     if rc != 0:
         raise RuntimeError("arduino flash factory failed rc=%d after 3 attempts: %s"
                            % (rc, out[-400:]))

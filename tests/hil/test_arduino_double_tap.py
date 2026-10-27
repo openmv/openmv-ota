@@ -6,6 +6,10 @@ Nothing the harness had reached it -- a single reset (pin or core) re-runs the s
 nRST pulses 350 ms apart are the bootloader's own double-tap gesture; they brought the board back as
 a DFU device in two seconds, from exactly that state, on the first try (and did the same on the
 Portenta and the Giga).
+
+It is the lever for a board that is OFF USB, and only that: a board in dfuERROR gets a core reset
+and an app boot instead, because the app's QSPI init is what clears a stalled flash chip (the Giga,
+run 40456056047: fifteen double-taps into fresh DFU, fifteen stalled erases, one app boot, fixed).
 """
 
 import os
