@@ -6,6 +6,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **The compromised eMudhra root is out of every trust store this tool ships or installs.**
+  Eight eMudhra (emSign) intermediate CA keys were compromised in October 2026, and the root
+  that signed them, emSign ECC Root CA - G3, left the Mozilla bundle on 2026-10-20. The host
+  tool and the server now require `certifi>=2026.10.19` (what `httpx` verifies against) and
+  the S3/KMS extras `boto3>=1.43.117` (botocore's own bundle); a new install or a rebuilt
+  server image gets them. **A project's `certs/ca.pem` is a snapshot from the day `project
+  new --ota` ran**: one created before 2026-10-20 still trusts the removed root, and so does
+  the firmware built from it on the boards that freeze the full bundle (N6, AE3, RT1062).
+  Download the current bundle over `certs/ca.pem` and rebuild the firmware, or ship the
+  refreshed bundle as `app/lib/openmv_ota/data/ca.pem` so the next OTA release rotates the
+  trust store without a reflash. Boards on `certs/root.pem` (the hosted cloud's roots) never
+  trusted it.
+
 ### Changed
 
 - **Trailer v4 and signing-key certificates.** A camera now embeds only two **root** public
