@@ -56,6 +56,7 @@ copied.
 """
 
 import binascii
+import gc
 import hashlib
 import io
 import json
@@ -114,6 +115,29 @@ class _NoWdt:  # pragma: no cover  (fallback relax() context when no watchdog is
 
 def _noop():  # pragma: no cover  (fallback feed() when no watchdog is frozen)
     pass  # hil-residual: bare pass (no-watchdog feed; bench freezes openmv_wdt so the real feed() runs)
+
+
+def _collect_fed():
+    """A garbage collection at a point of OUR choosing, fed on both sides, so that no AUTOMATIC
+    one lands in the unfed code that follows. A no-op without a watchdog (nothing to feed, and an
+    automatic collect then costs only time).
+
+    Why right after the TLS handshake (:func:`_open`): mbedtls churns the heap -- the handshake's
+    temporaries are garbage the moment ``wrap_socket`` returns -- and the very next things this
+    module does are allocations: the reader's 4 KiB buffer, the status line, the header dict. The
+    first one that does not fit triggers a collect, 65-100 ms on an H7 or N6, inside a 100 ms WWDG
+    window, with nothing feeding. Measured on the OPENMV4P `watchdog` leg three runs in a row:
+    `install: TLS up`, then a boot with `reset_cause=3` (the watchdog) before `install: fetched
+    body` ever printed. The slot survey guards against the same thing with its proactive collect.
+    relax() cannot cover a collect by itself: its timer is a SOFT timer on these ports, dispatched
+    by the very runtime the collector pauses. The feed BEFORE gives the collect a whole window;
+    the feed AFTER gives the caller one too."""
+    if openmv_wdt is None:
+        return
+    openmv_wdt.feed()
+    with openmv_wdt.relax():
+        gc.collect()
+    openmv_wdt.feed()
 
 # --- Status markers (mirror of openmv_ota.ota.status; pinned by a test) ------
 
@@ -1343,6 +1367,10 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
     for _ in range(max_redirects + 1):
         host, port, path = _parse_url(url)
         sock = _connect(host, port, ca_pem, socket, ssl)
+        # The handshake left the heap full of its own garbage; collect it NOW, fed, before the
+        # allocations below (the GET, the reader's buffer, the header lines) make an automatic
+        # collect land in the unfed gap between them (see _collect_fed).
+        _collect_fed()
         try:
             # The small GET is one blocking send -- unsplittable, like the handshake: relax() it.
             with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):

@@ -203,6 +203,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A camera with an armed watchdog reset right after an install's TLS handshake.** The
+  OPENMV4P `watchdog` leg, three runs in a row: `install: TLS up`, then a boot from the watchdog
+  before `install: fetched body`. The handshake fills the heap with mbedtls temporaries, and the
+  reader's buffer and the header lines are the next allocations; the first that did not fit ran
+  an automatic collect, 65-100 ms on this core, inside the 100 ms window with nothing feeding.
+  The installer now collects on purpose right after the handshake, fed on both sides, as the
+  slot survey already did (`_collect_fed`). No-op without a watchdog.
+- **HIL: the pre-flash recovery stops probing a board that re-arms its watchdog.** The first
+  leg of a job finds the previous job's watchdog app still running; a REPL probe stops its feed,
+  the board bites and reboots into the same app, and the next probe did it again -- three
+  probes, three reset pulses and a minute and a half before the romfs erase that was coming
+  anyway. Once the board says `wdt: armed` after a probe, the recovery goes straight to the
+  erase before a golden flash, and leaves the board alone after one.
 - **The N6 boot stub's debug UART printed one byte and went silent.** The bootloader leaves
   PLL3 off, and with it off the STM32N6's USART kernel-clock mux never delivers a clock to the
   USART, whichever source is selected: the transmitter never acknowledges enable and the first

@@ -54,3 +54,34 @@ def test_ensure_cdc_still_probes_when_nothing_is_armed(monkeypatch):
     monkeypatch.setattr(ota_cycle, "log", lambda m: None)
     ota_cycle._ensure_cdc("OPENMV4P")
     assert asked == [1]
+
+
+def _armed_after_the_first_probe(monkeypatch):
+    answers = iter([False, True, True, True])      # at the top: not yet; after a probe: re-armed
+    monkeypatch.setattr(ota_cycle, "_wdt_armed_since_flash", lambda: next(answers))
+    asked, pulses, erased = [], [], []
+    monkeypatch.setattr(ota_cycle, "_cdc_answers", lambda: asked.append(1) or False)
+    monkeypatch.setattr(ota_cycle, "sh", lambda *a, **k: None)
+    monkeypatch.setattr(ota_cycle, "_board_absent", lambda: False)
+    monkeypatch.setattr(ota_cycle, "jlink_reset_pulse", lambda b: pulses.append(b) or True)
+    monkeypatch.setattr(ota_cycle.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ota_cycle, "recover_erase_romfs", lambda b: erased.append(b))
+    logs = []
+    monkeypatch.setattr(ota_cycle, "log", logs.append)
+    return asked, pulses, erased, logs
+
+
+def test_pre_flash_recovery_erases_once_the_board_re_arms_after_a_probe(monkeypatch):
+    asked, pulses, erased, logs = _armed_after_the_first_probe(monkeypatch)
+    ota_cycle._ensure_cdc("OPENMV4P", allow_erase=True)
+    assert asked == [1] and pulses == ["OPENMV4P"]     # one probe, one pulse, then no more
+    assert erased == ["OPENMV4P"]                      # straight to the erase the flash needs
+    assert any("no more REPL probes; erasing" in m for m in logs)
+
+
+def test_post_flash_recovery_leaves_a_board_that_re_arms_after_a_probe(monkeypatch):
+    asked, pulses, erased, logs = _armed_after_the_first_probe(monkeypatch)
+    assert ota_cycle._ensure_cdc("OPENMV4P") is None
+    assert asked == [1] and pulses == ["OPENMV4P"]
+    assert erased == []                                # never post-flash: it would wipe golden
+    assert any("no more REPL probes" in m and "erasing" not in m for m in logs)

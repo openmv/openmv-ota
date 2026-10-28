@@ -2351,6 +2351,19 @@ def _ensure_cdc(board, allow_erase=False):
             "REPL probe, it would stop the feed and bite the board" % board)
         return
     for attempt in range(3):
+        if attempt and _wdt_armed_since_flash():
+            # The previous probe stopped the feed, the board bit, and it has since rebooted into an
+            # app that armed its watchdog AGAIN (its own UART line, since the mark): it is alive and
+            # its REPL is spoken for, so another probe only repeats the bite. Before a golden flash
+            # the romfs erase below is the lever that needs no CDC -- go straight to it (the flash
+            # reprovisions); after one the board is simply running, so leave it be. Measured on the
+            # OPENMV4P: the leftover watchdog app from the previous job's last leg ate three probes,
+            # three reset pulses and a minute and a half before the erase that was coming anyway.
+            log("recover: %s rebooted into an app that armed its watchdog -- no more REPL probes%s"
+                % (board, "; erasing the romfs for the golden flash" if allow_erase else ""))
+            if allow_erase:
+                break
+            return
         # A real liveness probe, not just os.path.exists(): the CDC can be enumerated yet held or
         # flapping (fails every mpremote "in use"), which an existence check misses. (Opening the
         # port DTR-resets the board, but prepare reflashes golden right after, so that reset is free.)
