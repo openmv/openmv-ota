@@ -159,7 +159,9 @@ bundle downloaded at `project new`) — read straight out of flash, and exposed 
 **`openmv_ota.tls_configure(ctx, ssl, ca)`** sets your `ssl.SSLContext` to the same rule the
 updater and the cloud SDK use. An
 image that ships `app/lib/openmv_ota/data/ca.pem` overrides it: the trust store
-then swaps with a romfs update, no firmware reflash. Broad CA trust is acceptable
+then swaps with a romfs update, no firmware reflash -- which is also how a fleet drops a
+withdrawn root (eMudhra's, October 2026): ship the refreshed bundle there in the next
+release. Broad CA trust is acceptable
 here because **the signature, not TLS, is the integrity boundary** — a TLS MITM
 still can't forge a validly-signed manifest or image (it lacks your signing key);
 the worst it can do is serve a stale signed update, which the anti-rollback floor

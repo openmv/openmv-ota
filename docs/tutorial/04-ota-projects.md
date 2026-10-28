@@ -181,6 +181,14 @@ RAM while it overwrites the slot it runs from), and `certs/ca.pem` is the TLS tr
 store: **`new --ota` downloads a fresh Mozilla root bundle into it** (this step needs
 network, like the SDK download) and `build firmware` freezes it, so the device reads
 its anchors straight out of flash. You can replace it with your provider's roots.
+It is a snapshot from the day `new --ota` ran: when a root is withdrawn (as eMudhra's
+was in October 2026), download the current bundle over it and rebuild the firmware:
+
+```sh
+curl -o certs/ca.pem https://curl.se/ca/cacert.pem
+openmv-ota build firmware .
+```
+
 What `install()` downloads is produced by `build ota-romfs`.
 
 `new --ota` also scaffolds two **opt-in** helpers under `device/`, each frozen into
