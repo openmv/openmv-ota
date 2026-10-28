@@ -86,6 +86,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **HIL: a dark i.MX board revives itself over SWD.** `ci/hil/recover.py --swd-loader` (and
+  the harness's pre-flash recovery, after one reset pulse) loads the CLI's bundled RAM
+  flashloader through the node's J-Link -- what `sdphost jump-address` would do -- so an RT1060
+  with nothing on USB (an erased firmware slot after a killed `flash factory`, or the ROM park
+  after a reset) comes back as its `15a2:0073` blhost target with FlexSPI configured, and the
+  normal `flash factory --in-bootloader` reprovisions it. The kick-and-catch no longer pulses a
+  board whose SBL is already enumerated (a RAM loader does not survive that).
 - **The rollout and release pages' answers, from the API.** `GET /rollouts/{id}/devices`
   (`client rollout devices`): the audience, each camera with where it stands against the release
   by payload version (`failed`, `updated`, `ahead`, `offered`, `unoffered`) and every state's

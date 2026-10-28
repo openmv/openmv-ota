@@ -154,10 +154,11 @@ BOARDS = {
         "cov_write": "install.blockdev",     # mimxrt: the block-device write model, not XIP
         "network": "lan",
         "flash": "blhost_imx",
-        # A J-Link is wired to the RT's SWD (debug-only device name, used ONLY to SWD-reset the board
-        # back to life when it wedges off USB -- NOT for flashing; that's blhost). Recovers the case
-        # where a scenario leaves the core halted/wedged with no CDC, which otherwise fails every
-        # later mpremote with "failed to access /dev/ttyACM0" (the CDC flapping/gone).
+        # A J-Link is wired to the RT's SWD (debug-only device name): it SWD-resets the board back to
+        # life when it wedges off USB, and -- when the board is DARK (ROM park, no USB at all) -- it
+        # loads the CLI's bundled RAM flashloader so the board enumerates as its SBL again
+        # (imx_swd_loader). Not for writing flash: every byte is still written by the openmv-ota
+        # CLI through that loader.
         "jlink_device": "MIMXRT1062xxx6A",
         # Flash addresses + blhost/DFU device ids all live in the CLI's boards.json now -- the
         # golden flash, the /flash self-heal, and the no_slot brick all go through `openmv-ota
@@ -1945,7 +1946,12 @@ def imx_kick_catch(board, argv, *, timeout=NOCDC_FLASH_TIMEOUT, pulse=True):
             if proc.poll() is not None or time.time() > end:
                 break
         if armed.is_set():
-            if pulse:
+            if pulse and _imx_sbl_present(board):
+                # The SBL (or the RAM flashloader imx_swd_loader put up) is ALREADY enumerated: the
+                # catcher claims it as is. A pulse here would reset the chip out of it -- and a
+                # loader lives in RAM, so the reset lands back in the dark ROM that needed it.
+                log("recover: %s -- SBL already on USB; no reset, the catcher claims it" % board)
+            elif pulse:
                 jlink_reset_pulse(board)     # a fresh boot: the app back on a live REPL
             kicks = 0
             while not claimed.is_set() and proc.poll() is None and time.time() < end:
@@ -1965,6 +1971,111 @@ def imx_kick_catch(board, argv, *, timeout=NOCDC_FLASH_TIMEOUT, pulse=True):
             proc.kill()
     reader.join(5)
     return proc.returncode, "".join(lines)
+
+
+
+def _usb_ids(usb):
+    """``"0x15A2,0x0073"`` (boards.json's spsdk form) -> ``("15a2", "0073")`` as sysfs spells them."""
+    vid, pid = (x.strip() for x in usb.split(","))
+    return "%04x" % int(vid, 0), "%04x" % int(pid, 0)
+
+
+def _imx_sbl_present(board):
+    """Is the board's blhost target (its resident SBL, or the RAM flashloader -- same VID:PID)
+    enumerated RIGHT NOW? A sysfs point-in-time check, never a wait. False for a non-i.MX board."""
+    raw = _flash_raw(board)
+    if not raw or raw.get("backend") != "imx":
+        return False
+    vid, pid = _usb_ids(raw["blhost"]["usb"])
+    for d in glob.glob("/sys/bus/usb/devices/*/idVendor"):
+        try:
+            with open(d) as f:
+                v = f.read().strip()
+            with open(os.path.join(os.path.dirname(d), "idProduct")) as f:
+                p = f.read().strip()
+        except OSError:
+            continue
+        if (v, p) == (vid, pid):
+            return True
+    return False
+
+
+_SWD_LOADER_ENUM_S = 20                   # the RAM flashloader is on USB ~3 s after `g`
+
+
+def imx_swd_loader(board, timeout=90):
+    """Revive a DARK i.MX board -- no CDC, no SBL, no SDP device, but SWD still attaches -- by
+    loading the CLI's bundled RAM flashloader over the J-Link and running it, so the board
+    enumerates as its blhost target again. Returns True iff the loader is up AND its FlexSPI is
+    configured, i.e. a following ``openmv-ota flash ... --in-bootloader`` can claim it and write.
+
+    THE STATE THIS IS FOR (measured on the RT1060 node, 2026-10-28): a cancelled run killed
+    `flash factory` the second the SBL came up, leaving the firmware slot (0x60040000) erased.
+    The ROM then had nothing to boot and parked (PC in ROM, FlexSPI MCR0.MDIS=1) with NO USB
+    device at all: the resident SBL only announces itself when a running app calls
+    machine.bootloader(), and the ROM's serial downloader never enumerates on this board (the
+    boot e-fuse forces internal boot). nRST pulses, core resets and the hub's sysfs port power
+    toggle all changed nothing; until now that board needed a hand on it.
+
+    What works: the exact thing `sdphost jump-address` would do, driven over SWD instead of SDP.
+    Reset+halt the core, `loadbin` the IVT'd flashloader at boards.json's ``sdphost.loader_addr``
+    (its IVT ``self``), set PC to the IVT's ``entry`` and go; the ROM's own stack is kept, as the
+    ROM would keep it. ~3 s later ``15a2:0073`` is on USB. The SDP-loaded loader starts with its
+    FlexSPI unconfigured (the resident SBL runs post-FCB and does not), so the two config commands
+    from imx.plan's ROM path follow -- RAM and controller setup only, nothing written to flash.
+    From there the CLI's resident-SBL ops work unchanged: the harness's golden `flash factory
+    --in-bootloader` erases and writes firmware + romfs through the loader, exactly as through the
+    SBL, and its final reset boots the new firmware.
+
+    No-op (False) for a board without a J-Link or an i.MX flash config. The bytes that reach flash
+    are still only ever written by the openmv-ota CLI."""
+    raw = _flash_raw(board)
+    if "jlink_device" not in BOARDS[board] or not raw or raw.get("backend") != "imx":
+        return False
+    from openmv_ota.flash.flash import _loader
+    from openmv_ota.flash.tools import find_spsdk
+    sd, bl = raw["sdphost"], raw["blhost"]
+    loader = _loader(sd["loader"], board)
+    with open(loader, "rb") as f:
+        ivt = f.read(32)
+    # IVT: tag 0xD1 in the header's first byte, entry at +4, self at +0x14 (the load address).
+    if len(ivt) < 32 or ivt[0] != 0xD1:
+        log("recover: %s -- %s has no IVT; not a flashloader image" % (board, loader.name))
+        return False
+    entry = int.from_bytes(ivt[4:8], "little") & ~1
+    load_addr = int(sd["loader_addr"], 0)
+    log("recover: %s is dark (no port, no SBL) -- J-Link loads the RAM flashloader %s at 0x%08X, "
+        "entry 0x%08X" % (board, loader.name, load_addr, entry))
+    _free_jlink()                         # a stale JLinkExe blocks the probe, silently
+    fd, sp = tempfile.mkstemp(suffix=".jlink", prefix="swdloader-")
+    os.write(fd, ("r\nhalt\nloadbin %s 0x%08X\nSetPC 0x%08X\ng\nSleep 2000\nqc\n"
+                  % (loader, load_addr, entry)).encode())
+    os.close(fd)
+    try:
+        sh([CFG["jlink"], "-device", BOARDS[board]["jlink_device"], "-if", "SWD",
+            "-speed", "4000", "-AutoConnect", "1", "-CommanderScript", sp],
+           timeout=timeout, check=False, quiet=True)
+    finally:
+        os.unlink(sp)
+    end = time.time() + _SWD_LOADER_ENUM_S
+    while not _imx_sbl_present(board):
+        if time.time() > end:
+            log("recover: %s -- the flashloader never enumerated as %s (SWD dead too? the board "
+                "needs a power cycle)" % (board, bl["usb"]))
+            return False
+        time.sleep(1)
+    time.sleep(1)                          # let the HID node settle before blhost opens it
+    blhost = find_spsdk("blhost", CFG["sdk"])
+    for sub in (("fill-memory", bl["cfg_addr"], "4", bl["cfg_spi"], "word"),
+                ("configure-memory", bl["cfg_type"], bl["cfg_addr"])):
+        rc, out = sh([blhost, "-u", bl["usb"], "-t", "20000", "--", *sub], timeout=60,
+                     check=False, quiet=True)
+        if rc != 0:
+            log("recover: %s -- flashloader %s failed (%d): %s" % (board, sub[0], rc, out[-300:]))
+            return False
+    log("recover: %s -- flashloader up as %s with FlexSPI configured; the golden flash goes "
+        "--in-bootloader through it (no CDC expected until then)" % (board, bl["usb"]))
+    return True
 
 
 def _dfu_present():
@@ -2239,6 +2350,12 @@ def _ensure_cdc(board, allow_erase=False):
             # state (see ykush_power_cycle) -- cut its VBUS instead, then re-probe.
             _await_boot(board, budget=90)
             continue
+        if attempt and allow_erase and _board_absent() and imx_swd_loader(board):
+            # Still off USB after a pulse (so not merely re-enumerating), before a golden flash:
+            # a dark i.MX -- erased firmware slot or ROM park -- now sits in the RAM flashloader,
+            # which the flash claims with --in-bootloader. Nothing more to probe for here: there
+            # is no CDC in that state by design, and an erase would need the same dead CDC.
+            return
         # On the Arduino MCUboot boards an nRST is the WRONG tool and actively makes things worse:
         # the 1200-baud touch that entered DFU sets a "stay in bootloader" flag in RAM, and RAM
         # SURVIVES the reset pin -- so pulsing nRST lands the board back in DFU (no CDC) instead of
