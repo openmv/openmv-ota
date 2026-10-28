@@ -945,6 +945,13 @@ def resolve_uart(port):
     return found[0]
 
 
+def _wdt_armed_since_flash():
+    """Has the board logged ``wdt: armed`` on the marker UART since golden was flashed? Then its
+    app is running with an armed watchdog, and anything that stops the app (an mpremote Ctrl-C)
+    stops the feed and resets the board. Same since-the-flash bound as _uart_live_since_flash."""
+    return _CAP is not None and any("wdt: armed" in ln for ln in _CAP.raw[_FLASH_MARK:])
+
+
 def _uart_live_since_flash():
     """Has the board said ANYTHING on the marker UART since golden was flashed?
 
@@ -2330,6 +2337,18 @@ def _ensure_cdc(board, allow_erase=False):
     J-Link reset device (a debug-only name used ONLY to reset -- flashing stays each board's normal
     path)."""
     if "jlink_device" not in BOARDS[board]:
+        return
+    if _wdt_armed_since_flash():
+        # The board has said "wdt: armed" on its marker UART since the flash: it is alive, by its
+        # own words, and its feed is the only thing keeping it that way. The probe below takes the
+        # REPL with a Ctrl-C, which kills the app and so the feed; 100 ms later the watchdog bites
+        # and the next boot logs `app: woke from a watchdog reset` -- the very marker the watchdog
+        # scenarios FORBID. Measured on the OPENMV4P watchdog leg, two runs in a row (PR #130):
+        # `run: poll wait` -> `app: CRASHED KeyboardInterrupt()` -> bite, 15 s after the golden
+        # flash, then the same again on every probe of every attempt. There is nothing to recover
+        # here; the CDC is spoken for by an app that must not be interrupted.
+        log("recover: %s has armed its watchdog since the flash (its own UART line) -- alive; no "
+            "REPL probe, it would stop the feed and bite the board" % board)
         return
     for attempt in range(3):
         # A real liveness probe, not just os.path.exists(): the CDC can be enumerated yet held or

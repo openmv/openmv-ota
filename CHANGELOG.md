@@ -93,6 +93,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   after a reset) comes back as its `15a2:0073` blhost target with FlexSPI configured, and the
   normal `flash factory --in-bootloader` reprovisions it. The kick-and-catch no longer pulses a
   board whose SBL is already enumerated (a RAM loader does not survive that).
+- **HIL: no REPL probe of a board that has armed its watchdog.** `_ensure_cdc` returns at once
+  when the marker UART has carried `wdt: armed` since the flash: the probe's Ctrl-C stopped the
+  feed, the watchdog bit, and the watchdog scenarios failed on their own forbidden
+  `app.wdt_reset` marker (OPENMV4P, two runs in a row).
 - **The rollout and release pages' answers, from the API.** `GET /rollouts/{id}/devices`
   (`client rollout devices`): the audience, each camera with where it stands against the release
   by payload version (`failed`, `updated`, `ahead`, `offered`, `unoffered`) and every state's
