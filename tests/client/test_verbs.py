@@ -21,8 +21,11 @@ from openmv_ota.server.metastore import SqliteMetadataStore
 from openmv_ota.server.settings import ServerSettings
 from openmv_ota.server.storage import LocalArtifactStorage
 from openmv_ota.server.verify import Registration
+from tests import trust
 
 BID = 7
+_CERT = trust.certificate(trust.keys.generate_private_key(trust.SPEC))
+_CERT_KEY_ID = trust.C.parse(_CERT).key_id
 
 
 class _Verifier:
@@ -61,7 +64,7 @@ def _build_release(project, board="OPENMV_N6", pv=0x02000000):
             "min_platform_version": 0, "size": len(img), "sha256": hashlib.sha256(img).hexdigest(),
             "representations": [{"format": "full", "url": "%s-ota.img.gz" % board,
                                  "size": len(image_gz)}]}
-    manifest = pack_manifest(Manifest(body=body, key_id=0x0100, sig_alg=ES256,
+    manifest = pack_manifest(Manifest(body=body, certificate=_CERT, sig_alg=ES256,
                                       signature=b"\x00" * 64))
     (build / ("%s-manifest.bin" % board)).write_bytes(manifest)
     (build / ("%s-ota.img.gz" % board)).write_bytes(image_gz)
@@ -75,7 +78,7 @@ def _rewrite_manifest(build, board, reps):
     path = build / ("%s-manifest.bin" % board)
     body = parse_manifest(path.read_bytes()).body
     body["representations"] = reps
-    path.write_bytes(pack_manifest(Manifest(body=body, key_id=0x0100, sig_alg=ES256,
+    path.write_bytes(pack_manifest(Manifest(body=body, certificate=_CERT, sig_alg=ES256,
                                             signature=b"\x00" * 64)))
 
 
@@ -88,7 +91,7 @@ def test_publish_and_rollout(wired, tmp_path, capsys):
     assert "published rel_" in out and "rollout ro_" in out
     releases = store.list_releases(BID)
     assert len(releases) == 1 and store.list_rollouts(BID)[0]["cohort"] == "beta"
-    assert releases[0]["key_id"] == 0x0100      # the manifest's signing key, recorded
+    assert releases[0]["key_id"] == _CERT_KEY_ID   # the manifest's certified key, recorded
     assert releases[0]["display_name"] == "First light"    # --name rides with publish
 
 
@@ -964,7 +967,7 @@ def _build_release_with_trailer(project, pv=0x02000000):
             "sha256": hashlib.sha256(img).hexdigest(),
             "representations": [{"format": "full", "url": "OPENMV_N6-ota.img.gz",
                                  "size": len(image_gz)}]}
-    manifest = pack_manifest(Manifest(body=body, key_id=0x0100, sig_alg=ES256,
+    manifest = pack_manifest(Manifest(body=body, certificate=_CERT, sig_alg=ES256,
                                       signature=b"\x00" * 64))
     (build / "OPENMV_N6-manifest.bin").write_bytes(manifest)
     (build / "OPENMV_N6-ota.img.gz").write_bytes(image_gz)

@@ -270,7 +270,8 @@ def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     # the real boot.py (not a placeholder) + the generated config + device modules are present
     assert "OtaBoot" in (r.build_dir / "boot.py").read_text()
     cfg = (r.build_dir / "_ota_config.py").read_text()
-    assert "TRUSTED_KEYS" in cfg and "ROOT_KEYS" in cfg and "PARTITION_SIZE" in cfg
+    assert "ROOT_KEYS" in cfg and "PARTITION_SIZE" in cfg
+    assert "TRUSTED_KEYS" not in cfg                    # the camera trusts certificates, not a key table
     assert "PRODUCT_ID" in cfg
     assert "ENABLED" in (r.build_dir / "openmv_log.py").read_text()   # the project's copy
     assert "def relax(" in (r.build_dir / "openmv_wdt.py").read_text()
@@ -297,11 +298,8 @@ def test_ota_config_values(make_project, monkeypatch):
     assert ns["MAX_ATTEMPTS"] == 3                 # the trial budget boot.py enforces
     assert isinstance(ns["PRODUCT_ID"], int) and ns["PRODUCT_ID"] != 0   # OTA pins it
     assert isinstance(ns["PLATFORM_VERSION"], int)
-    keys = ns["TRUSTED_KEYS"]
-    assert isinstance(keys, dict) and len(keys) == 3   # 2 ota + 1 factory provisioned
-    for kid, pub in keys.items():
-        assert isinstance(kid, int) and isinstance(pub, bytes) and pub[0] == 0x04
-    roots = ns["ROOT_KEYS"]                           # what boot.py chains a trailer's cert to
+    assert "TRUSTED_KEYS" not in ns                   # no key table: every key arrives certified
+    roots = ns["ROOT_KEYS"]                           # what boot.py and the installer chain a cert to
     assert set(roots) == {0, 1} and all(len(p) == 65 and p[0] == 0x04 for p in roots.values())
     assert ns["STUB_RECORD_ADDR"] == 0x703FF000       # the N6 stub's install record sector
 
@@ -373,7 +371,9 @@ def test_a_build_without_the_payload_keys_says_what_is_missing(make_project, mon
         fw.build_firmware(root, firmware=repo)
 
 
-def test_ota_config_excludes_revoked_keys(make_project, monkeypatch):
+def test_ota_config_carries_no_signing_keys(make_project, monkeypatch):
+    """Revoking a signing key is no longer a firmware matter: the camera never held the key.
+    It trusts certificates chained to ROOT_KEYS, and a retired key is a raised epoch."""
     from openmv_ota.ota.keys import read_trusted_keys, write_trusted_keys
     from openmv_ota.project.project import ProjectPaths
 
@@ -386,9 +386,11 @@ def test_ota_config_excludes_revoked_keys(make_project, monkeypatch):
 
     r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
     ns = {}
-    exec((r.build_dir / "_ota_config.py").read_text(), ns)  # noqa: S102
-    assert keys[0].key_id not in ns["TRUSTED_KEYS"]
-    assert len(ns["TRUSTED_KEYS"]) == len(keys) - 1
+    text = (r.build_dir / "_ota_config.py").read_text()
+    exec(text, ns)  # noqa: S102
+    assert "TRUSTED_KEYS" not in ns and "TRUSTED_KEYS" not in text
+    for k in keys:
+        assert bytes.fromhex(k.pubkey) not in ns["ROOT_KEYS"].values()
 
 
 def test_build_firmware_ota_cleans_wrapper(make_project, monkeypatch):

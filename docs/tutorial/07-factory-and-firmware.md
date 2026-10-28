@@ -100,7 +100,7 @@ The project's OTA flag steers the build automatically:
   the board's own manifest, adds the boot script, and is passed as
   `make FROZEN_MANIFEST=<wrapper>`. The frozen `boot.py` runs after the board's
   stock `_boot.py` and does the slot selection, signature verification, and
-  trial-boot machinery; its generated `_ota_config.py` (trusted keys, slot
+  trial-boot machinery; its generated `_ota_config.py` (root keys, slot
   geometry, board/product ids) is frozen alongside it.
 
   It also bakes in this board's **payload keys** — the secret half of

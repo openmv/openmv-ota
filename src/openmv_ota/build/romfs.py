@@ -869,7 +869,7 @@ def _factory_one(p, t, app_dir, out_dir, ctx, mpy_cmd, signer, app_version, vend
         _encrypt_rep(reps[0], gz, img_path, _payload_keys_for(p, t.name, key_passphrase_file),
                      **_release_sealing(p, name))
         m = Manifest(body=_manifest_body(p, parse_trailer(trailer0), dl, reps),
-                     key_id=signer.key_id, sig_alg=signer.sig_alg)
+                     certificate=signer.certificate, sig_alg=signer.sig_alg)
         m.signature = signer.backend.sign(signed_region(m))
         (pub_dir / (name + "-manifest.bin")).write_bytes(pack_manifest(m))
 
@@ -1268,7 +1268,9 @@ def build_manifest(
             reps.append(rep)
 
         body = _manifest_body(p, tr, image, reps)
-        m = Manifest(body=body, key_id=signer.key_id, sig_alg=signer.sig_alg)
+        # The signing key's certificate rides in the manifest, as it does in the trailer, so a
+        # camera that embeds only the roots trusts the manifest the same way.
+        m = Manifest(body=body, certificate=signer.certificate, sig_alg=signer.sig_alg)
         m.signature = signer.backend.sign(signed_region(m))
         raw = pack_manifest(m)
         out_path = out_dir / (name + "-manifest.bin")

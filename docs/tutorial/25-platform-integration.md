@@ -58,7 +58,8 @@ make configurable enough for all of them.
 This is the first of the two decisions that cannot be changed after the first camera
 ships.
 
-A camera verifies an image against the trusted keys **baked into its firmware**, and
+A camera verifies an image against the root keys **baked into its firmware** (every
+signing key reaches it as a certificate those roots signed), and
 decrypts a payload with the payload keys baked in beside them. Firmware is not replaced
 over the air, so those are the keys that camera has for its whole life. A stock camera
 carries the *stock project's* keys — and it is going to be asked to install customer A's

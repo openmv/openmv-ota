@@ -9,9 +9,12 @@ import struct
 import pytest
 
 from openmv_ota.ota import ES256, ES384, algorithm_for
+from openmv_ota.ota import certificate as C
 from openmv_ota.ota.errors import OtaError
-from openmv_ota.ota.keys import TrustedKey, generate_private_key, public_point_hex
+from openmv_ota.ota.keys import RootKey, generate_private_key, public_point_hex
 from openmv_ota.ota.manifest import (
+    BODY_OFFSET,
+    CERT_SIZE,
     HEADER_STRUCT,
     HEADER_SIZE,
     MAGIC,
@@ -25,6 +28,7 @@ from openmv_ota.ota.manifest import (
 from openmv_ota.ota.sign import sign_region
 from openmv_ota.ota.verify import verify_manifest
 from openmv_ota.ota.version import encode_app_version
+from tests import trust
 
 
 def _body(**over):
@@ -45,36 +49,44 @@ def _body(**over):
     return body
 
 
-def _make(body=None, alg=ES256, key_id=0x0100):
-    """A freshly signed manifest -> (manifest_bytes, pubkey_hex)."""
+def _make(body=None, alg=ES256, cert=None, **cert_kw):
+    """A freshly signed manifest -> (manifest_bytes, pubkey_hex). The certificate is for the
+    signing key, from ``tests.trust``'s root, unless ``cert`` (packed bytes) says otherwise."""
     spec = algorithm_for(alg)
     priv = generate_private_key(spec)
-    m = Manifest(body=_body() if body is None else body, key_id=key_id, sig_alg=alg)
+    if cert is None:                    # certified keys are P-256; a P-384 signer gets a stand-in
+        cert_priv = priv if alg == ES256 else generate_private_key(algorithm_for(ES256))
+        cert = trust.certificate(cert_priv, **cert_kw)
+    m = Manifest(body=_body() if body is None else body, certificate=cert, sig_alg=alg)
     m.signature = sign_region(priv, signed_region(m), spec)
     return pack_manifest(m), public_point_hex(priv.public_key())
 
 
-def _trusted(key_id=0x0100, alg=ES256, pubkey="", revoked=False):
-    return [TrustedKey(key_id, alg, "ota", pubkey, revoked=revoked)]
+def _roots(**over):
+    roots = dict(trust.ROOTS)
+    roots.update(over)
+    return roots
 
 
 # --- codec roundtrip --------------------------------------------------------
 
-@pytest.mark.parametrize("alg", [ES256, ES384])
-def test_roundtrip(alg):
-    raw, _pub = _make(alg=alg, key_id=0x0123)
+def test_roundtrip():
+    raw, pub = _make()
     m = parse_manifest(raw)
     assert m.body == _body()
-    assert m.key_id == 0x0123
-    assert m.sig_alg == alg
-    assert len(m.signature) == algorithm_for(alg).sig_size
+    assert m.sig_alg == ES256
+    assert len(m.signature) == 64
+    assert C.parse(m.certificate).pubkey.hex() == pub         # the signer's own certificate
+    assert m.key_id == C.key_id_of(bytes.fromhex(pub))        # ...and its id derives from it
 
 
 def test_signed_region_matches_between_object_and_bytes():
     raw, _pub = _make()
     m = parse_manifest(raw)
     assert signed_region(m) == signed_region(raw)            # same bytes both ways
-    assert signed_region(raw) == raw[: HEADER_SIZE + len(signed_region(m)) - HEADER_SIZE]
+    body_size = struct.unpack_from("<I", raw, 8)[0]
+    assert signed_region(raw) == raw[: BODY_OFFSET + body_size]   # header + certificate + body
+    assert signed_region(raw)[HEADER_SIZE:BODY_OFFSET] == m.certificate
 
 
 # --- codec rejections -------------------------------------------------------
@@ -92,10 +104,39 @@ def test_parse_bad_magic():
 
 
 def test_parse_unsupported_header_version():
-    m = Manifest(body=_body(), key_id=0x0100, sig_alg=ES256,
-                 signature=b"\x00" * 64, header_version=2)
+    m = Manifest(body=_body(), certificate=trust.certificate(generate_private_key(algorithm_for(ES256))),
+                 sig_alg=ES256, signature=b"\x00" * 64, header_version=1)   # v1 named a key id
     with pytest.raises(OtaError, match="header_version"):
         parse_manifest(pack_manifest(m))
+
+
+def _resealed(raw: bytes) -> bytes:
+    """``raw`` with its trailing crc32 recomputed, so an edit reaches the check after the crc."""
+    return raw[:-4] + struct.pack("<I", binascii.crc32(raw[:-4]) & 0xFFFFFFFF)
+
+
+def test_parse_wrong_cert_size():
+    raw = bytearray(_make()[0])
+    struct.pack_into("<I", raw, 16, CERT_SIZE - 1)
+    with pytest.raises(OtaError, match="cert_size"):
+        parse_manifest(_resealed(bytes(raw)))
+
+
+def test_parse_malformed_certificate():
+    raw = bytearray(_make()[0])
+    raw[HEADER_SIZE:HEADER_SIZE + 4] = b"XXXX"                 # the certificate's magic
+    with pytest.raises(OtaError, match="manifest certificate"):
+        parse_manifest(_resealed(bytes(raw)))
+
+
+def test_pack_refuses_a_malformed_certificate():
+    m = Manifest(body=_body(), certificate=b"\x00" * CERT_SIZE, sig_alg=ES256,
+                 signature=b"\x00" * 64)
+    with pytest.raises(OtaError, match="manifest certificate"):
+        pack_manifest(m)
+    m = Manifest(body=_body(), certificate=b"\x00" * 10, sig_alg=ES256, signature=b"\x00" * 64)
+    with pytest.raises(OtaError, match="must be %d bytes" % CERT_SIZE):
+        pack_manifest(m)
 
 
 def test_parse_sig_size_disagrees_with_alg():
@@ -131,15 +172,15 @@ def test_parse_non_json_body():
     # Hand-frame a structurally valid ES256 manifest whose body bytes aren't JSON.
     body = b"not json"
     sig = b"\x00" * 64
-    header = struct.pack(HEADER_STRUCT, MAGIC, 1, len(body), 64, 0x0100, ES256)
-    framed = header + body + sig
+    header = struct.pack(HEADER_STRUCT, MAGIC, 2, len(body), 64, CERT_SIZE, ES256)
+    framed = header + trust.certificate(generate_private_key(algorithm_for(ES256))) + body + sig
     raw = framed + struct.pack("<I", binascii.crc32(framed) & 0xFFFFFFFF)
     with pytest.raises(OtaError, match="not valid JSON"):
         parse_manifest(raw)
 
 
 def test_signed_region_bytes_out_of_bounds():
-    header = struct.pack(HEADER_STRUCT, MAGIC, 1, 9999, 64, 0x0100, ES256)
+    header = struct.pack(HEADER_STRUCT, MAGIC, 2, 9999, 64, CERT_SIZE, ES256)
     with pytest.raises(OtaError, match="exceeds"):
         signed_region(header)
 
@@ -150,14 +191,16 @@ def test_signed_region_bytes_too_small():
 
 
 def test_pack_wrong_signature_size():
-    m = Manifest(body=_body(), key_id=0x0100, sig_alg=ES256, signature=b"\x00" * 10)
+    m = Manifest(body=_body(), certificate=trust.certificate(generate_private_key(algorithm_for(ES256))),
+                 sig_alg=ES256, signature=b"\x00" * 10)
     with pytest.raises(OtaError, match="signature must be 64"):
         pack_manifest(m)
 
 
 def test_pack_over_size_limit():
     big = _body(blob="z" * 9000)                            # body alone exceeds the cap
-    m = Manifest(body=big, key_id=0x0100, sig_alg=ES256, signature=b"\x00" * 64)
+    m = Manifest(body=big, certificate=trust.certificate(generate_private_key(algorithm_for(ES256))),
+                 sig_alg=ES256, signature=b"\x00" * 64)
     with pytest.raises(OtaError, match="over the"):
         pack_manifest(m)
 
@@ -165,39 +208,50 @@ def test_pack_over_size_limit():
 # --- verify_manifest --------------------------------------------------------
 
 def test_verify_ok():
-    raw, pub = _make()
-    ok, reason = verify_manifest(raw, _trusted(pubkey=pub))
-    assert ok and "ES256" in reason
+    raw, pub = _make(epoch=3)
+    ok, reason = verify_manifest(raw, _roots())
+    assert ok and "ES256" in reason and "root 0" in reason and "epoch 3" in reason
+    assert ("0x%08x" % C.key_id_of(bytes.fromhex(pub))) in reason
+    # a RootKey list (keys/root_keys.json) is accepted too
+    assert verify_manifest(raw, trust.root_keys())[0]
 
 
 def test_verify_invalid_manifest():
-    ok, reason = verify_manifest(b"\x00" * 8, _trusted())
+    ok, reason = verify_manifest(b"\x00" * 8, _roots())
     assert not ok and "invalid manifest" in reason
 
 
-def test_verify_unknown_key():
-    raw, pub = _make(key_id=0x0100)
-    ok, reason = verify_manifest(raw, _trusted(key_id=0x0999, pubkey=pub))
-    assert not ok and "unknown key" in reason
+def test_verify_unknown_root():
+    raw, _pub = _make(root_id=1)                             # certified by a root we don't embed
+    ok, reason = verify_manifest(raw, _roots())
+    assert not ok and "untrusted certificate" in reason and "unknown root 1" in reason
 
 
-def test_verify_revoked_key():
-    raw, pub = _make()
-    ok, reason = verify_manifest(raw, _trusted(pubkey=pub, revoked=True))
-    assert not ok and "revoked" in reason
+def test_verify_certificate_not_signed_by_our_root():
+    rogue = generate_private_key(algorithm_for(ES256))
+    raw, _pub = _make(root_priv=rogue)                       # an attacker's own "root"
+    ok, reason = verify_manifest(raw, _roots())
+    assert not ok and "untrusted certificate" in reason and "does not verify against root" in reason
 
 
 def test_verify_algorithm_mismatch():
-    raw, pub = _make(alg=ES256)
-    ok, reason = verify_manifest(raw, _trusted(pubkey=pub, alg=ES384))
+    raw, _pub = _make(alg=ES384)                             # a P-384 signature under a P-256 cert
+    ok, reason = verify_manifest(raw, _roots())
     assert not ok and "algorithm mismatch" in reason
 
 
 def test_verify_bad_signature():
+    other = trust.certificate(generate_private_key(algorithm_for(ES256)))
+    raw, _pub = _make(cert=other)                            # genuine cert, for a different key
+    ok, reason = verify_manifest(raw, _roots())
+    assert not ok and "does not verify against key" in reason
+
+
+def test_verify_wrong_root_key_bytes():
     raw, _pub = _make()
-    other = public_point_hex(generate_private_key(algorithm_for(ES256)).public_key())
-    ok, reason = verify_manifest(raw, _trusted(pubkey=other))
-    assert not ok and "does not verify" in reason
+    rogue = public_point_hex(generate_private_key(algorithm_for(ES256)).public_key())
+    ok, reason = verify_manifest(raw, [RootKey(0, ES256, rogue)])
+    assert not ok and "untrusted certificate" in reason
 
 
 # --- update_reject_reason (device-relative pre-flight) ----------------------
@@ -344,8 +398,9 @@ def test_select_none_when_nothing_usable():
 # --- JSON that parses but is not a manifest body (found by tests/fuzz) -------------------
 
 def _raw_manifest(body_bytes):
-    head = struct.pack(HEADER_STRUCT, MAGIC, 1, len(body_bytes), 64, 0x0100, ES256)
-    out = head + body_bytes + b"\x00" * 64
+    head = struct.pack(HEADER_STRUCT, MAGIC, 2, len(body_bytes), 64, CERT_SIZE, ES256)
+    cert = trust.certificate(generate_private_key(algorithm_for(ES256)))
+    out = head + cert + body_bytes + b"\x00" * 64
     return out + struct.pack("<I", binascii.crc32(out) & 0xFFFFFFFF)
 
 

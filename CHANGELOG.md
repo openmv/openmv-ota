@@ -84,6 +84,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The check-in names the boot stub.** `openmv_ota.status()` and the check-in body carry
   `stub: {version, reason}` from the install record `boot.py` followed (None without a stub),
   so the server can see which stubs the fleet runs before a release raises `min_stub`.
+- **The update manifest carries its signing key's certificate, and the firmware keeps no key
+  table.** Manifest header v2: the 160-byte certificate follows the header and the signed
+  region covers header, certificate and body. `build ota-romfs` and `build factory-romfs` sign
+  the manifest with the certificate the trailer carries; `build verify` chains a manifest to
+  the roots like an image (`--trusted-keys` is gone, `--root-keys` serves both); `inspect`
+  prints the certificate; a release's `key_id` derives from the certified key
+  (`certificate.key_id_of`). The device installer verifies in `boot.py`'s order -- a root this
+  firmware embeds over the certificate, the certificate's epoch against the one the camera has
+  confirmed, then the certified key over the signed region -- and `_ota_config.py` carries
+  `ROOT_KEYS` only: `TRUSTED_KEYS` is gone, and a revoked signing key is a raised epoch, not a
+  firmware rebuild. A clean break: v1 manifests are refused.
 - **The server keeps the boot stub a camera reports, and gates releases on it.** A check-in's
   `stub` lands on the device row as `stub_version` and `stub_reason` (the install reason
   decoded to `normal`, `trial`, `reverted` or `reinstalled`; `null` for a board without a

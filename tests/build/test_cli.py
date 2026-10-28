@@ -409,20 +409,22 @@ def test_build_verify_unsigned_romfs(tmp_path, capsys):
 
 # --- inspect / verify of manifests + deltas ----------------------------------
 
-def _write_manifest_and_keys(d, *, key_id=0x0100, sign_key_id=None, with_delta=True):
-    """Write a signed <d>/m.bin + a <d>/trusted_keys.json that trusts it. Returns nothing;
-    `sign_key_id` (default key_id) signs, so passing a different key_id forges a bad sig."""
+def _write_manifest_and_keys(d, *, with_delta=True):
+    """Write a signed <d>/m.bin (its certificate from ``tests.trust``'s root) + a
+    <d>/root_keys.json holding that root. Returns the signing key's derived id."""
     import gzip
 
     from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota import certificate as C
     from openmv_ota.ota.delta import make_delta
-    from openmv_ota.ota.keys import (
-        TrustedKey, generate_private_key, public_point_hex, write_trusted_keys)
+    from openmv_ota.ota.keys import generate_private_key, write_root_keys
     from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
     from openmv_ota.ota.sign import sign_region
+    from tests import trust
 
     spec = algorithm_for(ES256)
     priv = generate_private_key(spec)
+    cert = trust.certificate(priv)
     reps = [{"format": "full", "url": "https://x/n6.img.gz", "size": 9000}]
     if with_delta:
         reps.append({"format": "ocdl", "url": "https://x/n6.delta.gz", "size": 1200,
@@ -430,17 +432,16 @@ def _write_manifest_and_keys(d, *, key_id=0x0100, sign_key_id=None, with_delta=T
     body = {"schema": 1, "product_id": 7, "product": "OPENMV_N6", "version": "2.1.0",
             "payload_version": 33685760, "min_platform_version": 0, "size": 16384,
             "sha256": "ab" * 32, "representations": reps}
-    m = Manifest(body=body, key_id=key_id, sig_alg=ES256)
+    m = Manifest(body=body, certificate=cert, sig_alg=ES256)
     m.signature = sign_region(priv, signed_region(m), spec)
     (d / "m.bin").write_bytes(pack_manifest(m))
-    # the trusted set carries the signer's *real* pubkey under `key_id`
-    write_trusted_keys(d / "trusted_keys.json",
-                       [TrustedKey(key_id, ES256, "ota", public_point_hex(priv.public_key()))])
+    write_root_keys(d / "root_keys.json", trust.root_keys())   # the root the certificate chains to
     base = bytes(range(256)) * 64
     target = base[:1000] + b"NEW" * 30 + base[1000:]
     (d / "base.img").write_bytes(base)
     (d / "target.img").write_bytes(target)
     (d / "n6.delta.gz").write_bytes(gzip.compress(make_delta(base, target)))
+    return C.parse(cert).key_id
 
 
 def test_inspect_manifest(tmp_path, capsys):
@@ -451,11 +452,12 @@ def test_inspect_manifest(tmp_path, capsys):
 
 
 def test_inspect_manifest_json(tmp_path, capsys):
-    _write_manifest_and_keys(tmp_path)
+    kid = _write_manifest_and_keys(tmp_path)
     assert main(["build", "inspect", str(tmp_path / "m.bin"), "--json"]) == 0
     import json
     out = json.loads(capsys.readouterr().out)
-    assert out["body"]["product_id"] == 7 and out["key_id"] == 0x0100
+    assert out["body"]["product_id"] == 7 and out["key_id"] == kid
+    assert out["certificate"] == {"kind": 0, "root_id": 0, "epoch": 0}
 
 
 def test_inspect_manifest_corrupt(tmp_path, capsys):
@@ -486,26 +488,26 @@ def test_inspect_delta_corrupt(tmp_path, capsys):
 def test_verify_manifest_ok(tmp_path, capsys):
     _write_manifest_and_keys(tmp_path)
     rc = main(["build", "verify", str(tmp_path / "m.bin"),
-               "--trusted-keys", str(tmp_path / "trusted_keys.json")])
+               "--root-keys", str(tmp_path / "root_keys.json")])
     assert rc == 0 and "verified" in capsys.readouterr().out
 
 
-def test_verify_manifest_missing_trusted_keys(tmp_path, capsys):
+def test_verify_manifest_missing_root_keys(tmp_path, capsys):
     _write_manifest_and_keys(tmp_path)
     rc = main(["build", "verify", str(tmp_path / "m.bin"),
-               "--trusted-keys", str(tmp_path / "nope.json")])
-    assert rc == 2 and "no trusted_keys.json" in capsys.readouterr().err
+               "--root-keys", str(tmp_path / "nope.json")])
+    assert rc == 2 and "no root_keys.json" in capsys.readouterr().err
 
 
 def test_verify_manifest_untrusted(tmp_path, capsys):
-    _write_manifest_and_keys(tmp_path, key_id=0x0100)
-    # a trusted set that doesn't contain the signer -> verification fails
-    from openmv_ota.ota.keys import TrustedKey, write_trusted_keys
-    from openmv_ota.ota import ES256
-    write_trusted_keys(tmp_path / "other.json",
-                       [TrustedKey(0x0999, ES256, "ota", "04" + "00" * 64)])
+    _write_manifest_and_keys(tmp_path)
+    # a root set the certificate does not chain to -> verification fails
+    from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota.keys import RootKey, generate_private_key, public_point_hex, write_root_keys
+    other = public_point_hex(generate_private_key(algorithm_for(ES256)).public_key())
+    write_root_keys(tmp_path / "other.json", [RootKey(0, ES256, other)])
     rc = main(["build", "verify", str(tmp_path / "m.bin"),
-               "--trusted-keys", str(tmp_path / "other.json")])
+               "--root-keys", str(tmp_path / "other.json")])
     assert rc == 1 and "FAILED" in capsys.readouterr().err
 
 

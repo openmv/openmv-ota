@@ -49,29 +49,36 @@ def test_file_bench_app_confirms_only_a_trial_boot():
 
 # --- the shared manifest tamper --------------------------------------------------------------
 def _signed_manifest():
+    from tests import trust
     alg = algorithm_for(ES256)
     priv = generate_private_key(alg)
     body = {"version": "1.1.0", "product_id": "p", "representations": []}
-    m = Manifest(body=body, key_id=0x0100, sig_alg=ES256)
+    m = Manifest(body=body, certificate=trust.certificate(priv), sig_alg=ES256)
     m.signature = sign_region(priv, signed_region(m), alg)
     return bytearray(pack_manifest(m)), priv.public_key(), alg
 
 
 def test_tamper_manifest_flips_the_signature_and_reseals_the_crc():
     # The whole point of the shared helper: the tampered manifest still PARSES (crc re-sealed,
-    # key untouched) so the device reaches the signature verify -- and that verify fails.
+    # certificate untouched) so the device reaches the signature verify -- and that verify fails.
+    from openmv_ota.ota import certificate as C
+    from tests import trust
     data, pub, alg = _signed_manifest()
     ota_cycle.tamper_manifest_bytes(data, "manifest")
     m = parse_manifest(bytes(data))                      # parse + crc still pass
-    assert m.key_id == 0x0100                            # key lookup would still hit
+    C.verify(m.certificate, trust.ROOTS)                 # the root check would still pass
     assert not verify_region(pub, signed_region(bytes(data)), m.signature, alg)
 
 
-def test_tamper_manifest_key_flips_only_the_key_id():
+def test_tamper_manifest_key_breaks_only_the_certificate():
+    from openmv_ota.ota import certificate as C
+    from openmv_ota.ota.errors import OtaError
+    from tests import trust
     data, _, _ = _signed_manifest()
     ota_cycle.tamper_manifest_bytes(data, "manifest_key")
-    m = parse_manifest(bytes(data))                      # parse + crc still pass
-    assert m.key_id != 0x0100                            # ...but the trusted-key lookup misses
+    m = parse_manifest(bytes(data))                      # parse + crc still pass (shape intact)
+    with pytest.raises(OtaError, match="does not verify against root"):
+        C.verify(m.certificate, trust.ROOTS)             # ...but the root check misses
 
 
 # --- the probe parser ------------------------------------------------------------------------

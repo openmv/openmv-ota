@@ -14,7 +14,6 @@ from hypothesis import strategies as st
 from openmv_ota.ota import keys, sign
 from openmv_ota.ota import manifest as host_manifest
 from openmv_ota.ota.algorithms import ES256, ES384, ES512, algorithm_for
-from openmv_ota.ota.keys import TrustedKey
 
 _ROOT = Path(__file__).resolve().parents[2]
 ALGS = (ES256, ES384, ES512)
@@ -51,9 +50,11 @@ def keypair(alg=ES256):
     return _KEYS[alg]
 
 
-def trusted(alg=ES256, key_id=KEY_ID):
-    """The host MANIFEST verifier's trusted set holding just ``keypair(alg)``."""
-    return [TrustedKey(key_id=key_id, alg=alg, role="ota", pubkey=keypair(alg)[1].hex())]
+def certificate(alg=ES256) -> bytes:
+    """``keypair(alg)``'s certificate from ``tests.trust``'s root (certified keys are P-256, so
+    any other ``alg`` gets the ES256 key's certificate -- a mismatch the verifier must catch)."""
+    from tests import trust
+    return trust.certificate(keypair(ES256)[0])
 
 
 def roots():
@@ -95,10 +96,10 @@ def manifest_body(image: bytes = b"\xa5" * 64, **extra) -> dict:
     return body
 
 
-def signed_manifest(body: dict, alg=ES256, key_id=KEY_ID) -> bytes:
+def signed_manifest(body: dict, alg=ES256) -> bytes:
     priv, _pub = keypair(alg)
     spec = algorithm_for(alg)
-    m = host_manifest.Manifest(body=body, key_id=key_id, sig_alg=alg)
+    m = host_manifest.Manifest(body=body, certificate=certificate(alg), sig_alg=alg)
     m.signature = sign.sign_region(priv, host_manifest.signed_region(m), spec)
     return host_manifest.pack_manifest(m)
 
