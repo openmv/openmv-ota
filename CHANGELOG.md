@@ -112,6 +112,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **HIL: a dark i.MX board revives itself over SWD.** `ci/hil/recover.py --swd-loader` (and
+  the harness's pre-flash recovery, after one reset pulse) loads the CLI's bundled RAM
+  flashloader through the node's J-Link -- what `sdphost jump-address` would do -- so an RT1060
+  with nothing on USB (an erased firmware slot after a killed `flash factory`, or the ROM park
+  after a reset) comes back as its `15a2:0073` blhost target with FlexSPI configured, and the
+  normal `flash factory --in-bootloader` reprovisions it. The kick-and-catch no longer pulses a
+  board whose SBL is already enumerated (a RAM loader does not survive that).
+- **HIL: no REPL probe of a board that has armed its watchdog.** `_ensure_cdc` returns at once
+  when the marker UART has carried `wdt: armed` since the flash: the probe's Ctrl-C stopped the
+  feed, the watchdog bit, and the watchdog scenarios failed on their own forbidden
+  `app.wdt_reset` marker (OPENMV4P, two runs in a row).
 - **The rollout and release pages' answers, from the API.** `GET /rollouts/{id}/devices`
   (`client rollout devices`): the audience, each camera with where it stands against the release
   by payload version (`failed`, `updated`, `ahead`, `offered`, `unoffered`) and every state's
@@ -218,6 +229,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A camera with an armed watchdog reset right after an install's TLS handshake.** The
+  OPENMV4P `watchdog` leg, three runs in a row: `install: TLS up`, then a boot from the watchdog
+  before `install: fetched body`. The handshake fills the heap with mbedtls temporaries, and the
+  reader's buffer and the header lines are the next allocations; the first that did not fit ran
+  an automatic collect, 65-100 ms on this core, inside the 100 ms window with nothing feeding.
+  The installer now collects on purpose right after the handshake, fed on both sides, as the
+  slot survey already did (`_collect_fed`). No-op without a watchdog.
+- **HIL: the pre-flash recovery stops probing a board that re-arms its watchdog.** The first
+  leg of a job finds the previous job's watchdog app still running; a REPL probe stops its feed,
+  the board bites and reboots into the same app, and the next probe did it again -- three
+  probes, three reset pulses and a minute and a half before the romfs erase that was coming
+  anyway. Once the board says `wdt: armed` after a probe, the recovery goes straight to the
+  erase before a golden flash, and leaves the board alone after one.
 - **The N6 boot stub's debug UART printed one byte and went silent.** The bootloader leaves
   PLL3 off, and with it off the STM32N6's USART kernel-clock mux never delivers a clock to the
   USART, whichever source is selected: the transmitter never acknowledges enable and the first

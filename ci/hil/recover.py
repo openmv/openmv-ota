@@ -30,6 +30,7 @@ the same thing by hand, for when you are debugging a board directly.
     ./recover.py --board OPENMV4P --probe    # just report whether the CDC answers
     ./recover.py --board OPENMV4P --reset    # only pulse nRST (no DFU, no REPL probe)
     ./recover.py --board OPENMV_N6 --firmware   # CORRUPT FIRMWARE: two-stage reflash
+    ./recover.py --board OPENMV_RT1060 --swd-loader   # DARK i.MX: J-Link loads the RAM flashloader
 
 CORRUPT FIRMWARE IS A DIFFERENT ILLNESS, and it does not look like one. The board is not dead, it
 is CYCLING: bootloader -> crash -> bootloader, re-enumerating every couple of seconds. Every USB
@@ -41,6 +42,20 @@ a CDC that comes and goes between probes. It reads as flaky hardware. It is dete
 fit the short window a cycling board offers) so nothing valid boots and the bootloader parks in DFU;
 then write the real firmware with the board sitting still. Measured on the N6: a direct full write
 died at 32%, then 36%; two-stage completed and the board came back with a working CDC.
+
+A DARK i.MX IS A THIRD ILLNESS. The RT1060 shows NOTHING on USB -- no CDC, no SBL, no ROM
+serial downloader (its boot e-fuse forces internal boot) -- while SWD still attaches and shows the
+core parked in the boot ROM. That is what an erased firmware slot leaves behind (a `flash factory`
+killed between its erase and its write, e.g. by a cancelled run), and what the ROM park after some
+resets looks like. Nothing above reaches it: the SBL only comes up when a RUNNING app asks, and
+there is no app. ``--swd-loader`` does what ``sdphost jump-address`` would, over the J-Link: loads
+the CLI's bundled RAM flashloader, runs it, and configures its FlexSPI -- the board is then on USB
+as ``15a2:0073`` and the normal golden flash writes through it:
+
+    ./recover.py --board OPENMV_RT1060 --swd-loader && \
+      openmv-ota flash factory <project> -b OPENMV_RT1060 --sdk-home $OPENMV_SDK --in-bootloader
+
+The no-flag escalation tries it last, after the romfs erase could not reach the SBL either.
 
 Env (same as ota_cycle): BOARD_ACM, HIL_PROJECT, OPENMV_SDK, JLINK, DFU_UTIL.
 """
@@ -66,6 +81,10 @@ def main(argv=None):
     ap.add_argument("--firmware", action="store_true",
                     help="reflash MAIN FIRMWARE in two stages -- for a board cycling "
                          "bootloader->crash->bootloader (see the module docstring)")
+    ap.add_argument("--swd-loader", action="store_true",
+                    help="DARK i.MX board (no USB at all, SWD alive): load and run the RAM "
+                         "flashloader over the J-Link so it enumerates as the SBL; then flash "
+                         "with --in-bootloader (see the module docstring)")
     ap.add_argument("--firmware-image", default=None,
                     help="firmware .bin to write (default: the project's build output)")
     args = ap.parse_args(argv)
@@ -75,6 +94,11 @@ def main(argv=None):
     # catch) -- so a "just reset it" that probed first left the board with no app before the pulse.
     if args.reset:
         return 0 if oc.jlink_reset_pulse(args.board) else 1
+
+    if args.swd_loader:
+        # Not gated on a probe: there is no port to probe, and the loader lives in RAM -- running
+        # it on a board that was merely slow would only cost the golden flash that follows anyway.
+        return 0 if oc.imx_swd_loader(args.board) else 1
 
     if args.firmware:
         # Not gated on a probe either: a cycling board often answers the CDC intermittently, so
@@ -103,6 +127,10 @@ def main(argv=None):
         oc.log("recover: CDC back after nRST alone")
         return 0
     if not oc.recover_erase_romfs(args.board):
+        if oc._board_absent() and oc.imx_swd_loader(args.board):
+            oc.log("recover: dark i.MX revived into its RAM flashloader -- flash it now with "
+                   "--in-bootloader (no CDC until then)")
+            return 0
         oc.log("recover: romfs erase FAILED -- the board may need a physical power cycle")
         return 1
     rc, _ = oc.sh([oc.ota("mpremote"), "connect", oc.CFG["acm"], "eval", "True"],

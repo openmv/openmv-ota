@@ -2148,3 +2148,47 @@ def test_relaxed_wraps_every_recv_in_a_bounded_relax():
     call = inst("_relaxed")(readinto, Wdt())
     assert call(memoryview(bytearray(8))) == 7
     assert seen == [inst("_SOCK_TIMEOUT") * 1000, "enter", "recv", "exit"]
+
+
+def test_collect_fed_feeds_on_both_sides_of_a_relaxed_collect(monkeypatch):
+    seen = []
+
+    class Region:
+        def __enter__(self):
+            seen.append("enter")
+
+        def __exit__(self, *a):
+            seen.append("exit")
+            return False
+
+    class Wdt:
+        @staticmethod
+        def feed():
+            seen.append("feed")
+
+        @staticmethod
+        def relax(max_ms=None):
+            seen.append(("relax", max_ms))
+            return Region()
+    monkeypatch.setattr(_mod, "openmv_wdt", Wdt)
+    monkeypatch.setattr(_mod.gc, "collect", lambda: seen.append("collect"))
+    inst("_collect_fed")()
+    assert seen == ["feed", ("relax", None), "enter", "collect", "exit", "feed"]
+
+
+def test_collect_fed_is_a_no_op_without_a_watchdog(monkeypatch):
+    monkeypatch.setattr(_mod, "openmv_wdt", None)
+    monkeypatch.setattr(_mod.gc, "collect", lambda: pytest.fail("nothing to feed -> no collect"))
+    assert inst("_collect_fed")() is None
+
+
+def test_open_collects_fed_right_after_the_handshake():
+    """Pinned by source: `_open` is device-only (pragma: no cover). The collect must sit between
+    the connect (the handshake's churn) and the first allocation after it (the GET)."""
+    import inspect
+    src = inspect.getsource(inst("_open"))
+    connect = src.index("_connect(host, port, ca_pem, socket, ssl)")
+    collect = src.index("_collect_fed()")
+    get = src.index("sock.write(_request_bytes(")
+    reader = src.index("_Reader(readinto, feed)")
+    assert connect < collect < get < reader
