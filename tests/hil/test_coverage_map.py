@@ -55,6 +55,10 @@ def _device_log_lines():
             for line in f:
                 if _LOGCALL.search(line):
                     yield line
+    # The boot stub's lines, as the UART sees them (the C literals carry no "stub: " prefix;
+    # log_line/log_kv add it) -- see hil_coverage.stub_log_lines.
+    for _rel, _lineno, text in hil_coverage.stub_log_lines():
+        yield text
     # A few markers are emitted by the BENCH APPS (built in ota_cycle.bench_main_py), not the
     # shipped device code -- e.g. the watchdog-bite witnesses. Validate those substrings against
     # their real emission site too: the app's own `_blog.<level>(...)` calls in ota_cycle.py.
@@ -74,15 +78,19 @@ def test_every_coverage_substring_is_a_live_device_log_line():
         "sets) to match the new wording: %r" % drifted)
 
 
-def test_every_marker_is_expected_by_some_scenario():
-    expected = set()
+def test_every_marker_is_expected_or_forbidden_by_some_scenario():
+    # A forbidden marker is a live coverage point too: its ABSENCE is what the scenario asserts
+    # (the stub's "gave up" lines are only ever forbidden -- no scenario can make a stub fail
+    # on real hardware without bricking it).
+    used = set()
     for name in ota_cycle.SCENARIOS:
         for board in ota_cycle.BOARDS:
-            expected |= ota_cycle.scenario_markers(board, name)[0]
-    dead = sorted(set(ota_cycle.COVERAGE.values()) - expected)
+            expect, forbid = ota_cycle.scenario_markers(board, name)
+            used |= expect | forbid
+    dead = sorted(set(ota_cycle.COVERAGE.values()) - used)
     assert not dead, (
-        "markers no scenario expects -- dead coverage points (add them to a scenario's expect "
-        "set, or drop them from COVERAGE): %r" % dead)
+        "markers no scenario expects or forbids -- dead coverage points (add them to a "
+        "scenario's expect/forbid set, or drop them from COVERAGE): %r" % dead)
 
 
 def test_scenario_expect_and_forbid_are_disjoint():

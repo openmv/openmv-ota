@@ -497,6 +497,30 @@ COVERAGE = {
     "boot: marked slot XIP": "boot.marked",
     "boot: slot marker verified": "boot.marked_verify",       # marker read back + verified
     "boot: stub ": "boot.stub",                               # a boot-stub board: the stub chose + installed the slot
+    # The boot stub (C, build/device/stub) logs "stub: <line>" on the same UART before the
+    # firmware starts. Its literals are whole lines with no runtime words inside them, so a
+    # key here is checked verbatim against the C source (hil_coverage.stub_log_lines).
+    "stub: version": "stub.version",                          # the stub ran and opened its UART
+    "stub: slot ok": "stub.slot_ok",                          # a slot verified: confirmed, bootable
+    "stub: slot trial": "stub.slot_trial",                    # a pending slot with attempts left
+    "stub: slot rejected": "stub.slot_rejected",              # a slot that did not verify (any reason)
+    "stub: attempt burned": "stub.attempt",                   # the trial paid its attempt mark first
+    "stub: firmware area verified": "stub.fast_path",         # record + firmware hashes match: no install
+    "stub: installing slot": "stub.install",                  # a slot's components being installed
+    "stub: record written": "stub.record_written",            # the install record landed last
+    "stub: boot normal": "stub.boot_normal",                  # jumping: the confirmed slot
+    "stub: boot trial": "stub.boot_trial",                    # jumping: a trial, attempt burned
+    "stub: boot reverted": "stub.boot_reverted",              # jumping: the other slot failed its trial
+    # Every way the stub gives up on a slot or a boot. Forbidden in every stub-board scenario
+    # but no_slot, where giving up on both slots is the point.
+    "stub: install failed": "stub.failed",
+    "stub: component install failed": "stub.failed",
+    "stub: blob hash mismatch": "stub.failed",
+    "stub: attempt mark failed": "stub.failed",
+    "stub: memory map restore failed": "stub.failed",
+    "stub: record write failed": "stub.failed",
+    "stub: nothing to boot": "stub.failed",
+    "stub: no slot": "stub.failed",
     "boot: slot read": "boot.read",                           # the XIP slot-read closure ran
     "boot: slot mounting": "boot.mount_call",                 # the mount closure ran (vfs.mount)
     "boot: no prior mount": "boot.no_prior_mount",            # mp_init didn't auto-mount /rom (blank romfs)
@@ -802,6 +826,54 @@ def _has_stub(board):
         return False
 
 
+def _stub_marks(key, spec):
+    """What the boot stub logs inside a scenario's scored window on a board that has one.
+
+    The window opens with the harness's hard reset, so every scenario sees the stub boot the
+    confirmed golden slot it installed at the golden flash: the record matches, the firmware
+    area hashes clean, no install (stub.fast_path). A scenario whose install ARMS a trial then
+    reboots into the pending slot: the stub pays the attempt, installs that slot's components
+    (a different slot is never recorded) and jumps with reason trial. rollback exhausts the
+    attempts, so the stub rejects the slot (trial-failed) and boots the other one reverted,
+    installing it again on the way. no_slot bricks both slots: both rejected, nothing more."""
+    if key == "no_slot":
+        return {"stub.version", "stub.slot_rejected"}
+    marks = {"stub.version", "stub.slot_ok", "stub.fast_path", "stub.boot_normal"}
+    if "install.armed" in spec["expect"]:
+        marks |= {"stub.slot_trial", "stub.attempt", "stub.install", "stub.record_written",
+                  "stub.boot_trial"}
+    if key == "rollback":
+        marks |= {"stub.slot_rejected", "stub.boot_reverted"}
+    return marks
+
+
+def _enable_stub_uart(project, board):
+    """Point the project's openmv_log at the marker UART on a boot-stub board.
+
+    The firmware finds its bench UART at run time through the baked .hilcov_uart file, but
+    the STUB learns its debug UART from the trailer, and the build fills those fields from
+    the module CONSTANTS in device/openmv_log.py (romfs.stub_settings). With the shipped
+    defaults (ENABLED = False, UART = None) the trailer says "no UART" and the stub boots
+    silent: a fleet that proved every stub path by outcome and never saw one stub line.
+    Flipping the constants gives the stub the same UART the firmware logs on; the firmware's
+    own path is unchanged (the bench file still wins at run time, at DEBUG)."""
+    if not _has_stub(board) or "cov_uart" not in BOARDS[board]:
+        return False
+    uart = BOARDS[board]["cov_uart"]
+    path = "%s/device/openmv_log.py" % project
+    with open(path) as f:
+        text = f.read()
+    new = re.sub(r"(?m)^ENABLED = False\b", "ENABLED = True", text)
+    new = re.sub(r"(?m)^UART = None\b", "UART = %d" % uart, new)
+    if "\nENABLED = True" not in new or "\nUART = %d" % uart not in new:
+        raise RuntimeError("%s: could not set ENABLED/UART for the boot stub -- the module's "
+                           "defaults are not where this expects" % path)
+    with open(path, "w") as f:
+        f.write(new)
+    log("prepare: openmv_log ENABLED=True UART=%d (the boot stub's debug UART)" % uart)
+    return True
+
+
 def _trial_mark(board):
     """The markers that prove the trial slot was MARKED before its app ran. On a plain board
     boot.py burns the attempt itself (boot.marked + the read-back). On a boot-stub board the
@@ -842,7 +914,12 @@ def scenario_markers(board, key):
                 out.add(n)
         return out
     s = SCENARIOS[key]
-    return resolve(s["expect"]), resolve(s["forbid"])
+    expect, forbid = resolve(s["expect"]), resolve(s["forbid"])
+    if _has_stub(board):
+        expect |= _stub_marks(key, s)
+        if key != "no_slot":
+            forbid.add("stub.failed")
+    return expect, forbid
 
 
 def regression_scenarios(board, network):
@@ -1440,6 +1517,7 @@ def prepare(board, checkout, network, app="confirm"):
     sh("cp -rf %s/openmv_ota/. %s/app/lib/openmv_ota/" % (dev, CFG["project"]))
     sh("cp -rf %s/openmv_cloud/. %s/app/lib/openmv_cloud/ 2>/dev/null || true" % (dev, CFG["project"]))
     sh("mkdir -p %s/device && cp -f %s/*.py %s/device/" % (CFG["project"], dev, CFG["project"]))
+    _enable_stub_uart(CFG["project"], board)     # a boot-stub board logs its stub on the marker UART
     if app in ("wdt", "wdt_bite", "wdt_recover"):
         # Turn the opt-in watchdog ON for this run: flip ENABLED in the project's frozen copy so the
         # built firmware arms its deep-sleep-safe WDT (openmv_wdt auto-selects: WWDG on stm32/N6,
