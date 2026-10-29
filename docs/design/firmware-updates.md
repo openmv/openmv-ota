@@ -292,16 +292,66 @@ Provisioning over USB: `build firmware` emits the stub beside the firmware, and
 to the FIRMWARE partition (`<board>-firmware-with-stub.bin`) — the firmware is linked
 to run behind the stub, so neither is flashable alone.
 
+### STM32H7 boards (OpenMV Cam H7 Plus, Pure Thermal; Arduino Portenta H7, Giga, Nicla Vision)
+
+Firmware in the internal flash (2 MB, two banks of eight 128 KB sectors), ROMFS on
+the QSPI part the firmware memory-maps at 0x90000000. The bootloader (ours on the
+OpenMV boards, Arduino's MCUboot on theirs) jumps to 0x08040000 and that cannot
+move, so the stub takes that sector and the firmware moves up one. The sector
+below it, the internal filesystem's, is unused on every one of these boards (the
+filesystem is on the QSPI part), so the firmware gets it back as a **second text
+region**: the stub's install window spans both, with the stub's own sector refused
+in the middle.
+
+| Area | Range | Today | With the stub |
+|---|---|---|---|
+| BOOTLOADER | 0x08000000–0x08020000 | bootloader (+ the soft-SE key area in its last 4 KB) | unchanged |
+| FFS | 0x08020000–0x08040000 | unused (filesystem on QSPI) | the firmware's second text region, component 2 |
+| FIRMWARE | 0x08040000–0x08200000 (1792 KB) | firmware | stub @0x08040000 (one 128 KB sector) · firmware 0x08060000–0x081FF000 (1660 KB), component 1 · install record @0x081FF000 |
+| ROMFS0 | QSPI 0x91800000, 8 MB (H7 Plus/PT) · 0x90B00000, 4 MB (Arduino) | A/B | A/B, ~1 MB of each now the firmware blobs |
+
+1660 + 128 KB is 4 KB less than the stock window, so no board drops a feature.
+The record takes the last 4 KB of the last sector, as on the N6; `firmware_max`
+stops short of it. Erase block 128 KB, write unit one 32-byte flash word
+(`STUB_WRITE_UNIT`). A flash word whose programming was cut short reads back as a
+double ECC error: the stub's NMI/BusFault handlers count it and the read fails,
+so a torn record or firmware block is "corrupt" and installs again.
+
+**The second region is the tool's doing, not the firmware's.** `build firmware`
+runs the firmware's own build with FLASH_TEXT sized for both regions together (that
+link only measures), then reads the linker map it produced, packs whole
+objects (text + rodata) into the 128 KB biggest-first with a 2 KB alignment
+margin, never the startup objects, and re-runs the build's own link command (the
+one `make -n` prints) with the generated linker script plus a `FLASH_TEXT2`
+region and a `.text2` output section ahead of `.text` that claims those objects.
+The ELF is cut in two: `<board>-firmware.bin` (the main window) and
+`<board>-firmware-text2.bin` (the region); `build romfs` lists both as
+components, `flash` writes the second to its own partition or address. A board's
+table may name object patterns to place first or never move (`text2.prefer` /
+`text2.exclude`); none does today. Branch range covers the whole 2 MB and both
+regions are the same flash, so correctness does not depend on the choice.
+
+The stub keeps the QSPI in indirect mode throughout (there is no memory map to
+inherit: both bootloaders leave the controller reset), 1-line commands at
+≤ 40 MHz, 4-byte addressing on the 32 MB part, and resets the chip and the
+controller before the jump — the state the firmware's own driver starts from. It
+runs from AXI SRAM with the small buffers in DTCM; the D-cache stays off (the
+install reads back what it just programmed). The head disables the MPU and the
+caches before the copy to SRAM, since MCUboot does not hand over with them off.
+
+Measured (stock firmware text): H7 Plus 1811 KB, Portenta/Giga ≈ 1760 KB, Nicla
+1722 KB with the OTA additions (76 KB: 45 KB of frozen Python, the ECDSA and
+key-store modules, the mbedtls speed options). All fit the two regions together;
+`build romfs` refuses a release whose firmware does not.
+
 ### Others (filled in as each is done)
 
 - **AE3:** two components (HP → MRAM `HP` partition, HE → MRAM `HE`); install
   window covers both partitions. The HE romfs stays nested in the filesystem.
 - **RT1062:** FlexSPI remap could point execution at a slot with no copy, or copy
   for one shared model. *Open.*
-- **Arduino H7:** app area 0x08040000–0x08200000 (14 × 128 KB sectors); stub =
-  one sector; firmware ≤ 1.625 MB → LAB LUT off. ROMFS partition 4 MB at
-  0x90B00000 → slots ~1.1 MB each after the blob.
-- **OPENMV4/4P/PT:** like Arduino H7, behind our bootloader.
+- **OPENMV4 (H7, no QSPI), OPENMV3, OPENMV2:** ROMFS in internal flash — no room
+  for a firmware blob. Stay on app-only updates.
 
 ## Open questions
 

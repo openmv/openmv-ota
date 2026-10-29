@@ -439,24 +439,45 @@ def arduino_project(tmp_path, monkeypatch):
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
     for n in ("ARDUINO_PORTENTA_H7-firmware.bin", "ARDUINO_PORTENTA_H7-romfs.img",
-              "ARDUINO_PORTENTA_H7-factory-romfs.img",
+              "ARDUINO_PORTENTA_H7-factory-romfs.img", "ARDUINO_PORTENTA_H7-stub.bin",
+              "ARDUINO_PORTENTA_H7-firmware-text2.bin",
               "cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"):
         (tmp_path / "build" / n).write_bytes(b"x")
     return tmp_path, ran
 
 
 def test_arduino_firmware(arduino_project):
+    """A stub board: the second text region to its sector first, then the composed
+    stub || pad || firmware image at the address MCUboot jumps to (never the bare firmware,
+    which is linked to run behind the stub), and only the last write leaves DFU."""
     root, ran = arduino_project
     fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7")
-    assert len(ran) == 1 and ran[0][6] == "0x08040000:leave" and "-w" not in ran[0]
+    assert [a[a.index("-s") + 1] for a in ran] == ["0x08020000", "0x08040000:leave"]
+    assert "-w" not in ran[0] and "-w" in ran[1]              # later writes wait for the device
+    assert ran[0][-1] == str(root / "build/ARDUINO_PORTENTA_H7-firmware-text2.bin")
+    assert ran[1][-1] == str(root / "build/ARDUINO_PORTENTA_H7-firmware-with-stub.bin")
+
+
+def test_arduino_firmware_skips_an_empty_second_region_and_needs_the_stub(arduino_project):
+    root, ran = arduino_project
+    (root / "build/ARDUINO_PORTENTA_H7-firmware-text2.bin").write_bytes(b"")   # nothing moved
+    fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7")
+    assert [a[a.index("-s") + 1] for a in ran] == ["0x08040000:leave"]
+    (root / "build/ARDUINO_PORTENTA_H7-firmware-text2.bin").unlink()
+    with pytest.raises(FlashError, match="firmware-text2.bin -- build it first"):
+        fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7", dry_run=True)
+    (root / "build/ARDUINO_PORTENTA_H7-stub.bin").unlink()
+    with pytest.raises(FlashError, match="ARDUINO_PORTENTA_H7-stub.bin -- `build firmware` produces it"):
+        fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7", dry_run=True)
 
 
 def test_arduino_factory_writes_wifi_from_output_dir(arduino_project):
     root, ran = arduino_project
     fl.flash_factory(str(root), board="ARDUINO_PORTENTA_H7")
     assert [a[a.index("-s") + 1] for a in ran] == [
-        "0x90F00000", "0x90FC0000", "0x08040000", "0x90B00000:leave"]
+        "0x90F00000", "0x90FC0000", "0x08020000", "0x08040000", "0x90B00000:leave"]
     assert ran[0][-1] == str(root / "build/cyw4343_7_45_98_102.bin")   # from the build outputs
+    assert ran[3][-1] == str(root / "build/ARDUINO_PORTENTA_H7-firmware-with-stub.bin")
     # the dual-slot image `build factory-romfs` writes, not the single-slot app romfs
     assert ran[-1][-1] == str(root / "build/ARDUINO_PORTENTA_H7-factory-romfs.img")
 
@@ -470,8 +491,10 @@ def test_arduino_dry_run_runs_nothing(arduino_project):
 def test_arduino_missing_artifact_errors(tmp_path, monkeypatch):
     (tmp_path / "build").mkdir()
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: "DFU")
-    with pytest.raises(FlashError, match="ARDUINO_PORTENTA_H7-firmware.bin"):
+    with pytest.raises(FlashError, match="ARDUINO_PORTENTA_H7-stub.bin"):    # a stub board: checked first
         fl.flash_firmware(str(tmp_path), board="ARDUINO_PORTENTA_H7", dry_run=True)
+    with pytest.raises(FlashError, match="ARDUINO_PORTENTA_H7-romfs.img -- build it first"):
+        fl.flash_romfs(str(tmp_path), board="ARDUINO_PORTENTA_H7", dry_run=True)
 
 
 # --- device prepare (detect running camera, reset into bootloader, pin -S serial) ---------
@@ -580,3 +603,27 @@ def test_flash_firmware_on_a_stub_board_writes_the_composed_image(project):
     steps = fl.flash_factory(str(root), board="OPENMV_N6")
     assert [s.file.name for s in steps] == ["OPENMV_N6-firmware-with-stub.bin",
                                            "OPENMV_N6-factory-romfs.img"]
+
+
+def test_flash_firmware_on_an_h7_board_writes_the_second_text_region_too(project):
+    """The H7 Plus's firmware has a second text region in the bootloader's FILESYSTEM
+    partition (alt 1): written first, so the composed image's step stays the one that resets.
+    An empty region (the packer moved nothing) is skipped."""
+    root, ran, recorded, artifact = project
+    artifact("OPENMV4P-firmware.bin", b"F" * 64)
+    artifact("OPENMV4P-stub.bin", b"S" * 16)
+    artifact("OPENMV4P-firmware-text2.bin", b"T" * 48)
+    steps = fl.flash_firmware(str(root), board="OPENMV4P")
+    assert [(s.file.name, s.alt) for s in steps] == [("OPENMV4P-firmware-text2.bin", 1),
+                                                     ("OPENMV4P-firmware-with-stub.bin", 2)]
+    data = (root / "build/OPENMV4P-firmware-with-stub.bin").read_bytes()
+    assert data[:16] == b"S" * 16 and len(data) == 0x20000 + 64 and data[0x20000:] == b"F" * 64
+    assert recorded[-1]["files"] == [{"file": "OPENMV4P-firmware-text2.bin", "alt": 1},
+                                     {"file": "OPENMV4P-firmware-with-stub.bin", "alt": 2}]
+    artifact("OPENMV4P-firmware-text2.bin", b"")
+    steps = fl.flash_firmware(str(root), board="OPENMV4P")
+    assert [s.alt for s in steps] == [2]
+    artifact("OPENMV4P-factory-romfs.img")
+    artifact("OPENMV4P-firmware-text2.bin", b"T" * 48)
+    steps = fl.flash_factory(str(root), board="OPENMV4P")
+    assert [s.alt for s in steps] == [1, 2, 4]

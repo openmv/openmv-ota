@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -188,6 +189,9 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
             _run_make(repo, ["TARGET=%s" % name, "clean"])
         _ensure_mpy_cross(repo)
         _run_make(repo, build_args)
+        layout = get_board(name).stub
+        if ota and layout is not None and layout.text2_dest is not None:
+            _relink_text2(repo, name, build_args, layout, p.sdk_home)
         outputs = _collect_outputs(repo, name, out_dir)
         outputs += _copy_wifi_blobs(repo, name, out_dir)
         from . import stub as stub_mod                  # a stub board's firmware ships with its stub
@@ -374,8 +378,11 @@ def _relink_for_stub(overlay: Path, name: str, stub) -> None:
                          exit_code=2) from None
     text, n_origin = re.subn(r"(?m)^([ \t]*#define[ \t]+OMV_FLASH_TXT_ORIGIN[ \t]+)\S+",
                              r"\g<1>0x%08X" % stub.firmware_dest, text)
-    length = ("%dK" % (stub.firmware_max // 1024) if stub.firmware_max % 1024 == 0
-              else "0x%X" % stub.firmware_max)
+    # With a second text region the build's own link only measures: it gets the two regions'
+    # combined length so an oversize firmware still links (and maps), and the relink that
+    # follows puts FLASH_TEXT back to the window's true size (_patch_linker_script).
+    span = stub.firmware_max + (stub.text2_max if stub.text2_dest is not None else 0)
+    length = ("%dK" % (span // 1024) if span % 1024 == 0 else "0x%X" % span)
     text, n_length = re.subn(r"(?m)^([ \t]*#define[ \t]+OMV_FLASH_TXT_LENGTH[ \t]+)\S+",
                              r"\g<1>%s" % length, text)
     if n_origin != 1 or n_length != 1:
@@ -641,6 +648,216 @@ def _check_bootloader_room(name: str, boot: Path) -> None:
                          "the board's key area (0x%08X), which flashing it would overwrite"
                          % (name, boot.stat().st_size, se["bootloader_max"], se["key_area"]),
                          exit_code=1)
+
+
+# --- a second text region ------------------------------------------------------------------
+#
+# The STM32H7 boards have a 128 KiB flash sector the bootloader jumps past and nothing uses
+# (0x08020000, the internal filesystem's, which every OTA board keeps on its QSPI part).
+# Behind the stub the firmware window is one sector smaller than the stock firmware was
+# linked for, so the firmware gets that sector back as a second text region: after the
+# build's own link, the tool reads the linker map, packs whole objects (text + rodata) into
+# the sector biggest-first, re-runs the build's link command with the same linker script
+# plus a FLASH_TEXT2 region and an output section that claims them, and cuts the ELF in two.
+# The firmware tree is never edited: the build's generated script is patched in the build
+# directory and the link command is the one `make -n` prints.
+
+TEXT2_SECTION = ".text2"
+TEXT2_MARGIN = 2048                 # alignment slack the packer leaves in the region
+TEXT2_IMAGE = "firmware_text2.bin"  # beside firmware.bin -> <board>-firmware-text2.bin
+
+_MAP_INPUT = re.compile(r"^ (\.(?:text|rodata)(?:\.\S*)?)(?:\s+0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+)\s+(\S.*))?$")
+# A merged string section (`.rodata.<fn>.str1.4`): ld prints the FIRST contributor with the
+# whole merged pool's size (one Portenta object read as 94 KiB of a 58-byte section) and
+# then the input's own size on a "(size before relaxing)" line. The own size is what moves
+# with the object, so it replaces the pool size. (The frozen bytecode's strings are ~45 KiB
+# on the Nicla: leaving merged sections out undercounted it as badly as the pool overcounted.)
+_MAP_BEFORE_RELAX = re.compile(r"^\s+0x([0-9a-fA-F]+)\s+\(size before relaxing\)\s*$")
+_MAP_CONT = re.compile(r"^\s+0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+)\s+(\S.*)$")
+_LD_ARCHIVE = re.compile(r"^(.*\.a)\((.+)\)$")
+
+
+def _make_output(repo: Path, args: list[str]) -> str:
+    try:
+        return subprocess.run([MAKE, *args], cwd=str(repo), check=True, capture_output=True,
+                              text=True).stdout
+    except FileNotFoundError:
+        raise BuildError("make not found - a firmware build toolchain is required",
+                         exit_code=1) from None
+    except subprocess.CalledProcessError as e:
+        raise BuildError("make -n failed (make %s): exit %d" % (" ".join(args), e.returncode),
+                         exit_code=1) from None
+
+
+def _run_cmd(repo: Path, argv: list[str], env: dict | None) -> None:
+    try:
+        subprocess.run(argv, cwd=str(repo), check=True, env=env)
+    except FileNotFoundError:
+        raise BuildError("%s not found - the firmware's toolchain is required" % argv[0],
+                         exit_code=1) from None
+    except subprocess.CalledProcessError as e:
+        raise BuildError("firmware relink failed (%s): exit %d" % (" ".join(argv[:3]), e.returncode),
+                         exit_code=1) from None
+
+
+def _link_command(repo: Path, name: str, build_args: list[str]) -> list[str]:
+    """The firmware's final link, as its Makefile runs it: the `make -n` line that writes
+    ``firmware.elf`` through a ``-Wl,-T`` linker script. Anything else means the firmware's
+    build changed shape and the relink would be guessing, so it is refused."""
+    for line in _make_output(repo, ["-n", *build_args]).splitlines():
+        if " -o " in line and "firmware.elf" in line and "-Wl,-T" in line:
+            return shlex.split(line)
+    raise BuildError("%s: could not find the firmware link command in `make -n` (a line writing "
+                     "firmware.elf with a -Wl,-T linker script) -- the firmware's build changed "
+                     "shape, so the second text region cannot be relinked" % name, exit_code=2)
+
+
+def _map_text_objects(map_text: str) -> dict[str, int]:
+    """``{object: bytes}`` each object contributes to the ``.text`` output section (its text and
+    rodata input sections, after dead-code removal, a merged string section at its own size), from a
+    GNU ld map. An archive member reads ``lib.a(member.o)``, as the map writes it. Both line
+    shapes are read: a short section name with its address/size/object on the same line, a
+    long one with them on the next."""
+    sizes: dict[str, int] = {}
+    in_text = False
+    pending = False
+    last: tuple[str, int] | None = None          # the input section just counted, for a relax line
+    for line in map_text.splitlines():
+        if line and not line[0].isspace():
+            in_text = line.split()[0] == ".text" if line.split() else False
+            pending = False
+            last = None
+            continue
+        if not in_text:
+            continue
+        r = _MAP_BEFORE_RELAX.match(line)
+        if r:
+            if last is not None:
+                obj, counted = last
+                sizes[obj] += int(r.group(1), 16) - counted
+            last = None
+            continue
+        m = _MAP_INPUT.match(line)
+        if m:
+            last = None
+            if m.group(2) is None:
+                pending = True
+                continue
+            obj, n = m.group(4).strip(), int(m.group(3), 16)
+            sizes[obj] = sizes.get(obj, 0) + n
+            last = (obj, n)
+            pending = False
+            continue
+        if pending:
+            c = _MAP_CONT.match(line)
+            if c:
+                obj, n = c.group(3).strip(), int(c.group(2), 16)
+                sizes[obj] = sizes.get(obj, 0) + n
+                last = (obj, n)
+            pending = False
+            continue
+        last = None
+    return sizes
+
+
+def _pack_text2(sizes: dict[str, int], budget: int, prefer=(), exclude=()) -> list[str]:
+    """The objects that go in the second region: ``prefer`` patterns first (in order), then
+    first-fit decreasing over the rest, whole objects only, never a startup object (the vector
+    table's and the clock bring-up's) or an ``exclude`` match. Deterministic: ties by name."""
+    def movable(obj):
+        base = obj.rsplit("/", 1)[-1]
+        return not (base.startswith("startup_") or base.startswith("system_stm32")
+                    or any(x in obj for x in exclude))
+    order = []
+    for pat in prefer:
+        order += sorted((o for o in sizes if pat in o and o not in order), key=lambda o: (-sizes[o], o))
+    order += sorted((o for o in sizes if o not in order), key=lambda o: (-sizes[o], o))
+    chosen, used = [], 0
+    for obj in order:
+        n = sizes[obj]
+        if n <= 0 or not movable(obj) or used + n > budget:
+            continue
+        chosen.append(obj)
+        used += n
+    return chosen
+
+
+def _ld_pattern(obj: str) -> str:
+    """An input-section pattern for an object as the map names it: a plain path as is, an
+    archive member as ``archive:member``."""
+    m = _LD_ARCHIVE.match(obj)
+    return "%s:%s" % (m.group(1), m.group(2)) if m else obj
+
+
+def _patch_linker_script(text: str, dest: int, length: int, objects: list[str],
+                         main_length: int | None = None) -> str:
+    """The build's generated linker script plus the second region: ``FLASH_TEXT2`` after
+    ``FLASH_TEXT`` in MEMORY (and ``FLASH_TEXT`` back to ``main_length``, the window's true
+    size, where the measuring link was given more), and a ``.text2`` output section ahead of
+    ``.text`` that claims the chosen objects' text and rodata (input sections go to the first
+    rule that matches). A script without those two anchors is refused rather than guessed at."""
+    mem = re.search(r"(?m)^([ \t]*)FLASH_TEXT[ \t]*\(rx\)[ \t]*:[^\n]*$", text)
+    sec = re.search(r"(?m)^[ \t]*\.text[ \t]*:[^\n]*$", text)
+    if mem is None or sec is None:
+        raise BuildError("the firmware's linker script has no FLASH_TEXT region or .text section "
+                         "where the second text region expects them -- cannot relink", exit_code=2)
+    main = mem.group(0)
+    if main_length is not None:
+        main, n = re.subn(r"LENGTH[ \t]*=[ \t]*[^,\s}]+", "LENGTH = 0x%X" % main_length, main, count=1)
+        if n != 1:
+            raise BuildError("the firmware's linker script spells FLASH_TEXT without a LENGTH -- "
+                             "cannot relink", exit_code=2)
+    region = "\n%sFLASH_TEXT2 (rx)  : ORIGIN = 0x%08X, LENGTH = 0x%X" % (mem.group(1), dest, length)
+    text = text[:mem.start()] + main + region + text[mem.end():]
+    sec = re.search(r"(?m)^[ \t]*\.text[ \t]*:[^\n]*$", text)
+    rules = "".join("    %s(.text .text.* .rodata .rodata.*)\n" % _ld_pattern(o) for o in objects)
+    section = ("  /* openmv-ota: the second text region, packed by `build firmware` */\n"
+               "  %s : ALIGN(4)\n  {\n%s  } >FLASH_TEXT2\n\n" % (TEXT2_SECTION, rules))
+    return text[:sec.start()] + section + text[sec.start():]
+
+
+def _relink_text2(repo: Path, name: str, build_args: list[str], layout, sdk_home) -> None:
+    """Relink the firmware the build just produced with a second text region and split the
+    ELF into ``firmware.bin`` (the main window) and ``firmware_text2.bin`` (the region)."""
+    cmd = _link_command(repo, name, build_args)
+    lds = next((a[len("-Wl,-T"):] for a in cmd if a.startswith("-Wl,-T")), None)
+    mapf = next((a[len("-Wl,-Map="):] for a in cmd if a.startswith("-Wl,-Map=")), None)
+    if lds is None or mapf is None or "-o" not in cmd:
+        raise BuildError("%s: the firmware link command names no linker script, map or output "
+                         "-- cannot relink the second text region" % name, exit_code=2)
+    lds_path, map_path = repo / lds, repo / mapf
+    elf = repo / cmd[cmd.index("-o") + 1]
+    map_text = map_path.read_text(encoding="utf-8", errors="replace")
+    # Keep the measuring link's map beside the final one: the relink overwrites it, and the
+    # choice below can only be checked against what it was made from.
+    map_path.with_name(map_path.stem + "_measure" + map_path.suffix).write_text(map_text, encoding="utf-8")
+    sizes = _map_text_objects(map_text)
+    chosen = _pack_text2(sizes, layout.text2_max - TEXT2_MARGIN,
+                         layout.text2_prefer, layout.text2_exclude)
+    moved = sum(sizes[o] for o in chosen)
+    print("%s: second text region plan: %d objects, %d of %d bytes: %s"
+          % (name, len(chosen), moved, layout.text2_max,
+             ", ".join("%s=%d" % (o.rsplit("/", 1)[-1], sizes[o]) for o in chosen)))
+    patched = lds_path.with_name(lds_path.stem + "_text2" + lds_path.suffix)
+    patched.write_text(_patch_linker_script(lds_path.read_text(encoding="utf-8"),
+                                            layout.text2_dest, layout.text2_max, chosen,
+                                            main_length=layout.firmware_max),
+                       encoding="utf-8")
+    env = None
+    gcc = Path(sdk_home) / "gcc" / "bin"
+    if gcc.is_dir():                                    # the Makefile put the SDK on its own PATH
+        env = dict(os.environ, PATH="%s%s%s" % (gcc, os.pathsep, os.environ.get("PATH", "")))
+    relink = [("-Wl,-T%s" % patched) if a.startswith("-Wl,-T") else a for a in cmd]
+    _run_cmd(repo, relink, env)
+    objcopy = re.sub(r"gcc$", "objcopy", cmd[0])
+    _run_cmd(repo, [objcopy, "-Obinary", "--remove-section=%s" % TEXT2_SECTION, str(elf),
+                    str(elf.with_name("firmware.bin"))], env)
+    _run_cmd(repo, [objcopy, "-Obinary", "--only-section=%s" % TEXT2_SECTION, str(elf),
+                    str(elf.with_name(TEXT2_IMAGE))], env)
+    biggest = ", ".join(o.rsplit("/", 1)[-1] for o in chosen[:4])
+    print("%s: second text region at 0x%08X holds %d objects, %d of %d bytes (%s%s)"
+          % (name, layout.text2_dest, len(chosen), moved, layout.text2_max, biggest,
+             ", ..." if len(chosen) > 4 else ""))
 
 
 def _collect_outputs(repo: Path, name: str, out_dir: Path) -> list[Path]:

@@ -56,6 +56,13 @@ class StubLayout:
     origin: int
     firmware_dest: int
     firmware_max: int
+    # A second text region, where a board has a flash sector the bootloader jumps past and
+    # nothing uses (the STM32H7 boards' 0x08020000 sector): `build firmware` relinks a
+    # packer-chosen set of objects into it and the image carries it as a second component.
+    text2_dest: int | None = None
+    text2_max: int = 0
+    text2_prefer: tuple[str, ...] = ()      # object-path substrings placed first
+    text2_exclude: tuple[str, ...] = ()     # object-path substrings never moved
 
     @property
     def stub_max(self) -> int:
@@ -74,7 +81,21 @@ def _stub(name: str, raw) -> StubLayout | None:
     if origin <= 0 or size <= 0 or dest <= origin:
         raise ValueError("boards.json: %s has a bad stub layout: origin < firmware_dest and "
                          "firmware_max > 0 required" % name)
-    return StubLayout(origin, dest, size)
+    t2 = raw.get("text2")
+    if t2 is None:
+        return StubLayout(origin, dest, size)
+    try:
+        t2_dest, t2_max = int(str(t2["dest"]), 0), int(str(t2["max"]), 0)
+        prefer, exclude = tuple(t2.get("prefer", ())), tuple(t2.get("exclude", ()))
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError("boards.json: %s has a bad stub text2 region: %s" % (name, e)) from None
+    if t2_max <= 0 or (t2_dest < origin + size + (dest - origin) and t2_dest + t2_max > origin):
+        raise ValueError("boards.json: %s stub text2 region must not overlap the stub or the "
+                         "firmware window" % name)
+    if not all(isinstance(x, str) and x for x in prefer + exclude):
+        raise ValueError("boards.json: %s stub text2 prefer/exclude must be non-empty strings"
+                         % name)
+    return StubLayout(origin, dest, size, t2_dest, t2_max, prefer, exclude)
 
 
 @dataclass(frozen=True)

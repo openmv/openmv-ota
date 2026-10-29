@@ -37,6 +37,20 @@ H7_BOARD = (      # a classic: ROMFS in ONE internal-flash sector (partition == 
     "#define OMV_ROMFS_PART0_ORIGIN 0x081E0000\n"
     "#define OMV_ROMFS_PART0_LENGTH 0x00020000\n"
 )
+H7P_BOARD = (     # the H7 Plus: firmware in internal flash, ROMFS on the QSPI part
+    '#define OMV_BOARD_TYPE "H7P"\n'
+    "#define OMV_FLASH_TXT_ORIGIN                  0x08040000\n"   # the OTA build relinks these
+    "#define OMV_FLASH_TXT_LENGTH                  1792K\n"        # for the boot stub
+    "#define OMV_ROMFS_PART0_ORIGIN                0x91800000\n"
+    "#define OMV_ROMFS_PART0_LENGTH                8M\n"
+)
+ARDUINO_BOARD = (  # Portenta / Giga / Nicla: MCUboot jumps to 0x08040000, ROMFS on the QSPI part
+    '#define OMV_BOARD_TYPE "ARDUINO"\n'
+    "#define OMV_FLASH_TXT_ORIGIN                0x08040000\n"   # the OTA build relinks these
+    "#define OMV_FLASH_TXT_LENGTH                1792K\n"        # for the boot stub
+    "#define OMV_ROMFS_PART0_ORIGIN              0x90B00000\n"
+    "#define OMV_ROMFS_PART0_LENGTH              4M\n"
+)
 N6_BOARD = (
     '#define OMV_BOARD_TYPE "N6"\n'
     "#define OMV_FLASH_TXT_ORIGIN                0x70080000\n"   # the OTA build relinks these
@@ -122,21 +136,32 @@ def make_firmware(tmp_path):
             pc.mkdir(parents=True)
             (pc / "mbedtls_config_port.h").write_text(
                 '#include <time.h>\n#include "extmod/mbedtls/mbedtls_config_common.h"\n')
+        firm_addr = {"OPENMV_N6": "OMV_FIRM_BASE=0x70000000\nOMV_FIRM_ADDR=0x70080000\n",
+                     "OPENMV4P": "OMV_FIRM_BASE=0x08000000\nOMV_FIRM_ADDR=0x08040000\n",
+                     "OPENMVPT": "OMV_FIRM_BASE=0x08000000\nOMV_FIRM_ADDR=0x08040000\n"}
+        for b in ("ARDUINO_PORTENTA_H7", "ARDUINO_GIGA", "ARDUINO_NICLA_VISION"):
+            firm_addr[b] = "OMV_FIRM_ADDR=0x08040000\n"
         for board, content in (("OPENMV_N6", N6_BOARD), ("OPENMV_AE3", AE3_BOARD),
-                               ("OPENMV4", H7_BOARD)):
+                               ("OPENMV4", H7_BOARD), ("OPENMV4P", H7P_BOARD),
+                               ("OPENMVPT", H7P_BOARD), ("ARDUINO_PORTENTA_H7", ARDUINO_BOARD),
+                               ("ARDUINO_GIGA", ARDUINO_BOARD),
+                               ("ARDUINO_NICLA_VISION", ARDUINO_BOARD)):
             d = repo / "boards" / board
             d.mkdir(parents=True)
             (d / "board_config.h").write_text(content)
             (d / "board_config.mk").write_text(
                 "PORT=%s\n" % ("alif" if board == "OPENMV_AE3" else "stm32")
-                + ("OMV_FIRM_BASE=0x70000000\nOMV_FIRM_ADDR=0x70080000\n"
-                   if board == "OPENMV_N6" else ""))
+                + firm_addr.get(board, ""))
             if board == "OPENMV4":       # the features an OTA build turns off live here
                 (d / "imlib_config.h").write_text(
                     "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"
                     "#define IMLIB_ENABLE_QRCODES\n#define IMLIB_ENABLE_DATAMATRICES\n"
                     "#define IMLIB_ENABLE_BARCODES\n#define IMLIB_ENABLE_FIND_DISPLACEMENT\n"
                     "#define IMLIB_ENABLE_FIND_LBP\n#endif\n")
+            if board in ("OPENMV4P", "OPENMVPT"):   # these give up the LAB lookup table instead
+                (d / "imlib_config.h").write_text(
+                    "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"
+                    "#define IMLIB_ENABLE_LAB_LUT\n#define IMLIB_ENABLE_QRCODES\n#endif\n")
         if with_mpy_cross:
             mc = repo / "lib" / "micropython" / "mpy-cross" / "build"
             mc.mkdir(parents=True)

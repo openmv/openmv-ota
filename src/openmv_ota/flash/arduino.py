@@ -60,12 +60,17 @@ def plan(op: str, raw: dict, dfu_util: str, files: dict, serial: str | None = No
     ``firmware``/``romfs`` as the op needs, plus ``wifi`` (a list) for a factory flash."""
     usb, fw, ro = raw["usb"], raw["firmware"], raw["romfs"]
     writes = []                                       # (alt, addr, path, label)
+    text2 = []                                        # the firmware's second text region, if any
+    if "text2" in files:
+        text2 = [(raw["text2"]["alt"], raw["text2"]["addr"], files["text2"], "text2")]
     if op == "factory":                               # full provision: wifi, firmware, romfs
         for entry, path in zip(raw["wifi"], files["wifi"], strict=True):
             writes.append((entry["alt"], entry["addr"], path, "wifi %s" % path.name))
+        writes += text2
         writes.append((fw["alt"], fw["addr"], files["firmware"], "firmware"))
         writes.append((ro["alt"], ro["addr"], files["romfs"], "romfs"))
     elif op == "firmware":
+        writes += text2
         writes.append((fw["alt"], fw["addr"], files["firmware"], "firmware"))
     else:                                             # romfs
         writes.append((ro["alt"], ro["addr"], files["romfs"], "romfs"))

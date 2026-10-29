@@ -137,6 +137,7 @@ def test_the_1792k_boards_get_the_speed_options_too(make_project, monkeypatch):
     Every main-role OTA board whose port builds mbedtls gets them."""
     root, repo, _app = make_project(ota=True, boards=("ARDUINO_NICLA_VISION",))
     monkeypatch.setattr(fw, "_copy_wifi_blobs", lambda *a: [])   # the fake tree has none
+    monkeypatch.setattr(fw, "_relink_text2", lambda *a: None)    # the second region is not under test here
     headers = []
     seen = _capture_make(monkeypatch, headers)
     fw.build_firmware(root, firmware=repo)
@@ -721,6 +722,7 @@ def test_build_firmware_freezes_the_configured_trust_store_once(make_project, mo
     monkeypatch.setattr(fw, "_run_make", fake)
     root, repo, _app = make_project(ota=True, boards=("ARDUINO_NICLA_VISION",))
     monkeypatch.setattr(fw, "_copy_wifi_blobs", lambda *a: [])   # the fake tree has none
+    monkeypatch.setattr(fw, "_relink_text2", lambda *a: None)    # the second region is not under test here
     (root / "device" / "openmv_ca.py").write_text('PEM = b"stale"\n')
     pem = (root / "certs" / "root.pem").read_bytes()
 
@@ -840,6 +842,220 @@ def test_n6_ota_build_relinks_the_firmware_for_the_boot_stub(make_project, monke
     assert "#define OMV_ROMFS_PART0_ORIGIN 0x70800000" in seen["h"]       # untouched neighbours
     assert "OMV_FIRM_ADDR=0x70090000\n" in seen["mk"] and "OMV_FIRM_BASE=0x70000000" in seen["mk"]
     assert src_h.read_text() == before
+
+
+def test_h7_plus_ota_build_relinks_behind_the_stub_and_gets_its_second_region(make_project, monkeypatch):
+    """One 128 KiB sector for the stub, 1660K for the firmware (the record takes the last 4 KiB
+    of the last sector) and the spare 0x08020000 sector as a second text region, relinked after
+    the build's own link. No imlib feature is dropped: the board config is overlaid for the
+    relink alone."""
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    monkeypatch.setattr(fw, "_ensure_mpy_cross", lambda repo: None)
+    relinked = []
+    monkeypatch.setattr(fw, "_relink_text2",
+                        lambda repo, name, args, layout, sdk: relinked.append((name, layout.text2_dest)))
+    root, repo, _app = make_project(boards=("OPENMV4P",), ota=True, ca="tiny")
+    seen = {}
+
+    def spy(repo_, args):
+        if "clean" in args:
+            return fake(repo_, args)
+        overlay = Path(next(a.split("=", 1)[1] for a in args if a.startswith("OMV_BOARD_CONFIG_DIR=")))
+        seen["h"] = (overlay / "board_config.h").read_text()
+        seen["mk"] = (overlay / "board_config.mk").read_text()
+        seen["cfg"] = (overlay / "imlib_config.h").read_text()
+        return fake(repo_, args)
+    monkeypatch.setattr(fw, "_run_make", spy)
+
+    fw.build_firmware(root, firmware=repo, boards=["OPENMV4P"], keep_build_dir=False)
+    assert "#define OMV_FLASH_TXT_ORIGIN                  0x08060000\n" in seen["h"]
+    # the build's own link only measures: both regions' worth of room, so an oversize firmware
+    # still links and maps; the relink puts FLASH_TEXT back to its true 1660K
+    assert "#define OMV_FLASH_TXT_LENGTH                  1788K\n" in seen["h"]
+    assert "#define OMV_ROMFS_PART0_ORIGIN                0x91800000\n" in seen["h"]   # untouched
+    assert "OMV_FIRM_ADDR=0x08060000\n" in seen["mk"] and "OMV_FIRM_BASE=0x08000000" in seen["mk"]
+    assert "#define IMLIB_ENABLE_LAB_LUT\n" in seen["cfg"]                        # nothing dropped
+    assert relinked == [("OPENMV4P", 0x08020000)]
+    assert fw._stub_record_addr("OPENMV4P") == 0x081FF000
+
+
+def test_a_stock_build_of_a_second_region_board_is_not_relinked(make_project, monkeypatch):
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    monkeypatch.setattr(fw, "_ensure_mpy_cross", lambda repo: None)
+    monkeypatch.setattr(fw, "_relink_text2", lambda *a: pytest.fail("relinked a stock build"))
+    root, repo, _app = make_project(boards=("OPENMV4P",))
+    fw.build_firmware(root, firmware=repo, boards=["OPENMV4P"])
+
+
+MAP = """
+Discarded input sections
+ .text.unused   0x00000000       0x40 /b/lib/imlib/zbar.o
+
+Memory Configuration
+
+Linker script and memory map
+
+LOAD /b/lib/imlib/zbar.o
+.text           0x08040000   0x191d6c
+ *(.isr_vector)
+ .isr_vector    0x08040000      0x298 /b/lib/cmsis/src/st/startup_stm32h747xx.o
+                0x08040000                g_pfnVectors
+ *(.text*)
+ .text.Reset_Handler
+                0x08040298       0x4c /b/lib/cmsis/src/st/startup_stm32h747xx.o
+ .text.zbar_scan
+                0x08040300     0x1000 /b/lib/imlib/zbar.o
+ .text.zbar_decode 0x08041300    0x800 /b/lib/imlib/zbar.o
+ .text.dmtx_go  0x08041b00      0x600 /b/lib/imlib/dmtx.o
+ .text.py_image_fn
+                0x08042100      0x400 /b/lib/libmicropython.a(py_image.o)
+ *fill*         0x08042500        0x4
+ .text.tiny     0x08042504       0x10 /b/lib/imlib/small.o
+ *(.rodata*)
+ .rodata.zbar_tab
+                0x08042520      0x200 /b/lib/imlib/zbar.o
+ .rodata.str1.4 0x08042720       0x20 /b/lib/imlib/dmtx.o
+ .rodata.mp_bluetooth_hci_uart_write.str1.1
+                0x08042740    0x16f3a /b/lib/libmicropython.a(mpbthciport.o)
+                                 0x3a (size before relaxing)
+ .text.hci_tiny 0x0805967a        0x8 /b/lib/libmicropython.a(mpbthciport.o)
+.ARM.extab      0x0805967a        0x0
+ .ARM.extab     0x08042740       0x80 /b/lib/imlib/zbar.o
+.data           0x20000000      0x460 load address 0x08042740
+ .data.x        0x20000000       0x20 /b/lib/imlib/zbar.o
+"""
+
+
+def test_map_text_objects_sums_each_objects_text_and_rodata_inside_the_text_section():
+    sizes = fw._map_text_objects(MAP)
+    assert sizes == {
+        "/b/lib/cmsis/src/st/startup_stm32h747xx.o": 0x4c,        # text/rodata only, not the vector table
+        "/b/lib/imlib/zbar.o": 0x1000 + 0x800 + 0x200,        # not the discarded, extab or data bytes
+        "/b/lib/imlib/dmtx.o": 0x600 + 0x20,                   # its merged strings, at their own size
+        "/b/lib/libmicropython.a(py_image.o)": 0x400,          # an archive member, as the map names it
+        "/b/lib/imlib/small.o": 0x10,
+        # the merged pool ld prints on the first contributor is not this object's: the
+        # "(size before relaxing)" line that follows is
+        "/b/lib/libmicropython.a(mpbthciport.o)": 0x3a + 0x8,
+    }
+
+
+def test_pack_text2_is_first_fit_decreasing_with_preference_and_exclusions():
+    sizes = fw._map_text_objects(MAP)
+    # biggest first; the startup object never moves; whatever no longer fits is skipped
+    assert fw._pack_text2(sizes, 0x1a00 + 0x620) == ["/b/lib/imlib/zbar.o", "/b/lib/imlib/dmtx.o"]
+    assert fw._pack_text2(sizes, 0x1a00 + 0x500) == ["/b/lib/imlib/zbar.o", "/b/lib/libmicropython.a(py_image.o)",
+                                                     "/b/lib/libmicropython.a(mpbthciport.o)",
+                                                     "/b/lib/imlib/small.o"]
+    # a preferred pattern goes first even when smaller; an excluded one never goes
+    assert fw._pack_text2(sizes, 0x1a00 + 0x620, prefer=("dmtx",)) == ["/b/lib/imlib/dmtx.o", "/b/lib/imlib/zbar.o"]
+    assert fw._pack_text2(sizes, 0x10000, exclude=("zbar",)) == [
+        "/b/lib/imlib/dmtx.o", "/b/lib/libmicropython.a(py_image.o)",
+        "/b/lib/libmicropython.a(mpbthciport.o)", "/b/lib/imlib/small.o"]
+    assert fw._pack_text2({}, 0x10000) == []
+
+
+LDS = """MEMORY
+{
+  FLASH_TEXT (rx)   : ORIGIN = 0x08060000, LENGTH = 1660K
+  SRAM1 (xrw)       : ORIGIN = 0x30000000, LENGTH = 256K
+}
+SECTIONS
+{
+  .text : ALIGN(4)
+  {
+    KEEP(*(.isr_vector))
+    *(.text*)
+  } >FLASH_TEXT
+}
+"""
+
+
+def test_patch_linker_script_adds_the_region_and_claims_the_objects_before_text():
+    out = fw._patch_linker_script(LDS, 0x08020000, 0x20000,
+                                  ["/b/lib/imlib/zbar.o", "/b/lib/libmicropython.a(py_image.o)"])
+    assert "  FLASH_TEXT (rx)   : ORIGIN = 0x08060000, LENGTH = 1660K\n" \
+           "  FLASH_TEXT2 (rx)  : ORIGIN = 0x08020000, LENGTH = 0x20000\n" in out
+    text2 = out.index(".text2 : ALIGN(4)")
+    assert text2 < out.index(".text : ALIGN(4)")                        # claims its objects first
+    assert "    /b/lib/imlib/zbar.o(.text .text.* .rodata .rodata.*)\n" in out
+    assert "    /b/lib/libmicropython.a:py_image.o(.text .text.* .rodata .rodata.*)\n" in out
+    assert "  } >FLASH_TEXT2\n" in out and out.count("KEEP(*(.isr_vector))") == 1
+    with pytest.raises(BuildError, match="no FLASH_TEXT region or .text section"):
+        fw._patch_linker_script("MEMORY { }", 0x08020000, 0x20000, [])
+    # the measuring link was given room for both regions; the relink restores the real window
+    wide = LDS.replace("LENGTH = 1660K", "LENGTH = 1788K")
+    out = fw._patch_linker_script(wide, 0x08020000, 0x20000, [], main_length=0x19F000)
+    assert "  FLASH_TEXT (rx)   : ORIGIN = 0x08060000, LENGTH = 0x19F000\n" \
+           "  FLASH_TEXT2 (rx)  : ORIGIN = 0x08020000, LENGTH = 0x20000\n" in out
+    with pytest.raises(BuildError, match="without a LENGTH"):
+        fw._patch_linker_script(LDS.replace(", LENGTH = 1660K", ""), 0x08020000, 0x20000, [],
+                                main_length=0x19F000)
+
+
+def test_relink_text2_relinks_with_the_patched_script_and_splits_the_image(tmp_path, monkeypatch, capsys):
+    from openmv_ota.romfs.boards import StubLayout
+    repo = tmp_path / "fw"
+    bdir = repo / "build" / "OPENMV4P"
+    (bdir / "bin").mkdir(parents=True)
+    (bdir / "stm.lds").write_text(LDS)
+    (bdir / "firmware.map").write_text(MAP)
+    link = ("arm-none-eabi-gcc -mthumb -Wl,--gc-sections -Wl,-T%s -Wl,-Map=%s -Wl,--wrap=x "
+            "a.o b.o -o %s -lm" % (bdir / "stm.lds", bdir / "firmware.map", bdir / "bin" / "firmware.elf"))
+    monkeypatch.setattr(fw, "_make_output", lambda repo_, args: "GEN linker script\npython3 gen.py\n%s\nobjcopy ...\n" % link)
+    ran = []
+    monkeypatch.setattr(fw, "_run_cmd", lambda repo_, argv, env: ran.append((argv, env)))
+    sdk = tmp_path / "sdk"
+    (sdk / "gcc" / "bin").mkdir(parents=True)
+    layout = StubLayout(0x08040000, 0x08060000, 0x19F000, 0x08020000, 0x20000)
+    fw._relink_text2(repo, "OPENMV4P", ["TARGET=OPENMV4P"], layout, sdk)
+    relink, cut_main, cut_text2 = ran
+    patched = bdir / "stm_text2.lds"
+    assert "-Wl,-T%s" % patched in relink[0] and "-Wl,-T%s" % (bdir / "stm.lds") not in relink[0]
+    assert relink[0][:2] == ["arm-none-eabi-gcc", "-mthumb"] and relink[0][-1] == "-lm"
+    assert relink[1]["PATH"].startswith(str(sdk / "gcc" / "bin"))          # the SDK's toolchain
+    assert ".text2 : ALIGN(4)" in patched.read_text() and "/b/lib/imlib/zbar.o(" in patched.read_text()
+    assert "FLASH_TEXT (rx)   : ORIGIN = 0x08060000, LENGTH = 0x19F000" in patched.read_text()
+    elf = str(bdir / "bin" / "firmware.elf")
+    assert cut_main[0] == ["arm-none-eabi-objcopy", "-Obinary", "--remove-section=.text2", elf,
+                           str(bdir / "bin" / "firmware.bin")]
+    assert cut_text2[0] == ["arm-none-eabi-objcopy", "-Obinary", "--only-section=.text2", elf,
+                            str(bdir / "bin" / "firmware_text2.bin")]
+    out = capsys.readouterr().out
+    assert "OPENMV4P: second text region at 0x08020000 holds 5 objects" in out and "zbar.o" in out
+
+
+def test_relink_text2_refuses_a_build_it_does_not_recognise(tmp_path, monkeypatch):
+    from openmv_ota.romfs.boards import StubLayout
+    layout = StubLayout(0x08040000, 0x08060000, 0x19F000, 0x08020000, 0x20000)
+    monkeypatch.setattr(fw, "_make_output", lambda repo_, args: "CC foo.c\nld -o firmware.elf x.o\n")
+    with pytest.raises(BuildError, match="could not find the firmware link command"):
+        fw._relink_text2(tmp_path, "OPENMV4P", ["TARGET=OPENMV4P"], layout, tmp_path)
+    monkeypatch.setattr(fw, "_make_output",
+                        lambda repo_, args: "gcc -Wl,-Tx.lds a.o -o bin/firmware.elf\n")   # no map
+    with pytest.raises(BuildError, match="names no linker script, map or output"):
+        fw._relink_text2(tmp_path, "OPENMV4P", ["TARGET=OPENMV4P"], layout, tmp_path)
+
+
+def test_make_output_and_run_cmd_report_their_failures(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(fw, "MAKE", str(tmp_path / "nope"))
+    with pytest.raises(BuildError, match="make not found"):
+        fw._make_output(tmp_path, ["-n"])
+    monkeypatch.setattr(fw, "MAKE", "false")
+    with pytest.raises(BuildError, match="make -n failed"):
+        fw._make_output(tmp_path, ["-n"])
+    with pytest.raises(BuildError, match="not found - the firmware's toolchain is required"):
+        fw._run_cmd(tmp_path, [str(tmp_path / "nope"), "x"], None)
+    with pytest.raises(BuildError, match="firmware relink failed"):
+        fw._run_cmd(tmp_path, ["false"], None)
+    assert fw._make_output(tmp_path, ["-v"]) if fw.MAKE == "make" else True
+    monkeypatch.setattr(fw, "MAKE", "echo")
+    assert fw._make_output(tmp_path, ["hi"]) == "hi\n"
+    fw._run_cmd(tmp_path, ["true"], None)
+    _ = subprocess
 
 
 def test_relink_refuses_a_board_config_that_disagrees_with_the_table(tmp_path):

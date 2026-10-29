@@ -48,6 +48,45 @@ def test_stub_layout_is_parsed_where_a_board_has_one():
         0x70080000, 0x70090000, 0x703FF000 - 0x70090000)
     assert n6.stub_max == 0x10000                              # one 64 KiB erase block
     assert B.get_board("OPENMV_AE3").stub is None             # not yet
+    assert B.get_board("OPENMV4") .stub is None                # 128 KiB romfs: no room for a firmware
+
+
+def test_the_stm32h7_boards_share_one_stub_layout():
+    """Internal flash in 128 KiB sectors: the stub takes the FIRMWARE area's first sector
+    (0x08040000), the firmware moves up one sector, and the install record takes the last
+    4 KiB of the last sector -- firmware_max stops short of it, as on the N6."""
+    from openmv_ota.romfs import boards as B
+    for name in ("OPENMV4P", "OPENMVPT", "ARDUINO_PORTENTA_H7", "ARDUINO_GIGA",
+                 "ARDUINO_NICLA_VISION"):
+        stub = B.get_board(name).stub
+        assert stub is not None, name
+        assert (stub.origin, stub.firmware_dest, stub.firmware_max) == (
+            0x08040000, 0x08060000, 0x081FF000 - 0x08060000), name
+        assert stub.stub_max == 0x20000                                 # one 128 KiB sector
+        assert stub.firmware_dest + stub.firmware_max == 0x081FF000     # the record's 4 KiB
+        # the sector the bootloader jumps past (the unused internal filesystem's) is the
+        # firmware's second text region, so no board drops a feature to fit behind the stub
+        assert (stub.text2_dest, stub.text2_max) == (0x08020000, 0x20000), name
+        assert stub.text2_prefer == () and stub.text2_exclude == ()
+        assert B.get_board(name).ota_firmware_drops == {}, name
+    assert B.get_board("OPENMV_N6").stub.text2_dest is None            # one window is plenty there
+
+
+def test_a_stub_text2_region_is_validated():
+    from openmv_ota.romfs import boards as B
+    base = {"origin": "0x08040000", "firmware_dest": "0x08060000", "firmware_max": "0x19F000"}
+    ok = B._stub("X", {**base, "text2": {"dest": "0x08020000", "max": "0x20000",
+                                         "prefer": ["lib/imlib/"], "exclude": ["main.o"]}})
+    assert (ok.text2_dest, ok.text2_max, ok.text2_prefer, ok.text2_exclude) == (
+        0x08020000, 0x20000, ("lib/imlib/",), ("main.o",))
+    with pytest.raises(ValueError, match="bad stub text2 region"):
+        B._stub("X", {**base, "text2": {"dest": "0x08020000"}})
+    with pytest.raises(ValueError, match="must not overlap"):
+        B._stub("X", {**base, "text2": {"dest": "0x08050000", "max": "0x1000"}})   # the stub's sector
+    with pytest.raises(ValueError, match="must not overlap"):
+        B._stub("X", {**base, "text2": {"dest": "0x08020000", "max": "0"}})
+    with pytest.raises(ValueError, match="non-empty strings"):
+        B._stub("X", {**base, "text2": {"dest": "0x08020000", "max": "0x20000", "prefer": [""]}})
     assert B._stub("X", None) is None
     with pytest.raises(ValueError, match="bad stub layout"):
         B._stub("X", {"firmware_dest": "0x10"})

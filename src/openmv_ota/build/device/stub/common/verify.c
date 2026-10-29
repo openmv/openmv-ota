@@ -25,7 +25,7 @@ const uint8_t STATUS_ATTEMPT[MARKER_SIZE] = {
 };
 
 #define HASH_CHUNK  (4096)
-static uint8_t hash_chunk[HASH_CHUNK] __attribute__((section(".buffers"), aligned(32)));
+static uint8_t hash_chunk[HASH_CHUNK] STUB_BUFFER_SMALL;
 
 void sha256_of(const uint8_t *data, size_t len, uint8_t out[32]) {
     CRYAL_SHA256_CTX ctx;
@@ -197,7 +197,8 @@ void verify_slot(slot_t *s, uint64_t rollback_floor, uint64_t epoch_floor) {
         }
         if (c->installed_size == 0 || (c->dest % STUB_FLASH_BLOCK) != 0 ||
             c->dest < STUB_INSTALL_START || c->dest > STUB_INSTALL_END ||
-            c->installed_size > STUB_INSTALL_END - c->dest) {
+            c->installed_size > STUB_INSTALL_END - c->dest ||
+            stub_sector_overlaps(c->dest, c->installed_size)) {
             return reject(s, "comp-window");
         }
         for (uint32_t j = 0; j < i; j++) {

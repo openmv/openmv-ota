@@ -108,11 +108,12 @@
     },
     "OPENMV4P": {
       "secure_element": {"chip": "soft", "key_area": 134344704, "bootloader_max": 126976},
+      "stub": {"origin": "0x08040000", "firmware_dest": "0x08060000", "firmware_max": "0x19F000", "text2": {"dest": "0x08020000", "max": "0x20000"}},
       "display_name": "OpenMV Cam H7 Plus (STM32H743 w/ SDRAM)",
       "cloud": "full",
       "live_framesize": "QVGA",
       "arch": "OMV4P H7 32768 SDRAM",
-      "flash": {"backend": "dfu", "usb": "37c5:924a", "erase": [{"alt": 3}], "runtime": "37c5:124a", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
+      "flash": {"backend": "dfu", "usb": "37c5:924a", "erase": [{"alt": 3}], "runtime": "37c5:124a", "alt": {"firmware": 2, "romfs": 4, "text2": 1}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -142,9 +143,10 @@
     },
     "OPENMVPT": {
       "secure_element": {"chip": "soft", "key_area": 134344704, "bootloader_max": 126976},
+      "stub": {"origin": "0x08040000", "firmware_dest": "0x08060000", "firmware_max": "0x19F000", "text2": {"dest": "0x08020000", "max": "0x20000"}},
       "display_name": "OpenMV Pure Thermal (STM32H743 w/ SDRAM)",
       "arch": "OPENMVPT 65536 SDRAM",
-      "flash": {"backend": "dfu", "usb": "37c5:9205", "erase": [{"alt": 3}], "runtime": "37c5:1205", "alt": {"firmware": 2, "romfs": 4}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
+      "flash": {"backend": "dfu", "usb": "37c5:9205", "erase": [{"alt": 3}], "runtime": "37c5:1205", "alt": {"firmware": 2, "romfs": 4, "text2": 1}, "bootloader": {"backend": "dfu", "usb": "0483:df11", "alt": 0, "addr": "0x08000000", "instructions": "BOOT0 is sampled at power-on. On an already-programmed camera, force it into system DFU: unplug the camera, jumper BOOT0 to 3.3V (VCC), plug it back in with the jumper held, then remove the jumper after flashing. A virgin (unprogrammed) camera comes up in system DFU on its own -- no jumper needed. Wait for the system DFU bootloader to enumerate."}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -333,11 +335,12 @@
     },
     "ARDUINO_PORTENTA_H7": {
       "secure_element": {"chip": "se050", "bus": 1, "addr": 72, "enable": "SE05X_EN"},
+      "stub": {"origin": "0x08040000", "firmware_dest": "0x08060000", "firmware_max": "0x19F000", "text2": {"dest": "0x08020000", "max": "0x20000"}},
       "display_name": "Arduino Portenta",
       "cloud": "full",
       "live_framesize": "QVGA",
       "arch": "PORTENTA H7 8192 SDRAM",
-      "flash": {"backend": "arduino", "usb": "2341:035b", "erase": [{"alt": 0, "addr": "0x08020000"}, {"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:005b", "pids": ["0x005b", "0x045b", "0x025b", "0x805b"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
+      "flash": {"backend": "arduino", "usb": "2341:035b", "erase": [{"alt": 0, "addr": "0x08020000"}, {"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:005b", "pids": ["0x005b", "0x045b", "0x025b", "0x805b"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "text2": {"alt": 0, "addr": "0x08020000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -367,11 +370,12 @@
     },
     "ARDUINO_GIGA": {
       "secure_element": {"chip": "atecc608", "bus": 4, "addr": 96, "freq": 100000},
+      "stub": {"origin": "0x08040000", "firmware_dest": "0x08060000", "firmware_max": "0x19F000", "text2": {"dest": "0x08020000", "max": "0x20000"}},
       "display_name": "Arduino Giga",
       "cloud": "full",
       "live_framesize": "QVGA",
       "arch": "GIGA H7 8192 SDRAM",
-      "flash": {"backend": "arduino", "usb": "2341:0366", "erase": [{"alt": 0, "addr": "0x08020000"}, {"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:0066", "pids": ["0x0066", "0x0466", "0x0266", "0x8066"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
+      "flash": {"backend": "arduino", "usb": "2341:0366", "erase": [{"alt": 0, "addr": "0x08020000"}, {"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:0066", "pids": ["0x0066", "0x0466", "0x0266", "0x8066"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "text2": {"alt": 0, "addr": "0x08020000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -401,11 +405,12 @@
     },
     "ARDUINO_NICLA_VISION": {
       "secure_element": {"chip": "se050", "bus": 2, "addr": 72, "enable": "SE05X_EN"},
+      "stub": {"origin": "0x08040000", "firmware_dest": "0x08060000", "firmware_max": "0x19F000", "text2": {"dest": "0x08020000", "max": "0x20000"}},
       "display_name": "Arduino Nicla Vision",
       "cloud": "full",
       "live_framesize": "QVGA",
       "arch": "NICLAV H7 1024",
-      "flash": {"backend": "arduino", "usb": "2341:035f", "erase": [{"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:005f", "pids": ["0x005f", "0x045f", "0x055f", "0x025f", "0x805f"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
+      "flash": {"backend": "arduino", "usb": "2341:035f", "erase": [{"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:005f", "pids": ["0x005f", "0x045f", "0x055f", "0x025f", "0x805f"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "text2": {"alt": 0, "addr": "0x08020000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],

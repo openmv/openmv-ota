@@ -15,7 +15,7 @@ typedef struct {
     uint32_t len;
     char text[RING_SIZE];
 } log_ring_t;
-static log_ring_t ring __attribute__((section(".buffers"), aligned(32)));
+static log_ring_t ring STUB_BUFFER_SMALL;
 
 static void ring_putc(char c) {
     if (ring.magic != RING_MAGIC) {

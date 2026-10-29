@@ -259,27 +259,40 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
     stub = get_board(t.name).stub
     if stub is None:
         return body, []
-    fw_name = "%s-firmware.bin" % _target_name(t)
-    # Where `build firmware` leaves it: the same output dir as this build, else the project's
-    # build/ (a romfs build sent elsewhere with --output still packs the project's firmware).
-    places = [out_dir / fw_name]
-    if (p.root / "build") != out_dir:
-        places.append(p.root / "build" / fw_name)
-    for fw_path in places:
-        try:
-            firmware = fw_path.read_bytes()
-            break
-        except OSError:
-            continue
-    else:
-        raise BuildError("%s not found: a %s image carries the firmware its boot stub installs"
-                         " -- run `openmv-ota build firmware` first"
-                         % (" or ".join(str(x) for x in places), t.name), exit_code=1)
+    firmware = _build_product(p, t, out_dir, "%s-firmware.bin" % _target_name(t))
     if len(firmware) > stub.firmware_max:
         raise BuildError("%s firmware is %d bytes but the boot stub's window holds %d (%d over)"
                          % (t.name, len(firmware), stub.firmware_max,
                             len(firmware) - stub.firmware_max), exit_code=1)
-    return components.append(body, [(stub.firmware_dest, firmware)])
+    blobs = [(stub.firmware_dest, firmware)]
+    if stub.text2_dest is not None:
+        # The second text region `build firmware` relinked into the board's spare sector: its
+        # own component, since it has its own destination. Empty when nothing was moved.
+        text2 = _build_product(p, t, out_dir, "%s-firmware-text2.bin" % _target_name(t))
+        if len(text2) > stub.text2_max:
+            raise BuildError("%s second text region is %d bytes but its sector holds %d (%d over)"
+                             % (t.name, len(text2), stub.text2_max, len(text2) - stub.text2_max),
+                             exit_code=1)
+        if text2:
+            blobs.append((stub.text2_dest, text2))
+    return components.append(body, blobs)
+
+
+def _build_product(p, t, out_dir: Path, fname: str) -> bytes:
+    """A file `build firmware` left behind, read from the same output dir as this build, else
+    the project's build/ (a romfs build sent elsewhere with --output still packs the project's
+    firmware). Missing means the firmware was never built, which is the error named."""
+    places = [out_dir / fname]
+    if (p.root / "build") != out_dir:
+        places.append(p.root / "build" / fname)
+    for path in places:
+        try:
+            return path.read_bytes()
+        except OSError:
+            continue
+    raise BuildError("%s not found: a %s image carries the firmware its boot stub installs"
+                     " -- run `openmv-ota build firmware` first"
+                     % (" or ".join(str(x) for x in places), t.name), exit_code=1)
 
 
 def _signer_epoch(signer: _OtaSigner) -> int:

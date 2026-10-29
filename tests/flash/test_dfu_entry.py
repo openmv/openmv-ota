@@ -277,8 +277,9 @@ def test_await_camera_polls_until_the_port_is_back(monkeypatch):
 def nicla(tmp_path, monkeypatch):
     (tmp_path / "build").mkdir()
     for n in ("ARDUINO_NICLA_VISION-firmware.bin", "ARDUINO_NICLA_VISION-factory-romfs.img",
-              "cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"):
+              "ARDUINO_NICLA_VISION-stub.bin", "cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"):
         (tmp_path / "build" / n).write_bytes(b"x")
+    (tmp_path / "build" / "ARDUINO_NICLA_VISION-firmware-text2.bin").write_bytes(b"")   # nothing moved
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: "DFU")
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
     entries = []

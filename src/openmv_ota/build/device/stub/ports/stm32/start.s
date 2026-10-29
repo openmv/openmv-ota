@@ -7,8 +7,6 @@
  * after which the flash controller can be reset under the stub's feet.
  */
 .syntax unified
-.arch armv8.1-m.main
-.fpu softvfp
 .thumb
 
 /* ---- Flash-resident head: what the bootloader sees at the firmware address ---- */
@@ -25,6 +23,10 @@ Reset_Handler:
   cpsid i
   ldr   r0, =_estack
   mov   sp, r0
+
+  /* Whatever the bootloader left on (caches, MPU) that would make the copy below
+     incoherent -- a port's choice, in flash beside this head (see stub_head_prep) */
+  bl    stub_head_prep
 
   /* Code + rodata + vector table: flash -> SRAM */
   ldr   r0, =_scode
@@ -77,10 +79,10 @@ copy_words:
 _svector:
   .word _estack
   .word Reset_Handler
-  .word Default_Handler     /* NMI */
-  .word Default_Handler     /* HardFault */
+  .word NMI_Handler
+  .word HardFault_Handler
   .word Default_Handler     /* MemManage */
-  .word Default_Handler     /* BusFault */
+  .word BusFault_Handler
   .word Default_Handler     /* UsageFault */
   .word Default_Handler     /* SecureFault */
   .word 0
@@ -100,3 +102,12 @@ _svector:
   .global Default_Handler
 Default_Handler:
   b     .
+
+/* A port may handle these (the H7 reads a torn flash word as an ECC fault); by default
+   they park like everything else. */
+  .weak NMI_Handler
+  .thumb_set NMI_Handler, Default_Handler
+  .weak HardFault_Handler
+  .thumb_set HardFault_Handler, Default_Handler
+  .weak BusFault_Handler
+  .thumb_set BusFault_Handler, Default_Handler

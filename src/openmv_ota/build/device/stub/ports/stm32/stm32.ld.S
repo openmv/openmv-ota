@@ -15,6 +15,14 @@ MEMORY
   CODE (rwx)  : ORIGIN = STUB_CODE_ORIGIN,  LENGTH = STUB_CODE_LENGTH
   RAM (rwx)   : ORIGIN = STUB_RAM_ORIGIN,   LENGTH = STUB_RAM_LENGTH
   BUF (rw)    : ORIGIN = STUB_BUF_ORIGIN,   LENGTH = STUB_BUF_LENGTH
+#ifdef STUB_BUF2_ORIGIN
+  /* A board whose big SRAM is too small for every buffer puts the small ones (slot
+     images, the log ring, the read-back chunks) in a second one. */
+  BUF2 (rw)   : ORIGIN = STUB_BUF2_ORIGIN,  LENGTH = STUB_BUF2_LENGTH
+#define STUB_BUF_SMALL_REGION BUF2
+#else
+#define STUB_BUF_SMALL_REGION BUF
+#endif
 }
 
 _stack_size = STUB_STACK_SIZE;
@@ -25,6 +33,8 @@ SECTIONS
   {
     . = ALIGN(4);
     KEEP(*(.flash_head))
+    . = ALIGN(4);
+    KEEP(*(.flash_head.*))      /* the C helper the head calls before the copy (runs in place) */
     . = ALIGN(4);
   } >FLASH
 
@@ -79,6 +89,13 @@ SECTIONS
     . = ALIGN(8);
     _estack = .;
   } >RAM
+
+  .buffers_small (NOLOAD) :
+  {
+    . = ALIGN(32);
+    *(.buffers.small)
+    . = ALIGN(32);
+  } >STUB_BUF_SMALL_REGION
 
   .buffers (NOLOAD) :
   {
