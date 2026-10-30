@@ -19,7 +19,13 @@
 #if defined(STM32H7)
 
 #define QSPI_PAGE_SIZE          (0x100)
-#define QSPI_MAX_HZ             (40000000)      // READ (0x03/0x13) is good to 50 MHz on the parts fitted
+// READ (0x03/0x13) is good to 50 MHz on the parts fitted, but the margin is the controller's:
+// sampling half a clock after the part drives leaves 20 ns at 25 MHz against an output delay
+// of up to 8 ns, and 12.5 ns at 40 MHz. The boards whose bootloader clocks put the stub at
+// 25 MHz (Portenta, Nicla) read 140 boots clean on the fleet; the Giga at 34-40 MHz twice
+// found no part at all (reset timed out, both slots rejected). Everyone gets the 25 MHz margin;
+// the cost is about 0.3 s more per install.
+#define QSPI_MAX_HZ             (25000000)
 #define QSPI_CMD_TIMEOUT        (1000)
 #define QSPI_READ_CHUNK         (0x10000)       // one transfer per timeout
 
@@ -119,16 +125,27 @@ static int write_enable(void) {
 }
 
 // Power-on state: 3-byte addressing, write-disabled, no operation in progress.
+//
+// The part is whatever the previous owner left it: the firmware's driver (1-line commands,
+// continuous read off) or the Arduino DFU bootloader's, which may have switched it to QPI,
+// where it ignores 1-line instructions altogether. A reset is the one thing a QPI part still
+// obeys, so send the pair on 4 lines first (a no-op to a part in SPI mode, which sees nothing
+// it recognises) and then on 1 line, and only then ask the part for its status.
 static int chip_reset(void) {
-    QSPI_CommandTypeDef c = command(CMD_RESET_ENABLE);
-    if (send(&c) != 0) {
-        return -1;
+    static const uint32_t modes[] = { QSPI_INSTRUCTION_4_LINES, QSPI_INSTRUCTION_1_LINE };
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        QSPI_CommandTypeDef c = command(CMD_RESET_ENABLE);
+        c.InstructionMode = modes[i];
+        if (send(&c) != 0) {
+            return -1;
+        }
+        c = command(CMD_RESET_MEMORY);
+        c.InstructionMode = modes[i];
+        if (send(&c) != 0) {
+            return -1;
+        }
+        port_delay_ms(1);                       // tRST: 30 us on the parts fitted
     }
-    c = command(CMD_RESET_MEMORY);
-    if (send(&c) != 0) {
-        return -1;
-    }
-    port_delay_ms(1);
     return poll_status(SR_WIP, 0, QSPI_CMD_TIMEOUT);
 }
 
@@ -163,9 +180,11 @@ int qspi_flash_init(void) {
     qspi.Init.FlashID = QSPI_FLASH_ID_1;
     qspi.Init.DualFlash = QSPI_DUALFLASH_DISABLE;
     if (HAL_QSPI_Init(&qspi) != HAL_OK) {
+        log_line("qspi init failed");
         return -1;
     }
     if (chip_reset() != 0) {
+        log_line("qspi reset timeout");         // no part answered on 1 line: slot reads will fail
         return -1;
     }
     {
@@ -186,6 +205,7 @@ int qspi_flash_init(void) {
         }
         QSPI_CommandTypeDef c = command(CMD_ADDR4_ENABLE);
         if (send(&c) != 0 || poll_status(SR_WIP, 0, QSPI_CMD_TIMEOUT) != 0) {
+            log_line("qspi addr4 failed");
             return -1;
         }
     }
