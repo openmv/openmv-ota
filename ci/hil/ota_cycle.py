@@ -870,6 +870,16 @@ def _enable_stub_uart(project, board):
                            "defaults are not where this expects" % path)
     with open(path, "w") as f:
         f.write(new)
+    # AND OPEN THAT UART FROM THE STUB'S FIRST INSTRUCTION (the stub Makefile's bench hook,
+    # inherited by `openmv-ota build` from the environment). The shipped stub opens a UART only
+    # once a slot VERIFIES and names one, so a boot where both slots fail verification is silent
+    # by design -- and from the UART that boot is indistinguishable from the stub's lines simply
+    # not arriving. Run 41001346542 lost the stub's lines on exactly one hard reset per Arduino
+    # board (Portenta rollback, Giga bad_key) while the firmware booted normally from the install
+    # record each time; 39 J-Link resets by hand on the Portenta node, raw-captured, lost none.
+    # With the UART open first, a rejected slot says so (stub: reject ...), and the trailer's
+    # own open still runs the same code on the same UART, harmlessly, when a slot verifies.
+    os.environ["STUB_DEBUG_UART"] = str(uart)
     log("prepare: openmv_log ENABLED=True UART=%d (the boot stub's debug UART)" % uart)
     return True
 

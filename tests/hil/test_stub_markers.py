@@ -81,15 +81,21 @@ def test_enable_stub_uart_rewrites_the_projects_log_module(tmp_path, monkeypatch
                    "UART = None            # your board's machine.UART id\nBAUD = 115200\n")
     logged = []
     monkeypatch.setattr(ota_cycle, "log", logged.append)
+    monkeypatch.delenv("STUB_DEBUG_UART", raising=False)
     assert ota_cycle._enable_stub_uart(str(tmp_path), "OPENMV4P") is True
     text = mod.read_text()
     assert "\nENABLED = True        # master switch\n" in text
     assert "\nUART = 3            # your board's machine.UART id\n" in text    # the 4P's marker UART
     assert "BAUD = 115200" in text and logged and "UART=3" in logged[0]
+    # ...and the stub build opens that same UART before the slots are read, so a stub that
+    # rejects both slots is heard rather than silent
+    assert os.environ["STUB_DEBUG_UART"] == "3"
     # a board without a stub is left alone (its stub settings go nowhere)
+    monkeypatch.delenv("STUB_DEBUG_UART")
     mod.write_text("ENABLED = False\nUART = None\n")
     assert ota_cycle._enable_stub_uart(str(tmp_path), "OPENMV_RT1060") is False
     assert mod.read_text() == "ENABLED = False\nUART = None\n"
+    assert "STUB_DEBUG_UART" not in os.environ
 
 
 def test_enable_stub_uart_refuses_a_module_without_the_defaults(tmp_path, stub_boards):
