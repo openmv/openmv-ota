@@ -128,6 +128,22 @@ int port_init(void) {
         gpio_clock(pin->gpio);
         HAL_GPIO_Init(pin->gpio, &cfg);
     }
+    #if defined(STM32H7)
+    // 1-line SPI never drives IO2/IO3, which the part reads as WP# and HOLD# (or RESET#) while
+    // its QE bit is clear. Hold both high for as long as the stub owns the bus, rather than
+    // leave them to float; port_jump() hands the pins back as inputs.
+    for (size_t i = STUB_QSPI_PIN_START + 4; i < STUB_QSPI_PIN_START + STUB_QSPI_PIN_COUNT; i++) {
+        const stub_pin_t *pin = &stub_pins[i];
+        GPIO_InitTypeDef cfg = {
+            .Pin = pin->pin,
+            .Pull = GPIO_PULLUP,
+            .Speed = pin->speed,
+            .Mode = GPIO_MODE_OUTPUT_PP,
+        };
+        HAL_GPIO_WritePin(pin->gpio, pin->pin, GPIO_PIN_SET);
+        HAL_GPIO_Init(pin->gpio, &cfg);
+    }
+    #endif
     port_led(false);
 
     SCB_EnableICache();

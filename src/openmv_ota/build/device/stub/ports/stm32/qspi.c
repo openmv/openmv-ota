@@ -25,6 +25,7 @@
 
 #define CMD_WRITE_ENABLE        (0x06)
 #define CMD_READ_STATUS         (0x05)
+#define CMD_READ_ID             (0x9F)
 #define CMD_READ_3B             (0x03)
 #define CMD_READ_4B             (0x13)
 #define CMD_PAGE_PROG_3B        (0x02)
@@ -146,11 +147,16 @@ int qspi_flash_init(void) {
     if (presc > 256) {
         presc = 256;
     }
+    log_kv("qspi presc", presc);
     memset(&qspi, 0, sizeof(qspi));
     qspi.Instance = QUADSPI;
     qspi.Init.ClockPrescaler = presc - 1;
     qspi.Init.FifoThreshold = 4;
-    qspi.Init.SampleShifting = QSPI_SAMPLE_SHIFTING_HALFCYCLE;
+    // No sample shift: the controller samples half a clock after the part drives, which at
+    // <= 40 MHz leaves 12 ns or more over the part's output delay. The half-cycle shift the
+    // firmware's 100 MHz driver needs would sample right on the edge where the part drives
+    // the next bit -- the Nicla's AT25SL128A tore trailer CRCs and even its JEDEC id that way.
+    qspi.Init.SampleShifting = QSPI_SAMPLE_SHIFTING_NONE;
     qspi.Init.FlashSize = __builtin_ctz(STUB_QSPI_FLASH_SIZE) - 1;
     qspi.Init.ChipSelectHighTime = QSPI_CS_HIGH_TIME_2_CYCLE;
     qspi.Init.ClockMode = QSPI_CLOCK_MODE_0;
@@ -161,6 +167,18 @@ int qspi_flash_init(void) {
     }
     if (chip_reset() != 0) {
         return -1;
+    }
+    {
+        // The part's JEDEC id, read right after the reset: the first proof the bus samples
+        // cleanly (a torn id was the tell on the Nicla).
+        uint8_t id[4] = {0};
+        QSPI_CommandTypeDef c = command(CMD_READ_ID);
+        c.DataMode = QSPI_DATA_1_LINE;
+        c.NbData = 3;
+        if (send(&c) == 0) {
+            HAL_QSPI_Receive(&qspi, id, QSPI_CMD_TIMEOUT);
+        }
+        log_kv("qspi jedec", ((uint32_t) id[0] << 16) | ((uint32_t) id[1] << 8) | id[2]);
     }
     if (ADDR4) {
         if (write_enable() != 0) {

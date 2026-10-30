@@ -237,6 +237,7 @@ void verify_slot(slot_t *s, uint64_t rollback_floor, uint64_t epoch_floor) {
 bool verify_blob(const slot_t *s, const component_t *c) {
     uint8_t hash[32];
     if (!sha256_flash(s->start + c->offset, c->size, hash)) {
+        log_line("blob read failed");
         return false;
     }
     return memcmp(hash, c->sha256, 32) == 0;
