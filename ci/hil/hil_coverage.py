@@ -55,6 +55,32 @@ DEVICE_FILES = [
 ]
 _LOGCALL = re.compile(r"\.(?:info|debug|warning|error)\(")
 
+# The boot stub (C) logs on the same UART before the firmware starts; its markers map back
+# to these sources. log_line("x") and log_kv("x", v) print "stub: x" (a kv's value follows
+# at run time), log_str("x") prints x as it is -- the literals are whole lines by design,
+# so a marker substring is checked against them verbatim like the Python ones.
+STUB_DIR = os.path.join(DEVICE, "stub")
+STUB_FILES = sorted(glob.glob(os.path.join(STUB_DIR, "common", "*.c"))
+                    + glob.glob(os.path.join(STUB_DIR, "ports", "*", "*.c")))
+_CLOGCALL = re.compile(r'\blog_(line|kv|str)\(\s*"((?:[^"\\]|\\.)*)"')
+
+
+def stub_log_lines():
+    """(relpath, lineno, text) for every line the stub can put on the UART, as the UART sees
+    it."""
+    for path in STUB_FILES:
+        try:
+            f = open(path)
+        except OSError:
+            continue
+        with f:
+            for lineno, line in enumerate(f, 1):
+                m = _CLOGCALL.search(line)
+                if not m:
+                    continue
+                kind, lit = m.group(1), m.group(2).encode().decode("unicode_escape")
+                yield os.path.relpath(path, REPO), lineno, (lit if kind == "str" else "stub: " + lit)
+
 
 def _import_coverage_map():
     """{marker_substring: marker_id} from ota_cycle -- the single source of truth so this tool
@@ -77,7 +103,8 @@ def _prefixes(s):
 
 def find_source(marker):
     """(relpath, lineno) of the log CALL that emits ``marker``, or (None, None). Matches the
-    longest literal prefix of the marker that appears on a logging call line."""
+    longest literal prefix of the marker that appears on a logging call line -- a Python
+    device module's, or one of the boot stub's (C)."""
     for pref in _prefixes(marker):
         for path in DEVICE_FILES:
             try:
@@ -87,6 +114,9 @@ def find_source(marker):
                             return os.path.relpath(path, REPO), lineno
             except OSError:
                 continue
+        for rel, lineno, text in stub_log_lines():
+            if pref in text:
+                return rel, lineno
     return None, None
 
 

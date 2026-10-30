@@ -117,13 +117,15 @@ def test_erase_romfs_dry_run(proj, monkeypatch, capsys):
 
 def test_arduino_factory_dry_run(proj, capsys):
     root, ran, artifact = proj
-    for n in ("firmware.bin", "factory-romfs.img"):
+    for n in ("firmware.bin", "factory-romfs.img", "stub.bin", "firmware-text2.bin"):
         artifact("ARDUINO_PORTENTA_H7-%s" % n)
     for n in ("cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"):   # build emits these to out_dir
         artifact(n)
     assert main(["flash", "factory", str(root), "-b", "ARDUINO_PORTENTA_H7", "--dry-run"]) == 0
     out = capsys.readouterr().out
+    assert "would run: DFU -w -d ,2341:035b -a 0 -s 0x08020000 " in out   # the second text region
     assert "would run: DFU -w -d ,2341:035b -a 0 -s 0x08040000 " in out   # a later step: keeps -w
+    assert "ARDUINO_PORTENTA_H7-firmware-with-stub.bin" in out              # the composed image, not the bare firmware
     assert "would run: DFU -d ,2341:035b -a 1 -s 0x90F00000 " in out      # the first: no -w
     assert "0x90B00000:leave" in out
 
@@ -132,6 +134,8 @@ def test_flash_in_bootloader_skips_reset(proj, monkeypatch, capsys):
     root, ran, artifact = proj
     monkeypatch.setattr(fl.device, "reset", lambda *a, **k: pytest.fail("should not reset"))
     artifact("ARDUINO_PORTENTA_H7-firmware.bin")
+    artifact("ARDUINO_PORTENTA_H7-stub.bin")
+    (root / "build" / "ARDUINO_PORTENTA_H7-firmware-text2.bin").write_bytes(b"")   # nothing moved: no extra write
     assert main(["flash", "firmware", str(root), "-b", "ARDUINO_PORTENTA_H7",
                  "--in-bootloader"]) == 0
     assert len(ran) == 1

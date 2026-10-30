@@ -19,6 +19,29 @@
 
 #define STUB_VERSION                (1)
 
+// Where the firmware's vector table is (the stub jumps there): the start of the install
+// window unless the board puts a second text region below the firmware.
+#ifndef STUB_FIRMWARE_ADDR
+#define STUB_FIRMWARE_ADDR          STUB_INSTALL_START
+#endif
+
+// A destination range that touches the stub's own sector is never installed: erasing it
+// would take the stub with it. A window that starts above the stub never trips this.
+static inline bool stub_sector_overlaps(uint32_t dest, uint32_t size) {
+    return dest < STUB_FLASH_ORIGIN + STUB_FLASH_LENGTH && STUB_FLASH_ORIGIN < dest + size;
+}
+
+// The smallest unit the install window is programmed in (the N6's octal flash takes 16
+// bytes, the H7's internal flash a 32-byte flash word); a block's tail is padded to it.
+#ifndef STUB_WRITE_UNIT
+#define STUB_WRITE_UNIT             (16)
+#endif
+
+// Scratch placement: the big buffers (decoder dictionary, flash block) and the small ones
+// (slot images, log ring, read-back chunks), which a board may put in a different SRAM.
+#define STUB_BUFFER                 __attribute__((section(".buffers"), aligned(32)))
+#define STUB_BUFFER_SMALL           __attribute__((section(".buffers.small"), aligned(32)))
+
 // ---- Trailer v4 (openmv_ota.ota.trailer) ------------------------------------
 #define TRAILER_MAGIC               (0x52564D4FU)   // "OMVR"
 #define TRAILER_VERSION             (4)

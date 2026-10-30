@@ -6,6 +6,31 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The boot stub on the STM32H7 boards.** The OpenMV Cam H7 Plus and Pure Thermal and the
+  Arduino Portenta H7, Giga and Nicla Vision get the same firmware-in-the-image update the N6
+  has: the stub takes the 128 KiB sector the bootloader jumps to (`0x08040000`), the firmware
+  is relinked one sector up (`0x08060000`, 1660 KiB) and installed from the ROMFS slot a
+  32-byte flash word at a time, the install record sits in the last 4 KiB of the last sector.
+  The sector below the stub (`0x08020000`, the internal filesystem's, unused since these
+  boards keep their filesystem on the QSPI part) becomes the firmware's **second text region**:
+  `build firmware` reads the linker map of the firmware's own link, packs whole objects into
+  the 128 KiB biggest-first and re-runs that link with a `FLASH_TEXT2` region, then cuts the
+  ELF into `<board>-firmware.bin` and `<board>-firmware-text2.bin`; the image carries both as
+  components and `flash` writes both. 1660 + 128 KiB is 4 KiB under the stock window, so no
+  board drops an image feature to fit. The stub reads its slots off the QSPI part in indirect
+  mode (1-line commands; 4-byte addressing on the 32 MiB part) and hands the controller back
+  reset, as both bootloaders leave it; a flash word torn by a power cut reads as an ECC fault
+  and the stub reinstalls. The board table's stub layout gains `text2` (`dest`, `max`,
+  optional `prefer`/`exclude` object patterns).
+- **HIL: the boot stub's own log is captured and scored.** A stub board's project has
+  `openmv_log` enabled on the marker UART (the stub reads its UART from the trailer, which
+  the build fills from the module constants, not from the bench file the firmware reads), the
+  stub's lines are coverage markers (`stub.*`: the verified golden boot, the paid trial, the
+  install and its record, the reverted boot; every "gave up" line forbidden), and the
+  coverage catalog maps them to the stub's C sources.
+
 ### Security
 
 - **The compromised eMudhra root is out of every trust store this tool ships or installs.**

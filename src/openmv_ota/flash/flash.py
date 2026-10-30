@@ -150,6 +150,8 @@ def _dfu_steps(cfg: FlashConfig, board: str, spec: list[tuple[str, str]], tool: 
             f = _firmware_image(board, out_dir) or f
         if not f.exists():
             raise FlashError("missing artifact %s -- build it first" % f)
+        if artifact == "text2" and f.stat().st_size == 0:
+            continue                                 # the packer moved nothing: nothing to write
         resolved.append((artifact, f, alt))
     steps: list[FlashStep] = []
     last = len(resolved) - 1
@@ -345,7 +347,14 @@ def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str,
 def _arduino_files(board: str, op: str, raw: dict, out_dir: Path) -> dict:
     files: dict = {}
     if op in ("firmware", "factory"):
-        files["firmware"] = out_dir / ("%s-firmware.bin" % board)
+        # on a stub board the composed `stub || pad || firmware` image, as on the DFU boards
+        files["firmware"] = _firmware_image(board, out_dir) or out_dir / ("%s-firmware.bin" % board)
+        if "text2" in raw:                           # the firmware's second text region
+            t2 = out_dir / ("%s-firmware-text2.bin" % board)
+            if t2.exists() and t2.stat().st_size > 0:
+                files["text2"] = t2
+            elif not t2.exists():
+                raise FlashError("missing %s -- build it first" % t2)
     if op == "factory":                              # the dual-slot image `build factory-romfs` writes
         files["romfs"] = out_dir / ("%s-factory-romfs.img" % board)
     elif op == "romfs":
@@ -479,6 +488,13 @@ def _arduino_flash(project: str, op: str, board: str, cfg: FlashConfig, action: 
 
 # --- public verbs ---------------------------------------------------------------------------
 
+def _text2_spec(cfg: FlashConfig) -> list[tuple[str, str]]:
+    """The firmware's second text region, on a board whose stub layout has one (its DFU
+    partition is the board's ``text2`` alt): written before the main image so the final
+    step, the one that leaves DFU, stays what it was."""
+    return [("text2", "firmware-text2.bin")] if cfg.has("text2") else []
+
+
 def _firmware_image(board: str, out_dir: Path) -> Path | None:
     """On a board with a boot stub, what goes into the FIRMWARE partition instead of the bare
     firmware: the composed ``stub || pad || firmware`` image (the firmware is linked to run
@@ -504,7 +520,7 @@ def flash_firmware(project: str = ".", *, board: str, output: str | None = None,
         return _arduino_flash(project, "firmware", board, cfg, "flash-firmware", output=output,
                               dfu_util=dfu_util, sdk_home=sdk_home, serial=serial,
                               enter_bootloader=enter_bootloader, dry_run=dry_run)
-    spec = [("firmware", "firmware.bin")]     # a stub board's composed image, see _dfu_steps
+    spec = _text2_spec(cfg) + [("firmware", "firmware.bin")]   # a stub board's composed image, see _dfu_steps
     if cfg.has("coprocessor"):                   # AE3: the HE core ships with the firmware
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
     return _dfu_flash(project, board, cfg, spec, "flash-firmware", output=output,
@@ -560,7 +576,7 @@ def flash_factory(project: str = ".", *, board: str, output: str | None = None,
         return _arduino_flash(project, "factory", board, cfg, "flash-factory", output=output,
                               dfu_util=dfu_util, sdk_home=sdk_home, serial=serial,
                               enter_bootloader=enter_bootloader, dry_run=dry_run)
-    spec = [("firmware", "firmware.bin")]     # a stub board's composed image, see _dfu_steps
+    spec = _text2_spec(cfg) + [("firmware", "firmware.bin")]   # a stub board's composed image, see _dfu_steps
     if cfg.has("coprocessor"):                   # AE3: HE core + its romfs, with the main image
         spec.append(("coprocessor", "firmware-M55_HE.bin"))
         spec.append(("coprocessor_romfs", "coprocessor-romfs.img"))

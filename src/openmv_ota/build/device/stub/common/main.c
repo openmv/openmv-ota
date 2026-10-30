@@ -16,17 +16,8 @@
 #define LED_TRIAL_MS    (250)
 #define LED_STOP_MS     (25)
 
-static slot_t slots[2] __attribute__((section(".buffers"), aligned(32)));
+static slot_t slots[2] STUB_BUFFER_SMALL;
 static record_t record;
-
-static const char *reason_name(uint32_t reason) {
-    switch (reason) {
-        case REASON_TRIAL: return "trial";
-        case REASON_REVERTED: return "reverted";
-        case REASON_REINSTALLED: return "reinstalled";
-        default: return "normal";
-    }
-}
 
 static bool read_slot(slot_t *s, uint32_t index) {
     memset(s, 0, sizeof(*s));
@@ -47,28 +38,54 @@ static int newer(const slot_t *a, const slot_t *b) {
     return (a->counter > b->counter) ? 1 : (a->counter < b->counter) ? -1 : 0;
 }
 
+// Whole literals per line (no runtime words): the HIL keys its markers on them.
 static void jump(uint32_t reason) {
-    log_str("stub: boot ");
-    log_str(reason_name(reason));
-    log_str("\r\n");
-    port_jump(STUB_INSTALL_START);
+    switch (reason) {
+        case REASON_TRIAL: log_line("boot trial"); break;
+        case REASON_REVERTED: log_line("boot reverted"); break;
+        case REASON_REINSTALLED: log_line("boot reinstalled"); break;
+        default: log_line("boot normal"); break;
+    }
+    port_jump(STUB_FIRMWARE_ADDR);
+}
+
+static void log_slot(const slot_t *s) {
+    log_kv("slot", s->index);
+    if (s->ok && s->trial) {
+        log_line("slot trial");
+    } else if (s->ok) {
+        log_line("slot ok");
+    } else {
+        log_line("slot rejected");
+        if (s->reject) {
+            log_str("stub: reject ");
+            log_str(s->reject);
+            log_str("\r\n");
+        }
+    }
 }
 
 // Plausible Cortex-M vector table at the firmware address: stack in RAM, entry in
 // the install window with the Thumb bit. How the plain bootloader boots today.
 static bool vectors_plausible(void) {
     uint8_t v[8];
-    if (port_flash_read(STUB_INSTALL_START, v, sizeof(v)) != 0) {
+    if (port_flash_read(STUB_FIRMWARE_ADDR, v, sizeof(v)) != 0) {
         return false;
     }
     uint32_t sp = (uint32_t) v[0] | ((uint32_t) v[1] << 8) | ((uint32_t) v[2] << 16) | ((uint32_t) v[3] << 24);
     uint32_t pc = (uint32_t) v[4] | ((uint32_t) v[5] << 8) | ((uint32_t) v[6] << 16) | ((uint32_t) v[7] << 24);
     return (sp & 3) == 0 && sp >= STUB_RAM_START && sp <= STUB_RAM_END &&
-           (pc & 1) == 1 && pc >= STUB_INSTALL_START && pc < STUB_INSTALL_END;
+           (pc & 1) == 1 && pc >= STUB_FIRMWARE_ADDR && pc < STUB_INSTALL_END;
 }
 
 int main(void) {
     port_init();
+    #ifdef STUB_DEBUG_UART
+    // A bench build: the UART open from the first instruction, trailer or no trailer. The
+    // shipped stub only trusts a UART a VERIFIED slot names, so a stub that rejects both
+    // slots is silent -- this is how the bench hears why.
+    log_open(STUB_DEBUG_UART, 115200);
+    #endif
     log_str("\r\n--- stub boot ---\r\n");          // the RAM ring sees this; the UART is not open yet
 
     for (uint32_t i = 0; i < 2; i++) {
@@ -108,14 +125,7 @@ int main(void) {
     }
     log_kv("version", STUB_VERSION);
     for (uint32_t i = 0; i < 2; i++) {
-        const slot_t *s = &slots[i];
-        log_str("stub: slot ");
-        log_str(s->index ? "B" : "A");
-        log_str(s->ok ? (s->trial ? " trial" : " ok") : " rejected ");
-        if (!s->ok && s->reject) {
-            log_str(s->reject);
-        }
-        log_str("\r\n");
+        log_slot(&slots[i]);
     }
 
     record_read(&record);
@@ -175,7 +185,7 @@ int main(void) {
     }
     if (vectors_plausible()) {
         log_line("no slot: booting the installed firmware");
-        port_jump(STUB_INSTALL_START);
+        port_jump(STUB_FIRMWARE_ADDR);
     }
     log_line("nothing to boot");
     while (1) {

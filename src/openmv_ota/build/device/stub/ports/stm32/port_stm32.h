@@ -25,9 +25,20 @@ typedef struct {
     uint32_t clk;               // kernel clock selector (an LL_RCC_*_CLKSOURCE_*)
 } stub_uart_t;
 
-// Used by the copied bootloader flash driver (xspi.c).
+// Used by the flash drivers (xspi.c, qspi.c).
 void port_pin_write(uint32_t index, uint32_t state);
 void port_delay_ms(uint32_t ms);
+
+// The head's prep hook (start.s calls it before copying the image to SRAM).
+void stub_head_prep(void);
+
+#if defined(STM32H7)
+// qspi.c: the slots' QSPI part, 1-line commands, addresses relative to the chip.
+int qspi_flash_init(void);
+int qspi_flash_deinit(void);
+int qspi_flash_read(uint32_t addr, uint8_t *buf, uint32_t size);
+int qspi_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size);
+#endif
 
 int xspi_flash_init(void);
 int spi_flash_memory_map(bool dtr);

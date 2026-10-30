@@ -29,6 +29,12 @@ else
 CFLAGS := -O2 -DNDEBUG -MMD
 endif
 
+# A bench build: STUB_DEBUG_UART=<machine.UART id> opens that UART before the slots are read,
+# so a stub that rejects both slots (and so has no trailer to take a UART from) still talks.
+ifdef STUB_DEBUG_UART
+CFLAGS += -DSTUB_DEBUG_UART=$(STUB_DEBUG_UART)
+endif
+
 CFLAGS += $(EXTRA_CFLAGS) -Icommon \
           -I$(PORT_DIR) \
           -Iboards/$(BOARD) \

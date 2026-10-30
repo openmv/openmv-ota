@@ -21,12 +21,12 @@
 // lc=3 lp=0 pb=2 -> (pb * 5 + lp) * 9 + lc = 93; dictionary 0x00040000 little-endian.
 static const uint8_t lzma_props[LZMA_PROPS_SIZE] = { 93, 0x00, 0x00, 0x04, 0x00 };
 
-static uint8_t lzma_dict[LZMA_DICT] __attribute__((section(".buffers"), aligned(32)));
-static uint8_t lzma_probs[LZMA_PROBS_BYTES] __attribute__((section(".buffers"), aligned(32)));
-static uint8_t out_block[STUB_FLASH_BLOCK] __attribute__((section(".buffers"), aligned(32)));
-static uint8_t in_chunk[IN_CHUNK] __attribute__((section(".buffers"), aligned(32)));
-static uint8_t cmp_chunk[IN_CHUNK] __attribute__((section(".buffers"), aligned(32)));
-static uint8_t record_block[RECORD_BLOCK] __attribute__((section(".buffers"), aligned(32)));
+static uint8_t lzma_dict[LZMA_DICT] STUB_BUFFER;
+static uint8_t lzma_probs[LZMA_PROBS_BYTES] STUB_BUFFER;
+static uint8_t out_block[STUB_FLASH_BLOCK] STUB_BUFFER;
+static uint8_t in_chunk[IN_CHUNK] STUB_BUFFER_SMALL;
+static uint8_t cmp_chunk[IN_CHUNK] STUB_BUFFER_SMALL;
+static uint8_t record_block[RECORD_BLOCK] STUB_BUFFER_SMALL;
 
 // LzmaDec asks for two buffers: the probability model, then the dictionary.
 static void *lzma_alloc(ISzAllocPtr p, size_t size) {
@@ -95,7 +95,8 @@ bool record_area_ok(const record_t *r) {
         const record_entry_t *e = &r->entries[i];
         uint8_t hash[32];
         if (e->installed_size == 0 || e->dest < STUB_INSTALL_START || e->dest > STUB_INSTALL_END ||
-            e->installed_size > STUB_INSTALL_END - e->dest) {
+            e->installed_size > STUB_INSTALL_END - e->dest ||
+            stub_sector_overlaps(e->dest, e->installed_size)) {
             return false;
         }
         if (!sha256_flash(e->dest, e->installed_size, hash) || memcmp(hash, e->installed_sha256, 32) != 0) {
@@ -128,8 +129,8 @@ static int flush_block(uint32_t addr, const uint8_t *data, uint32_t n) {
     if (port_flash_erase(addr) != 0) {
         return -1;
     }
-    // Program in 16-byte units: round the tail up (the pad is erased 0xFF already).
-    uint32_t m = (n + 15) & ~15U;
+    // Program in whole write units: round the tail up (the pad is erased 0xFF already).
+    uint32_t m = (n + STUB_WRITE_UNIT - 1) & ~(uint32_t) (STUB_WRITE_UNIT - 1);
     if (m > n) {
         memset((uint8_t *) data + n, 0xFF, m - n);
     }
@@ -255,7 +256,7 @@ static int write_record(const slot_t *s, uint32_t reason) {
     record_block[end + 1] = (crc >> 8) & 0xFF;
     record_block[end + 2] = (crc >> 16) & 0xFF;
     record_block[end + 3] = (crc >> 24) & 0xFF;
-    uint32_t n = (end + 4 + 15) & ~15U;
+    uint32_t n = (end + 4 + STUB_WRITE_UNIT - 1) & ~(uint32_t) (STUB_WRITE_UNIT - 1);
     if (port_flash_write(STUB_RECORD_ADDR, record_block, n) != 0) {
         return -1;
     }
@@ -286,7 +287,11 @@ int install_slot(const slot_t *s, uint32_t reason) {
         }
     }
     ret = write_record(s, reason);
-    log_kv("record written", ret == 0);
+    if (ret == 0) {
+        log_line("record written");
+    } else {
+        log_line("record write failed");
+    }
 done:
     if (port_flash_prog_end() != 0) {
         log_line("memory map restore failed");

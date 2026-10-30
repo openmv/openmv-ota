@@ -539,6 +539,36 @@ def test_ota_image_carries_the_firmware_as_a_component(make_project):
     assert verify_image(image, trailer_bytes, read_root_keys(ProjectPaths(root).root_keys))[0]
 
 
+def test_h7_plus_image_carries_both_firmware_regions_as_components(make_project):
+    """A board whose stub layout has a second text region ships two blobs: the main window's
+    and the spare sector's, each with its own destination and hashes, in that order."""
+    from openmv_ota.ota import components as C
+    from openmv_ota.ota import parse_trailer
+    from tests.build.conftest import FAKE_FIRMWARE, FAKE_TEXT2
+
+    root, repo, app = _build_ota(make_project, boards=("OPENMV4P",), ca="tiny")
+    r = build_mod.build_romfs(root, app=app, firmware=repo,
+                              compile_py=False, convert_models=False)[0]
+    image, trailer_bytes = _read_bundle(r)
+    t = parse_trailer(trailer_bytes)
+    main, text2 = t.components
+    assert (main.dest, main.installed_size) == (0x08060000, len(FAKE_FIRMWARE))
+    assert (text2.dest, text2.installed_size) == (0x08020000, len(FAKE_TEXT2))
+    assert text2.offset >= main.offset + main.size and text2.offset % 16 == 0
+    assert C.decompress(image[text2.offset:text2.offset + text2.size], text2.installed_size) == FAKE_TEXT2
+    assert hashlib.sha256(FAKE_TEXT2).digest() == text2.installed_sha256
+    # nothing moved into the region -> no second component; a region over its sector -> refused
+    (Path(root) / "build" / "OPENMV4P-firmware-text2.bin").write_bytes(b"")
+    r = build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)[0]
+    assert len(parse_trailer(_read_bundle(r)[1]).components) == 1
+    (Path(root) / "build" / "OPENMV4P-firmware-text2.bin").write_bytes(b"\x00" * (0x20000 + 1))
+    with pytest.raises(BuildError, match="second text region is 131073 bytes but its sector holds 131072"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+    (Path(root) / "build" / "OPENMV4P-firmware-text2.bin").unlink()
+    with pytest.raises(BuildError, match="run `openmv-ota build firmware` first"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
 def test_ota_build_needs_the_firmware_built_first(make_project):
     root, repo, app = _build_ota(make_project)
     (Path(root) / "build" / "OPENMV_N6-firmware.bin").unlink()
