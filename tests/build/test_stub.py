@@ -167,6 +167,9 @@ def test_the_stub_sources_ship_as_package_data():
     assert (stub_mod.STUB_DIR / "Makefile").is_file()
     assert (stub_mod.STUB_DIR / "boards" / "OPENMV_N6" / "stub_config.h").is_file()
     assert (stub_mod.STUB_DIR / "common" / "stub.h").is_file()
+    for port, board in (("stm32", "OPENMV4P"), ("alif", "OPENMV_AE3"), ("mimxrt", "OPENMV_RT1060")):
+        assert (stub_mod.STUB_DIR / "ports" / port / "port.c").is_file()
+        assert (stub_mod.STUB_DIR / "boards" / board / "board.mk").is_file()
 
 
 def test_compose_image_pads_the_stub_to_the_firmwares_destination():

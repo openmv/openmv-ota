@@ -360,8 +360,12 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
 
 
 _FLASH_ORIGIN_RE = re.compile(
-    r"(?m)^([ \t]*#define[ \t]+OMV_FLASH(?:_TXT)?_ORIGIN[ \t]+)(0[xX][0-9A-Fa-f]+|[0-9]+)\b")
-_FLASH_LENGTH_RE = re.compile(r"(?m)^([ \t]*#define[ \t]+OMV_FLASH(?:_TXT)?_LENGTH[ \t]+)\S+")
+    r"(?m)^([ \t]*#define[ \t]+OMV_FLASH(_[A-Z0-9]+)?_ORIGIN[ \t]+)(0[xX][0-9A-Fa-f]+|[0-9]+)\b")
+
+
+def _flash_length_re(infix: str):
+    """The LENGTH define that pairs with an ``OMV_FLASH<infix>_ORIGIN`` define."""
+    return re.compile(r"(?m)^([ \t]*#define[ \t]+OMV_FLASH%s_LENGTH[ \t]+)\S+" % re.escape(infix))
 
 
 def _relink_for_stub(overlay: Path, name: str, stub) -> None:
@@ -369,13 +373,18 @@ def _relink_for_stub(overlay: Path, name: str, stub) -> None:
 
     On a board with a boot stub the stub takes the start of the firmware area and the
     firmware runs from ``stub.firmware_dest``, with ``stub.firmware_max`` bytes to grow into.
-    The firmware is position-dependent, so it has to be linked there: the text origin and
-    length in ``board_config.h`` (``OMV_FLASH_TXT_ORIGIN`` on the stm32 boards,
-    ``OMV_FLASH_ORIGIN`` on the alif ones, where each core has its own) and ``OMV_FIRM_ADDR``
-    in ``board_config.mk``. The origin to move is found by VALUE: the firmware's text starts
-    today exactly where the stub goes, and the length define that follows it is the window.
-    The config must agree with the board table or the stub would jump into the wrong place,
-    so one that does not is a build error, not a guess.
+    The firmware is position-dependent, so it has to be linked there: the origin defines in
+    ``board_config.h`` (``OMV_FLASH_TXT_ORIGIN`` on the stm32 boards, ``OMV_FLASH_ORIGIN`` on
+    the alif ones, where each core has its own, ``OMV_FLASH_APP_ORIGIN`` *and*
+    ``OMV_FLASH_TXT_ORIGIN`` on the mimxrt ones, whose image is a header block and then the
+    text) and ``OMV_FIRM_ADDR`` in ``board_config.mk``. The origin to move is found by VALUE:
+    the firmware's image starts today exactly where the stub goes. Every other
+    ``OMV_FLASH*_ORIGIN`` that lies inside the stub's span (origin up to the destination)
+    is a sub-region of that image and moves with it, keeping its offset; each one's LENGTH
+    define (the one with the same name) becomes the window's size from there, so every
+    region ends where the firmware window ends. The config must agree with the board table
+    or the stub would jump into the wrong place, so one that does not is a build error, not
+    a guess.
 
     The bootloader is built from this same config and jumps to ``OMV_FIRM_ADDR``: a -U/-D
     pair appended to the port's ``OMV_BOOT_CFLAGS`` keeps that jump at the stub's origin."""
@@ -386,25 +395,37 @@ def _relink_for_stub(overlay: Path, name: str, stub) -> None:
         raise BuildError("boards/%s/board_config.h not found in the firmware checkout; the "
                          "OTA firmware build relinks it for the boot stub" % name,
                          exit_code=2) from None
-    hits = [m for m in _FLASH_ORIGIN_RE.finditer(text) if int(m.group(2), 0) == stub.origin]
-    if len(hits) != 1:
+    hits = [m for m in _FLASH_ORIGIN_RE.finditer(text)
+            if stub.origin <= int(m.group(3), 0) < stub.firmware_dest]
+    if sum(1 for m in hits if int(m.group(3), 0) == stub.origin) != 1:
         raise BuildError("boards/%s/board_config.h does not place the firmware text at 0x%08X "
-                         "exactly once (an OMV_FLASH_TXT_ORIGIN / OMV_FLASH_ORIGIN define), which "
-                         "the boot stub's relink expects -- the board table and the firmware "
-                         "disagree" % (name, stub.origin), exit_code=2)
-    origin = hits[0]
-    length = _FLASH_LENGTH_RE.search(text, origin.end())
-    if length is None:
-        raise BuildError("boards/%s/board_config.h has no OMV_FLASH_TXT_LENGTH / OMV_FLASH_LENGTH "
-                         "define after the firmware's origin, which the boot stub's relink "
-                         "expects -- the board table and the firmware disagree" % name, exit_code=2)
+                         "exactly once (an OMV_FLASH_TXT_ORIGIN / OMV_FLASH_APP_ORIGIN / "
+                         "OMV_FLASH_ORIGIN define), which the boot stub's relink expects -- the "
+                         "board table and the firmware disagree" % (name, stub.origin), exit_code=2)
     # With a second text region the build's own link only measures: it gets the two regions'
     # combined length so an oversize firmware still links (and maps), and the relink that
     # follows puts FLASH_TEXT back to the window's true size (_patch_linker_script).
     span = stub.firmware_max + (stub.text2_max if stub.text2_dest is not None else 0)
-    size = ("%dK" % (span // 1024) if span % 1024 == 0 else "0x%X" % span)
-    new_h = (text[:origin.start(2)] + "0x%08X" % stub.firmware_dest + text[origin.end():length.start()]
-             + length.group(1) + size + text[length.end():])
+    delta = stub.firmware_dest - stub.origin
+    edits: list[tuple[int, int, str]] = []
+    for m in hits:
+        value, infix = int(m.group(3), 0), m.group(2) or ""
+        length = _flash_length_re(infix).search(text, m.end())
+        if length is None:
+            raise BuildError("boards/%s/board_config.h has no OMV_FLASH%s_LENGTH define after "
+                             "OMV_FLASH%s_ORIGIN, which the boot stub's relink expects -- the board "
+                             "table and the firmware disagree" % (name, infix, infix), exit_code=2)
+        size = span - (value - stub.origin)
+        edits.append((m.start(3), m.end(3), "0x%08X" % (value + delta)))
+        edits.append((length.start(), length.end(), length.group(1)
+                      + ("%dK" % (size // 1024) if size % 1024 == 0 else "0x%X" % size)))
+    if len({e[0] for e in edits}) != len(edits):
+        raise BuildError("boards/%s/board_config.h pairs two origins with one OMV_FLASH*_LENGTH "
+                         "define, which the boot stub's relink cannot move -- the board table and "
+                         "the firmware disagree" % name, exit_code=2)
+    new_h = text
+    for s, e, rep in sorted(edits, reverse=True):       # from the end: offsets stay valid
+        new_h = new_h[:s] + rep + new_h[e:]
     mk = overlay / "board_config.mk"
     try:
         text = mk.read_text(encoding="utf-8")

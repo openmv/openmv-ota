@@ -58,6 +58,19 @@ N6_BOARD = (
     "#define OMV_ROMFS_PART0_ORIGIN 0x70800000\n"
     "#define OMV_ROMFS_PART0_LENGTH 0x01800000\n"
 )
+RT_BOARD = (      # the RT1062: one FlexSPI part; the image is a header block (FCB, IVT, vectors) then text
+    '#define OMV_BOARD_TYPE "RT1060"\n'
+    "#define OMV_FLASH_ORIGIN                0x60000000\n"   # the whole part: left alone
+    "#define OMV_FLASH_LENGTH                0x00800000\n"
+    "#define OMV_FLASH_APP_ORIGIN            0x60040000   // 256K reserved for bootloader\n"   # relinked
+    "#define OMV_FLASH_APP_LENGTH            0x007C0000\n"
+    "#define OMV_FLASH_TXT_ORIGIN            0x60043000\n"   # moves with it, keeping its offset
+    "#define OMV_FLASH_TXT_LENGTH            0x00380000\n"
+    "#define OMV_FLASH_FFS_ORIGIN            0x60400000\n"   # /flash: left alone
+    "#define OMV_FLASH_FFS_LENGTH            0x00400000\n"
+    "#define OMV_ROMFS_PART0_ORIGIN          0x60800000\n"
+    "#define OMV_ROMFS_PART0_LENGTH          8M\n"
+)
 AE3_BOARD = (     # the AE3: two cores in MRAM, each with its own text window; ROMFS0 on the OSPI part
     '#define OMV_BOARD_TYPE "AE3"\n'
     "#if CORE_M55_HP\n"
@@ -144,10 +157,12 @@ def make_firmware(tmp_path):
         firm_addr = {"OPENMV_N6": "OMV_FIRM_BASE=0x70000000\nOMV_FIRM_ADDR=0x70080000\n",
                      "OPENMV4P": "OMV_FIRM_BASE=0x08000000\nOMV_FIRM_ADDR=0x08040000\n",
                      "OPENMVPT": "OMV_FIRM_BASE=0x08000000\nOMV_FIRM_ADDR=0x08040000\n",
-                     "OPENMV_AE3": "OMV_BOOT_ADDR=0x80000000\nOMV_FIRM_ADDR=0x80020000\n"}
+                     "OPENMV_AE3": "OMV_BOOT_ADDR=0x80000000\nOMV_FIRM_ADDR=0x80020000\n",
+                     "OPENMV_RT1060": "OMV_FIRM_BASE=0x60000000\nOMV_FIRM_ADDR=0x60000000\n"}
         for b in ("ARDUINO_PORTENTA_H7", "ARDUINO_GIGA", "ARDUINO_NICLA_VISION"):
             firm_addr[b] = "OMV_FIRM_ADDR=0x08040000\n"
         for board, content in (("OPENMV_N6", N6_BOARD), ("OPENMV_AE3", AE3_BOARD),
+                               ("OPENMV_RT1060", RT_BOARD),
                                ("OPENMV4", H7_BOARD), ("OPENMV4P", H7P_BOARD),
                                ("OPENMVPT", H7P_BOARD), ("ARDUINO_PORTENTA_H7", ARDUINO_BOARD),
                                ("ARDUINO_GIGA", ARDUINO_BOARD),
@@ -156,7 +171,7 @@ def make_firmware(tmp_path):
             d.mkdir(parents=True)
             (d / "board_config.h").write_text(content)
             (d / "board_config.mk").write_text(
-                "PORT=%s\n" % ("alif" if board == "OPENMV_AE3" else "stm32")
+                "PORT=%s\n" % {"OPENMV_AE3": "alif", "OPENMV_RT1060": "mimxrt"}.get(board, "stm32")
                 + firm_addr.get(board, ""))
             if board == "OPENMV4":       # the features an OTA build turns off live here
                 (d / "imlib_config.h").write_text(
