@@ -47,8 +47,52 @@ def test_stub_layout_is_parsed_where_a_board_has_one():
     assert (n6.origin, n6.firmware_dest, n6.firmware_max) == (
         0x70080000, 0x70090000, 0x703FF000 - 0x70090000)
     assert n6.stub_max == 0x10000                              # one 64 KiB erase block
-    assert B.get_board("OPENMV_AE3").stub is None             # not yet
+    assert n6.record_addr == 0x703FF000 and n6.coproc_dest is None and n6.record is None
     assert B.get_board("OPENMV4") .stub is None                # 128 KiB romfs: no room for a firmware
+
+
+def test_the_ae3_stub_layout_spans_both_cores():
+    """MRAM has no erase blocks, so the stub takes 32 KiB of the HP partition and the HP
+    firmware follows it; the HE image is a second component in its own partition, and the
+    install record takes the last 4 KiB of the HE partition (the last install window), so
+    firmware_dest + firmware_max is NOT where it lives."""
+    from openmv_ota.romfs import boards as B
+    ae3 = B.get_board("OPENMV_AE3").stub
+    assert (ae3.origin, ae3.firmware_dest, ae3.firmware_max) == (
+        0x80020000, 0x80028000, 0x80320000 - 0x80028000)
+    assert ae3.stub_max == 0x8000
+    assert (ae3.coproc_dest, ae3.coproc_max) == (0x80320000, 0x8047D000 - 0x80320000)
+    assert ae3.record_addr == 0x8047D000 == ae3.coproc_dest + ae3.coproc_max
+    assert ae3.text2_dest is None
+    assert B.firmware_image_name("OPENMV_AE3") == "OPENMV_AE3-firmware-M55_HP.bin"
+    assert B.coprocessor_image_name("OPENMV_AE3") == "OPENMV_AE3-firmware-M55_HE.bin"
+    assert B.firmware_image_name("OPENMV_N6") == "OPENMV_N6-firmware.bin"
+    assert B.coprocessor_image_name("OPENMV_N6") == "OPENMV_N6-firmware-M55_HE.bin"   # the default name
+    assert B.firmware_image_name("ARDUINO_GIGA") == "ARDUINO_GIGA-firmware.bin"     # no flash.file map
+
+
+def test_a_stub_coprocessor_window_and_record_are_validated():
+    from openmv_ota.romfs import boards as B
+    base = {"origin": "0x80020000", "firmware_dest": "0x80028000", "firmware_max": "0x2F8000"}
+    ok = B._stub("X", {**base, "coprocessor": {"dest": "0x80320000", "max": "0x15D000"},
+                       "record": "0x8047D000"})
+    assert (ok.coproc_dest, ok.coproc_max, ok.record_addr) == (0x80320000, 0x15D000, 0x8047D000)
+    with pytest.raises(ValueError, match="bad stub coprocessor window"):
+        B._stub("X", {**base, "coprocessor": {"dest": "0x80320000"}})
+    with pytest.raises(ValueError, match="must follow the firmware window"):
+        B._stub("X", {**base, "coprocessor": {"dest": "0x80300000", "max": "0x1000"}})
+    with pytest.raises(ValueError, match="must follow the firmware window"):
+        B._stub("X", {**base, "coprocessor": {"dest": "0x80320000", "max": "0"}})
+    with pytest.raises(ValueError, match="bad stub record address"):
+        B._stub("X", {**base, "record": "x"})
+    for bad in ("0x80028100",      # not a sector
+                "0x80010000",      # below the stub
+                "0x80100000",      # inside the firmware window
+                "0x80400000"):     # inside the coprocessor window
+        with pytest.raises(ValueError, match="outside the stub and the install windows"):
+            B._stub("X", {**base, "coprocessor": {"dest": "0x80320000", "max": "0x15D000"},
+                          "record": bad})
+    assert B._stub("X", {**base, "record": "0x80320000"}).record_addr == 0x80320000   # no coprocessor
 
 
 def test_the_stm32h7_boards_share_one_stub_layout():

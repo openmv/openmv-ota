@@ -6,7 +6,7 @@
 
 HAL_DIR   := $(OMV_DIR)/lib/stm32/$(HAL_SERIES)
 CMSIS_DIR := $(OMV_DIR)/lib/cmsis
-LDSCRIPT  := $(PORT_DIR)/stm32.ld.S
+LDSCRIPT  := common/stub.ld.S
 
 CFLAGS += -std=gnu11 \
           -Wall \
@@ -46,7 +46,7 @@ LDFLAGS += -mthumb \
 
 SRC_C += $(PORT_DIR)/port.c
 
-SRC_S += $(PORT_DIR)/start.s
+SRC_S += common/start.s
 
 SRC_C += $(addprefix $(HAL_DIR)/src/, \
          stm32$(HAL_SERIES)xx_hal.c \

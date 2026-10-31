@@ -63,11 +63,24 @@ class StubLayout:
     text2_max: int = 0
     text2_prefer: tuple[str, ...] = ()      # object-path substrings placed first
     text2_exclude: tuple[str, ...] = ()     # object-path substrings never moved
+    # A second core's firmware (the AE3's M55_HE image), where the board has one: its own
+    # partition, its own component, installed by the same stub from the same slot.
+    coproc_dest: int | None = None
+    coproc_max: int = 0
+    # Where the install record lives when it is not the sector after the firmware window
+    # (the AE3 keeps it at the end of the HE partition, the last of its install windows).
+    record: int | None = None
 
     @property
     def stub_max(self) -> int:
         """Bytes the stub binary may take: its sector(s), up to the firmware's destination."""
         return self.firmware_dest - self.origin
+
+    @property
+    def record_addr(self) -> int:
+        """The install record's 4 KiB: ``record`` where the board names one, else the sector
+        after the firmware's install window (``docs/design/firmware-updates.md``)."""
+        return self.record if self.record is not None else self.firmware_dest + self.firmware_max
 
 
 def _stub(name: str, raw) -> StubLayout | None:
@@ -81,21 +94,60 @@ def _stub(name: str, raw) -> StubLayout | None:
     if origin <= 0 or size <= 0 or dest <= origin:
         raise ValueError("boards.json: %s has a bad stub layout: origin < firmware_dest and "
                          "firmware_max > 0 required" % name)
+    t2_dest, t2_max, prefer, exclude = None, 0, (), ()
     t2 = raw.get("text2")
-    if t2 is None:
-        return StubLayout(origin, dest, size)
-    try:
-        t2_dest, t2_max = int(str(t2["dest"]), 0), int(str(t2["max"]), 0)
-        prefer, exclude = tuple(t2.get("prefer", ())), tuple(t2.get("exclude", ()))
-    except (KeyError, TypeError, ValueError) as e:
-        raise ValueError("boards.json: %s has a bad stub text2 region: %s" % (name, e)) from None
-    if t2_max <= 0 or (t2_dest < origin + size + (dest - origin) and t2_dest + t2_max > origin):
-        raise ValueError("boards.json: %s stub text2 region must not overlap the stub or the "
-                         "firmware window" % name)
-    if not all(isinstance(x, str) and x for x in prefer + exclude):
-        raise ValueError("boards.json: %s stub text2 prefer/exclude must be non-empty strings"
-                         % name)
-    return StubLayout(origin, dest, size, t2_dest, t2_max, prefer, exclude)
+    if t2 is not None:
+        try:
+            t2_dest, t2_max = int(str(t2["dest"]), 0), int(str(t2["max"]), 0)
+            prefer, exclude = tuple(t2.get("prefer", ())), tuple(t2.get("exclude", ()))
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError("boards.json: %s has a bad stub text2 region: %s" % (name, e)) from None
+        if t2_max <= 0 or (t2_dest < origin + size + (dest - origin) and t2_dest + t2_max > origin):
+            raise ValueError("boards.json: %s stub text2 region must not overlap the stub or the "
+                             "firmware window" % name)
+        if not all(isinstance(x, str) and x for x in prefer + exclude):
+            raise ValueError("boards.json: %s stub text2 prefer/exclude must be non-empty strings"
+                             % name)
+    cp_dest, cp_max = None, 0
+    cp = raw.get("coprocessor")
+    if cp is not None:
+        try:
+            cp_dest, cp_max = int(str(cp["dest"]), 0), int(str(cp["max"]), 0)
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError("boards.json: %s has a bad stub coprocessor window: %s"
+                             % (name, e)) from None
+        if cp_max <= 0 or cp_dest < dest + size:
+            raise ValueError("boards.json: %s stub coprocessor window must follow the firmware "
+                             "window" % name)
+    record = raw.get("record")
+    if record is not None:
+        try:
+            record = int(str(record), 0)
+        except (TypeError, ValueError) as e:
+            raise ValueError("boards.json: %s has a bad stub record address: %s" % (name, e)) from None
+        windows = [(dest, size), (cp_dest, cp_max)] if cp_dest is not None else [(dest, size)]
+        if record % 4096 or record < origin or any(w <= record < w + n for w, n in windows):
+            raise ValueError("boards.json: %s stub record must be a sector outside the stub and "
+                             "the install windows" % name)
+    return StubLayout(origin, dest, size, t2_dest, t2_max, prefer, exclude, cp_dest, cp_max, record)
+
+
+def firmware_image_name(name: str) -> str:
+    """The main firmware image ``build firmware`` leaves in the output dir, ``<board>-<file>``:
+    ``firmware.bin`` unless the board's ``flash.file`` map names it otherwise (the AE3's
+    per-core ``firmware-M55_HP.bin``)."""
+    return "%s-%s" % (name, _flash_file(name, "firmware", "firmware.bin"))
+
+
+def coprocessor_image_name(name: str) -> str:
+    """The second core's firmware image, ``<board>-<file>`` (the AE3's ``firmware-M55_HE.bin``),
+    from the board's ``flash.file`` map."""
+    return "%s-%s" % (name, _flash_file(name, "coprocessor", "firmware-M55_HE.bin"))
+
+
+def _flash_file(name: str, artifact: str, default: str) -> str:
+    flash = get_board(name).flash or {}
+    return flash.get("file", {}).get(artifact, default)
 
 
 @dataclass(frozen=True)
