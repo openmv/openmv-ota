@@ -153,7 +153,9 @@ def test_trial_mark_is_the_stubs_record_on_a_stub_board(monkeypatch):
     expect, _ = ota_cycle.scenario_markers("OPENMV_N6", "delta")
     assert "boot.stub" in expect
     assert not expect & {"boot.marked", "boot.marked_verify"}
-    expect, _ = ota_cycle.scenario_markers("OPENMV_RT1060", "delta")
+    expect, _ = ota_cycle.scenario_markers("OPENMV_RT1060", "delta")   # the RT1062 has one too
+    assert "boot.stub" in expect and "stub.fast_path" in expect
+    expect, _ = ota_cycle.scenario_markers("OPENMV4", "delta")          # a classic: no stub
     assert {"boot.marked", "boot.marked_verify"} <= expect
     assert "boot.stub" not in expect
     # the watchdog scenario inherits delta's expect list, placeholder included
