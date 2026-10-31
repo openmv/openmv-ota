@@ -29,6 +29,13 @@ _stack_size = STUB_STACK_SIZE;
 
 SECTIONS
 {
+  .flash_pad :
+  {
+    KEEP(*(.flash_pad))         /* a port's blank lead-in before the head (mimxrt: the FCB and
+                                   IVT slots of the image this region used to hold; the resident
+                                   bootloader jumps past them) -- empty on every other port */
+  } >FLASH
+
   .flash_head :
   {
     . = ALIGN(4);

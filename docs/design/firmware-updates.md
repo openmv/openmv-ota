@@ -401,17 +401,73 @@ is executing.
 Measured: stock HP image 2.90 MB, HE 1.15 MB; with the OTA additions (~76 KB, HP
 only) both fit their windows with room.
 
-### Others (filled in as each is done)
+### OPENMV_RT1060 (i.MX RT1062)
 
-- **RT1062:** FlexSPI remap could point execution at a slot with no copy, or copy
-  for one shared model. *Open.*
+One 16 MB QSPI NOR part on FlexSPI, memory-mapped at 0x60000000 (XIP) and holding
+everything: the boot chain, the firmware, `/flash` and the ROMFS slots. The chip's
+ROM reads the FCB at the start of the part and runs NXP's MCU bootloader from
+0x60001000 (the "SBL" `flash factory --provision` writes); the SBL checks the vector
+table at **0x60042000** — the FLASH_ISR slot of a firmware image laid out from
+0x60040000 (FCB copy at +0, IVT at +0x1000, vectors at +0x2000, text at +0x3000) —
+and jumps to it with the caches on, the MPU off and interrupts enabled.
+
+| Region | Range | Today | With the stub |
+|---|---|---|---|
+| FCB + SBL | 0x60000000–0x60040000 | ROM config block, MCU bootloader | unchanged |
+| FIRMWARE | 0x60040000–0x60400000 (3.75 MB) | firmware image, vectors at 0x60042000 | stub region 0x60040000–0x60050000 (64 KB; its head at 0x60042000, the 8 KB before it blank) · firmware 0x60050000–0x603FF000 (3772 KB, same internal layout, vectors at 0x60052000) · install record at 0x603FF000 |
+| /flash | 0x60400000–0x60800000 | FAT | unchanged |
+| ROMFS0 | 0x60800000–0x61000000 (8 MB) | A/B, 4 MB each | A/B, 4 MB each, ~1.1 MB of each now the firmware blob |
+
+The stub region starts where the image started, so the board table's `origin` is
+0x60040000 and the stub binary begins with 8 KB of 0xFF (`.flash_pad`, the FCB and
+IVT slots the SBL never reads); the composed `stub ‖ pad ‖ firmware` image is
+written at 0x60040000 by `blhost` exactly as the bare firmware was. The relink moves
+**two** origin defines: `OMV_FLASH_APP_ORIGIN` (the image, found by value) and
+`OMV_FLASH_TXT_ORIGIN` (its text, 0x3000 in), the general rule being that every
+`OMV_FLASH*_ORIGIN` inside the stub's old span moves with the image, keeps its
+offset, and gets a LENGTH that ends at the firmware window's end. The stub jumps to
+`STUB_FIRMWARE_ADDR` = install start + 0x2000, sets VTOR there and takes the
+firmware's own stack pointer from its table, as the SBL does.
+
+**Remap vs copy, settled: copy.** The RT1062 does have FlexSPI address remapping
+(IOMUXC_GPR30–32), but the slot holds the firmware LZMA-compressed, so there is
+nothing to remap execution onto; and one install model for every board is worth
+more than a copy saved on one. (Remap would only pay with uncompressed blobs, which
+would cost ~1 MB of each slot.)
+
+Flash is programmed through the chip ROM's FlexSPI NOR driver (`fsl_romapi`, a table
+of function pointers in the ROM) fed the FCB the ROM itself booted from — the one
+configuration known to describe the part — brought up on the first erase or mark and
+never on the fast path. Erase unit 4 KB (one sector, `STUB_FLASH_BLOCK`), page 256 B;
+a 16-byte status mark is a page program padded with 0xFF, which clears no bits
+around it. Each operation runs with interrupts off from OCRAM, then flushes the
+controller's AHB read buffer and the D-cache lines over the range. The stub lives in
+OCRAM2 (0x20200000, a fixed 512 KB bank: code, data, stack, the decoder's 348 KB)
+and never touches the FlexRAM banks, whose partition the firmware's own reset
+handler rewrites. The head turns the D-cache off before the copy to OCRAM (the
+default map has it write-back: a copy left dirty in the cache is not what the
+I-cache fetches), `port_init` turns both caches on again, and the jump hands the
+firmware caches off and clean, as the SBL does.
+
+Debug UART ids follow `machine.UART` (1 = LPUART1 on P4, the HIL's marker UART;
+0 = LPUART3), clocked from the 24 MHz oscillator so they work whatever PLL state the
+SBL leaves. Watchdog id 0 is WDOG1: half-second units, 0.5–128 s; its enable and mode
+bits are write-once, and the stub writes the same values `machine.WDT(0)` does, so
+the firmware's own `WDT()` later just reprograms the timeout. `machine.reset()`
+and a WDOG1 bite reset the whole chip through the SRC, so every boot comes through
+the ROM, which re-reads the FCB and reinitialises FlexSPI from scratch: the stub
+always finds the controller as the ROM left it (no "part left in another mode"
+case, unlike the STM32 boards' QSPI).
+
+### Others
+
 - **OPENMV4 (H7, no QSPI), OPENMV3, OPENMV2:** ROMFS in internal flash — no room
   for a firmware blob. Stay on app-only updates.
 
 ## Open questions
 
 1. Desk-key certification path.
-2. RT1062: remap vs copy.
+2. (settled: RT1062 copies like every other board; see its section)
 3. Write-protect the stub's sector? (little gain: MicroPython cannot easily write
    internal flash)
 4. Monotonic counter in the SE050/ATECC608 for the version/epoch floor — later.

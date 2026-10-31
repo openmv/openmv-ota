@@ -88,6 +88,7 @@ def test_imx_rt1060_dry_run(proj, monkeypatch, capsys):
     root, ran, artifact = proj
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
     artifact("OPENMV_RT1060-firmware.bin")    # flashloaders are bundled in the package
+    artifact("OPENMV_RT1060-stub.bin")        # a stub board: the composed image is what is written
     assert main(["flash", "firmware", str(root), "-b", "OPENMV_RT1060", "--dry-run"]) == 0
     out = capsys.readouterr().out
     # resident-SBL path: no sdphost, no FlexSPI config-register writes -- erase+write firmware, reset
@@ -100,9 +101,11 @@ def test_imx_rt1060_reports_step_labels(proj, monkeypatch, capsys):
     root, ran, artifact = proj
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
     artifact("OPENMV_RT1060-firmware.bin")    # flashloaders are bundled in the package
+    artifact("OPENMV_RT1060-stub.bin")
     assert main(["flash", "firmware", str(root), "-b", "OPENMV_RT1060"]) == 0
     out = capsys.readouterr().out
     assert "reset (OPENMV_RT1060)" in out and "write" in out and "0x60040000" in out
+    assert "OPENMV_RT1060-firmware-with-stub.bin" in out
 
 
 def test_erase_romfs_dry_run(proj, monkeypatch, capsys):

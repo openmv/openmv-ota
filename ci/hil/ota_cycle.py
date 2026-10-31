@@ -2259,7 +2259,12 @@ def recover_firmware(board, firmware=None, timeout=400):
         log("recover: %s has no DFU firmware alt -- not a DFU board" % board)
         return False
     usb, alt = raw["usb"], raw["alt"]["firmware"]
-    firmware = firmware or "%s/build/%s-firmware.bin" % (CFG["project"], board)
+    if firmware is None:
+        # A boot-stub board's firmware is linked to run BEHIND its stub, so the image that boots
+        # from the firmware alt is the composed stub || pad || firmware the flash wrote (the CLI
+        # leaves it in build/ beside the bare one); the bare image there would never come up.
+        name = "%s-firmware-with-stub.bin" % board if _has_stub(board) else "%s-firmware.bin" % board
+        firmware = "%s/build/%s" % (CFG["project"], name)
     if not os.path.exists(firmware):
         log("recover: no firmware image at %s -- build one first" % firmware)
         return False

@@ -170,7 +170,7 @@ def imx_project(tmp_path, monkeypatch):
                         lambda root, action, **f: recorded.append({"action": action, **f}))
     # the flashloaders are bundled in the package; only the build artifacts go in build/
     for n in ("OPENMV_RT1060-firmware.bin", "OPENMV_RT1060-romfs.img",
-              "OPENMV_RT1060-factory-romfs.img"):
+              "OPENMV_RT1060-factory-romfs.img", "OPENMV_RT1060-stub.bin"):
         (tmp_path / "build" / n).write_bytes(b"x" * 5000)
     return tmp_path, ran, recorded
 
@@ -184,7 +184,10 @@ def test_imx_firmware_runs_the_sequence(imx_project):
     assert not any("fill-memory" in a or "configure-memory" in a for a in ran)
     assert "flash-erase-region" in ran[0] and "0x60040000" in ran[0]
     assert ran[-1][-1] == "reset"
-    assert any("write-memory" in a and "0x60040000" in a for a in ran)
+    # a stub board: the composed stub || pad || firmware image is what lands at the firmware address
+    [w] = [a for a in ran if "write-memory" in a and "0x60040000" in a]
+    assert w[-1].endswith("OPENMV_RT1060-firmware-with-stub.bin")
+    assert (root / "build" / "OPENMV_RT1060-firmware-with-stub.bin").stat().st_size == 0x10000 + 5000
     assert recorded[0]["action"] == "flash-firmware" and recorded[0]["steps"] == \
         [s.label for s in steps]
 
@@ -213,6 +216,7 @@ def test_imx_factory_goes_through_the_resident_sbl(imx_project, monkeypatch):
         assert gone not in flat, gone
     writes = [a for a in ran if "write-memory" in a]
     assert [w[-2] for w in writes] == ["0x60040000", "0x60800000"]          # firmware, romfs
+    assert writes[0][-1].endswith("OPENMV_RT1060-firmware-with-stub.bin")  # stub || pad || firmware
     assert writes[1][-1].endswith("OPENMV_RT1060-factory-romfs.img")      # the dual-slot image
     assert ran[-1][-1] == "reset" and recorded[0]["action"] == "flash-factory"
 
@@ -251,8 +255,14 @@ def test_imx_missing_build_artifact_errors(tmp_path, monkeypatch):
     # loaders are bundled, but the firmware image still has to be built first
     (tmp_path / "build").mkdir()
     monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
+    with pytest.raises(FlashError, match="OPENMV_RT1060-stub.bin -- `build firmware` produces it"):
+        fl.flash_firmware(str(tmp_path), board="OPENMV_RT1060")      # a stub board: the stub first
+    (tmp_path / "build" / "OPENMV_RT1060-stub.bin").write_bytes(b"s" * 100)
     with pytest.raises(FlashError, match="OPENMV_RT1060-firmware.bin"):
         fl.flash_firmware(str(tmp_path), board="OPENMV_RT1060")
+    (tmp_path / "build" / "OPENMV_RT1060-firmware.bin").write_bytes(b"f" * 100)
+    with pytest.raises(FlashError, match="OPENMV_RT1060-factory-romfs.img"):
+        fl.flash_factory(str(tmp_path), board="OPENMV_RT1060")
 
 
 # --- resident-SBL catcher orchestration (the IDE's imxArmCatcher, ported) -------------------
