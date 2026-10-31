@@ -101,9 +101,9 @@ def test_build_stub_needs_a_stub_layout_and_root_keys(make_project, monkeypatch)
     from openmv_ota.project.project import ProjectPaths
 
     _fake_make(monkeypatch)
-    root, repo, _app = make_project(boards=("OPENMV_N6", "OPENMV_AE3"), ota=True)
-    with pytest.raises(BuildError, match="OPENMV_AE3 has no boot-stub layout"):
-        stub_mod.build_stub(root, firmware=repo, boards=["OPENMV_AE3"])
+    root, repo, _app = make_project(boards=("OPENMV_N6", "OPENMV4"), ota=True)
+    with pytest.raises(BuildError, match="OPENMV4 has no boot-stub layout"):
+        stub_mod.build_stub(root, firmware=repo, boards=["OPENMV4"])
     ProjectPaths(root).root_keys.unlink()
     with pytest.raises(BuildError, match="root_keys"):
         stub_mod.build_stub(root, firmware=repo, boards=["OPENMV_N6"])
@@ -182,7 +182,7 @@ def test_compose_image_pads_the_stub_to_the_firmwares_destination():
 
 
 def test_combined_image_is_written_for_stub_boards_only(tmp_path):
-    assert stub_mod.combined_image("OPENMV_AE3", tmp_path) is None     # no stub layout
+    assert stub_mod.combined_image("OPENMV4", tmp_path) is None        # no stub layout
     with pytest.raises(BuildError, match="OPENMV_N6-stub.bin -- `build firmware` produces it"):
         stub_mod.combined_image("OPENMV_N6", tmp_path)
     (tmp_path / "OPENMV_N6-stub.bin").write_bytes(b"S" * 10)
@@ -193,3 +193,13 @@ def test_combined_image_is_written_for_stub_boards_only(tmp_path):
     assert out == tmp_path / "OPENMV_N6-firmware-with-stub.bin"
     data = out.read_bytes()
     assert data[:10] == b"S" * 10 and data[0x10000:] == b"F" * 20 and len(data) == 0x10000 + 20
+
+
+def test_combined_image_takes_the_boards_own_firmware_name(tmp_path):
+    """The AE3's main image is firmware-M55_HP.bin (its flash.file map), its stub 32 KiB."""
+    (tmp_path / "OPENMV_AE3-stub.bin").write_bytes(b"S" * 10)
+    with pytest.raises(BuildError, match="OPENMV_AE3-firmware-M55_HP.bin"):
+        stub_mod.combined_image("OPENMV_AE3", tmp_path)
+    (tmp_path / "OPENMV_AE3-firmware-M55_HP.bin").write_bytes(b"H" * 20)
+    data = stub_mod.combined_image("OPENMV_AE3", tmp_path).read_bytes()
+    assert data[:10] == b"S" * 10 and data[0x8000:] == b"H" * 20 and len(data) == 0x8000 + 20

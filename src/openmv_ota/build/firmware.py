@@ -359,16 +359,26 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
     return overlay
 
 
+_FLASH_ORIGIN_RE = re.compile(
+    r"(?m)^([ \t]*#define[ \t]+OMV_FLASH(?:_TXT)?_ORIGIN[ \t]+)(0[xX][0-9A-Fa-f]+|[0-9]+)\b")
+_FLASH_LENGTH_RE = re.compile(r"(?m)^([ \t]*#define[ \t]+OMV_FLASH(?:_TXT)?_LENGTH[ \t]+)\S+")
+
+
 def _relink_for_stub(overlay: Path, name: str, stub) -> None:
     """Move the firmware up to the boot stub's destination in the overlaid board config.
 
     On a board with a boot stub the stub takes the start of the firmware area and the
     firmware runs from ``stub.firmware_dest``, with ``stub.firmware_max`` bytes to grow into.
-    The firmware is position-dependent, so it has to be linked there: ``OMV_FLASH_TXT_ORIGIN``
-    / ``OMV_FLASH_TXT_LENGTH`` in ``board_config.h`` place its text, and ``OMV_FIRM_ADDR`` in
-    ``board_config.mk`` sets its vector-table base. The three must agree with the board table
-    or the stub would jump into the wrong place, so a config that does not spell them the
-    way this expects is a build error, not a guess."""
+    The firmware is position-dependent, so it has to be linked there: the text origin and
+    length in ``board_config.h`` (``OMV_FLASH_TXT_ORIGIN`` on the stm32 boards,
+    ``OMV_FLASH_ORIGIN`` on the alif ones, where each core has its own) and ``OMV_FIRM_ADDR``
+    in ``board_config.mk``. The origin to move is found by VALUE: the firmware's text starts
+    today exactly where the stub goes, and the length define that follows it is the window.
+    The config must agree with the board table or the stub would jump into the wrong place,
+    so one that does not is a build error, not a guess.
+
+    The bootloader is built from this same config and jumps to ``OMV_FIRM_ADDR``: a -U/-D
+    pair appended to the port's ``OMV_BOOT_CFLAGS`` keeps that jump at the stub's origin."""
     h = overlay / "board_config.h"
     try:
         text = h.read_text(encoding="utf-8")
@@ -376,20 +386,25 @@ def _relink_for_stub(overlay: Path, name: str, stub) -> None:
         raise BuildError("boards/%s/board_config.h not found in the firmware checkout; the "
                          "OTA firmware build relinks it for the boot stub" % name,
                          exit_code=2) from None
-    text, n_origin = re.subn(r"(?m)^([ \t]*#define[ \t]+OMV_FLASH_TXT_ORIGIN[ \t]+)\S+",
-                             r"\g<1>0x%08X" % stub.firmware_dest, text)
+    hits = [m for m in _FLASH_ORIGIN_RE.finditer(text) if int(m.group(2), 0) == stub.origin]
+    if len(hits) != 1:
+        raise BuildError("boards/%s/board_config.h does not place the firmware text at 0x%08X "
+                         "exactly once (an OMV_FLASH_TXT_ORIGIN / OMV_FLASH_ORIGIN define), which "
+                         "the boot stub's relink expects -- the board table and the firmware "
+                         "disagree" % (name, stub.origin), exit_code=2)
+    origin = hits[0]
+    length = _FLASH_LENGTH_RE.search(text, origin.end())
+    if length is None:
+        raise BuildError("boards/%s/board_config.h has no OMV_FLASH_TXT_LENGTH / OMV_FLASH_LENGTH "
+                         "define after the firmware's origin, which the boot stub's relink "
+                         "expects -- the board table and the firmware disagree" % name, exit_code=2)
     # With a second text region the build's own link only measures: it gets the two regions'
     # combined length so an oversize firmware still links (and maps), and the relink that
     # follows puts FLASH_TEXT back to the window's true size (_patch_linker_script).
     span = stub.firmware_max + (stub.text2_max if stub.text2_dest is not None else 0)
-    length = ("%dK" % (span // 1024) if span % 1024 == 0 else "0x%X" % span)
-    text, n_length = re.subn(r"(?m)^([ \t]*#define[ \t]+OMV_FLASH_TXT_LENGTH[ \t]+)\S+",
-                             r"\g<1>%s" % length, text)
-    if n_origin != 1 or n_length != 1:
-        raise BuildError("boards/%s/board_config.h does not define OMV_FLASH_TXT_ORIGIN and "
-                         "OMV_FLASH_TXT_LENGTH once each, which the boot stub's relink expects "
-                         "-- the board table and the firmware disagree" % name, exit_code=2)
-    h.write_text(text, encoding="utf-8")
+    size = ("%dK" % (span // 1024) if span % 1024 == 0 else "0x%X" % span)
+    new_h = (text[:origin.start(2)] + "0x%08X" % stub.firmware_dest + text[origin.end():length.start()]
+             + length.group(1) + size + text[length.end():])
     mk = overlay / "board_config.mk"
     try:
         text = mk.read_text(encoding="utf-8")
@@ -403,6 +418,14 @@ def _relink_for_stub(overlay: Path, name: str, stub) -> None:
         raise BuildError("boards/%s/board_config.mk does not set OMV_FIRM_ADDR once, which the "
                          "boot stub's relink expects -- the board table and the firmware "
                          "disagree" % name, exit_code=2)
+    if not text.endswith("\n"):
+        text += "\n"
+    text += ("\n# openmv-ota: the firmware moved up behind the boot stub (OMV_FIRM_ADDR above). The\n"
+             "# bootloader built from this same config must keep jumping to the stub, at the start\n"
+             "# of the firmware area; this pair overrides the port's -DOMV_BOOT_JUMP=$(OMV_FIRM_ADDR).\n"
+             "OMV_BOOT_CFLAGS += -UOMV_BOOT_JUMP -DOMV_BOOT_JUMP=0x%08X\n" % stub.origin)
+    # Both files checked before either is written: a refusal leaves the overlay as it was.
+    h.write_text(new_h, encoding="utf-8")
     mk.write_text(text, encoding="utf-8")
 
 
@@ -459,10 +482,10 @@ def _tls_verify_stamp(p, t) -> bool:
 
 
 def _stub_record_addr(name: str) -> int | None:
-    """Where this board's boot stub keeps its install record: the sector after the firmware's
-    install window (``docs/design/firmware-updates.md``), or None on a board without a stub."""
+    """Where this board's boot stub keeps its install record (``StubLayout.record_addr``,
+    ``docs/design/firmware-updates.md``), or None on a board without a stub."""
     stub = get_board(name).stub
-    return stub.firmware_dest + stub.firmware_max if stub is not None else None
+    return stub.record_addr if stub is not None else None
 
 
 def _cloud_stamp(name: str) -> tuple[str | None, str | None]:

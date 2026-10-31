@@ -71,17 +71,21 @@ def test_no_reset(project):
 def test_ae3_firmware_flashes_both_cores(project):
     # the HE core ships with the firmware -- both images, always, no flag
     root, ran, _rec, artifact = project
+    artifact("OPENMV_AE3-stub.bin")                        # a stub board: the HP image rides behind it
     artifact("OPENMV_AE3-firmware-M55_HP.bin")
     artifact("OPENMV_AE3-firmware-M55_HE.bin")
     steps = fl.flash_firmware(str(root), board="OPENMV_AE3")
     assert [(s.alt, s.file.name) for s in steps] == [
-        (1, "OPENMV_AE3-firmware-M55_HP.bin"), (2, "OPENMV_AE3-firmware-M55_HE.bin")]
+        (1, "OPENMV_AE3-firmware-with-stub.bin"), (2, "OPENMV_AE3-firmware-M55_HE.bin")]
     assert ran[0][2] == ",37c5:96e3" and "--reset" in ran[1] and "--reset" not in ran[0]
 
 
 def test_ae3_firmware_requires_both_cores(project):
     root, ran, _rec, artifact = project
-    artifact("OPENMV_AE3-firmware-M55_HP.bin")            # HE missing -> fail fast, flash nothing
+    artifact("OPENMV_AE3-firmware-M55_HP.bin")            # the stub missing -> fail fast, flash nothing
+    with pytest.raises(FlashError, match="OPENMV_AE3-stub.bin"):
+        fl.flash_firmware(str(root), board="OPENMV_AE3")
+    artifact("OPENMV_AE3-stub.bin")                       # HE missing -> the same
     with pytest.raises(FlashError, match="firmware-M55_HE.bin"):
         fl.flash_firmware(str(root), board="OPENMV_AE3")
     assert ran == []
@@ -89,7 +93,7 @@ def test_ae3_firmware_requires_both_cores(project):
 
 def test_ae3_factory_flashes_all_four_partitions(project):
     root, ran, _rec, artifact = project
-    for n in ("firmware-M55_HP", "firmware-M55_HE"):
+    for n in ("firmware-M55_HP", "firmware-M55_HE", "stub"):
         artifact("OPENMV_AE3-%s.bin" % n)
     artifact("OPENMV_AE3-coprocessor-romfs.img")
     artifact("OPENMV_AE3-factory-romfs.img")

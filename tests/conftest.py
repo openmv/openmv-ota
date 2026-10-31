@@ -58,13 +58,18 @@ N6_BOARD = (
     "#define OMV_ROMFS_PART0_ORIGIN 0x70800000\n"
     "#define OMV_ROMFS_PART0_LENGTH 0x01800000\n"
 )
-AE3_BOARD = (
+AE3_BOARD = (     # the AE3: two cores in MRAM, each with its own text window; ROMFS0 on the OSPI part
     '#define OMV_BOARD_TYPE "AE3"\n'
     "#if CORE_M55_HP\n"
-    "#define OMV_ROMFS_PART0_LENGTH 0x01800000\n"
-    "#define OMV_ROMFS_PART1_LENGTH 0x00100000\n"
+    "#define OMV_FLASH_ORIGIN                0x80020000\n"   # the OTA build relinks these two
+    "#define OMV_FLASH_LENGTH                0x00300000      /* 3MB */\n"   # for the boot stub
+    "#define OMV_ROMFS_PART0_ORIGIN          0xa0800000\n"
+    "#define OMV_ROMFS_PART0_LENGTH          0x01800000\n"
+    "#define OMV_ROMFS_PART1_LENGTH          0x00100000\n"
     "#elif CORE_M55_HE\n"
-    "#define OMV_ROMFS_PART0_LENGTH 0x00100000\n"
+    "#define OMV_FLASH_ORIGIN                0x80320000\n"   # the HE core's: left alone
+    "#define OMV_FLASH_LENGTH                0x0015E000      /* 1.4MB */\n"
+    "#define OMV_ROMFS_PART0_LENGTH          0x00100000\n"
     "#endif\n"
 )
 
@@ -138,7 +143,8 @@ def make_firmware(tmp_path):
                 '#include <time.h>\n#include "extmod/mbedtls/mbedtls_config_common.h"\n')
         firm_addr = {"OPENMV_N6": "OMV_FIRM_BASE=0x70000000\nOMV_FIRM_ADDR=0x70080000\n",
                      "OPENMV4P": "OMV_FIRM_BASE=0x08000000\nOMV_FIRM_ADDR=0x08040000\n",
-                     "OPENMVPT": "OMV_FIRM_BASE=0x08000000\nOMV_FIRM_ADDR=0x08040000\n"}
+                     "OPENMVPT": "OMV_FIRM_BASE=0x08000000\nOMV_FIRM_ADDR=0x08040000\n",
+                     "OPENMV_AE3": "OMV_BOOT_ADDR=0x80000000\nOMV_FIRM_ADDR=0x80020000\n"}
         for b in ("ARDUINO_PORTENTA_H7", "ARDUINO_GIGA", "ARDUINO_NICLA_VISION"):
             firm_addr[b] = "OMV_FIRM_ADDR=0x08040000\n"
         for board, content in (("OPENMV_N6", N6_BOARD), ("OPENMV_AE3", AE3_BOARD),

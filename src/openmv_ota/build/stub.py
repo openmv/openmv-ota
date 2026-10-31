@@ -19,7 +19,7 @@ from pathlib import Path
 
 from openmv_ota.project.config import derive_product_id
 from openmv_ota.project.project import ProjectError, ProjectPaths, load_project
-from openmv_ota.romfs.boards import get_board
+from openmv_ota.romfs.boards import firmware_image_name, get_board
 
 from .errors import BuildError
 from .firmware import MAKE, _select_boards
@@ -98,7 +98,7 @@ def combined_image(board: str, out_dir: Path) -> Path | None:
     layout = get_board(board).stub
     if layout is None:
         return None
-    stub, fw = out_dir / ("%s-stub.bin" % board), out_dir / ("%s-firmware.bin" % board)
+    stub, fw = out_dir / ("%s-stub.bin" % board), out_dir / firmware_image_name(board)
     for f in (stub, fw):
         if not f.is_file():
             raise BuildError("missing %s -- `build firmware` produces it" % f)

@@ -8,6 +8,7 @@ NOW = "2026-01-01T00:00:00Z"
 
 FAKE_FIRMWARE = (bytes(range(256)) * 64 + b"\x00" * 4096 + b"OpenMV firmware " * 256)
 FAKE_TEXT2 = b"second text region " * 512 + bytes(range(64)) * 16   # the sector `build firmware` fills
+FAKE_COPROC = b"second core " * 1024 + bytes(range(128)) * 8         # the AE3's M55_HE image
 
 DEFAULT_APP = {
     "main.py": "print(1)\n",
@@ -59,9 +60,12 @@ def make_project(tmp_path, make_firmware, make_sdk):
                 stub = get_board(b).stub
                 if stub is not None:
                     (root / "build").mkdir(exist_ok=True)
-                    (root / "build" / ("%s-firmware.bin" % b)).write_bytes(FAKE_FIRMWARE)
+                    from openmv_ota.romfs.boards import coprocessor_image_name, firmware_image_name
+                    (root / "build" / firmware_image_name(b)).write_bytes(FAKE_FIRMWARE)
                     if stub.text2_dest is not None:
                         (root / "build" / ("%s-firmware-text2.bin" % b)).write_bytes(FAKE_TEXT2)
+                    if stub.coproc_dest is not None:
+                        (root / "build" / coprocessor_image_name(b)).write_bytes(FAKE_COPROC)
         app = tmp_path / "appsrc"
         app.mkdir()
         files = dict(DEFAULT_APP if app_files is None else app_files)

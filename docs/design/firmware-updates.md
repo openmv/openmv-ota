@@ -344,10 +344,65 @@ Measured (stock firmware text): H7 Plus 1811 KB, Portenta/Giga ≈ 1760 KB, Nicl
 key-store modules, the mbedtls speed options). All fit the two regions together;
 `build romfs` refuses a release whose firmware does not.
 
+### OPENMV_AE3 (Alif Ensemble E3)
+
+Two Cortex-M55 cores with their firmware in the on-chip MRAM (5.5 MB, memory-mapped
+at 0x80000000, written in 16-byte lines, **no erase**), the ROMFS slots on the OSPI
+part the firmware maps at 0xA0000000. Our bootloader runs on the HP core and jumps
+to 0x80020000; the HE core is started later by the HP firmware
+(`openamp.RemoteProc(0x80320000).start()`, through the Secure Enclave), so the HE
+image is just bytes at a fixed address until then.
+
+| Partition | Range | Today | With the stub |
+|---|---|---|---|
+| BOOT | 0x80000000–0x80020000 | bootloader (+ the soft-SE key area in its last 4 KB) | unchanged |
+| HP | 0x80020000–0x80320000 (3 MB) | HP firmware | stub @0x80020000 (32 KB) · HP firmware 0x80028000–0x80320000 (3040 KB), component 1 |
+| HE | 0x80320000–0x8047E000 (1400 KB) | HE firmware | HE firmware 0x80320000–0x8047D000 (1396 KB), component 2 · install record @0x8047D000 |
+| ROMFS1 | 0x8047E000–0x8057E000 | the HE core's romfs | unchanged (the main core writes it, as today) |
+| ROMFS0 | OSPI 0x800000–0x2000000 (24 MB) | A/B, 12 MB each | A/B, ~1.3 MB of each now the two firmware blobs |
+
+The install window spans both partitions, the stub's own 32 KB refused at its start.
+The record takes the last 4 KB of the **HE** partition — the last install window —
+so `boards.json` names it (`stub.record`) instead of the "sector after the firmware
+window" default; the HE component is `stub.coprocessor` (`dest`, `max`), packed
+from the build's `firmware-M55_HE.bin` as the AE3's `flash.file` map names it, the
+HP image from `firmware-M55_HP.bin`. The two text windows are relinked the same
+way as everywhere else: the relink finds the `OMV_FLASH_ORIGIN` define whose value
+is the stub's origin (the HP core's; the HE core's keeps 0x80320000) and moves it
+up with the length that follows.
+
+MRAM has no erase blocks: `STUB_FLASH_BLOCK` is 4 KB, the granularity the installer
+compares and programs at, and an "erase" writes 0xFF (so the record's sector is
+really gone before an install and the last partial block really pads with 0xFF).
+Each 16-byte line is two 64-bit stores back to back with interrupts off — an
+interrupt between the two wedges the MRAM controller and only a power cycle
+recovers (Alif's driver note; the fleet found it in the coprocessor-romfs write,
+PR #90). The stub maps the MRAM write-through, so the stores reach the array in
+order and nothing sits dirty in a cache; the firmware programs it the same way.
+
+The slots are read through the OSPI controller in 1-line SPI (READ 0x13 / PAGE
+PROGRAM 0x12, 4-byte addresses, 50 MHz), after a hardware reset of the part — the
+bootloader's driver, and the state it leaves the part in. The stub never uses the
+XIP window, and never erases the part: status marks are 16-byte programs. Before
+the jump the controller is turned off and the part reset again, as the bootloader
+does; the firmware's own driver brings up octal DDR XIP from there. The stub runs
+from SRAM0 with its data in DTCM and the decoder in SRAM1, caches on (the
+bootloader hands over with them on), and gives the firmware the bootloader's MPU
+view back (the MRAM read-only, one region).
+
+Debug UART ids follow `machine.UART` (1, 3, 4, 5; the HIL's marker UART is 1,
+P0_5), the watchdog id 0 is the HP core's (`WDT_HP`, counting the 400 MHz core
+clock: at most ≈ 10.7 s, which `machine.WDT` refuses to exceed and the stub clamps
+to). Every reset the firmware can cause — `machine.reset()`, the watchdog's NMI
+handler, the bench's nRST — goes through the Secure Enclave and resets the whole
+SoC, HE core included, so the stub never rewrites an HE image a running HE core
+is executing.
+
+Measured: stock HP image 2.90 MB, HE 1.15 MB; with the OTA additions (~76 KB, HP
+only) both fit their windows with room.
+
 ### Others (filled in as each is done)
 
-- **AE3:** two components (HP → MRAM `HP` partition, HE → MRAM `HE`); install
-  window covers both partitions. The HE romfs stays nested in the filesystem.
 - **RT1062:** FlexSPI remap could point execution at a slot with no copy, or copy
   for one shared model. *Open.*
 - **OPENMV4 (H7, no QSPI), OPENMV3, OPENMV2:** ROMFS in internal flash — no room

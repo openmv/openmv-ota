@@ -144,7 +144,7 @@ def test_flash_in_bootloader_skips_reset(proj, monkeypatch, capsys):
 
 def test_ae3_factory_flashes_all_partitions(proj, capsys):
     root, ran, artifact = proj
-    for n in ("firmware-M55_HP.bin", "firmware-M55_HE.bin", "coprocessor-romfs.img",
+    for n in ("stub.bin", "firmware-M55_HP.bin", "firmware-M55_HE.bin", "coprocessor-romfs.img",
               "factory-romfs.img"):
         artifact("OPENMV_AE3-%s" % n)
     assert main(["flash", "factory", str(root), "-b", "OPENMV_AE3", "--no-reset",

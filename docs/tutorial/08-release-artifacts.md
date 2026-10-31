@@ -43,7 +43,7 @@ context comes from the project:
 - **Signed with the current OTA key.** The signer is `[ota].signing_key_id` from
   `openmv-ota.toml`; the trailer carries that key's root-signed certificate, which
   is how the device comes to trust it.
-- **Carries the firmware.** On a board with a boot stub (the N6 and the STM32H7 boards), the image is
+- **Carries the firmware.** On a board with a boot stub (the N6, the AE3 and the STM32H7 boards), the image is
   the filesystem followed by the firmware `build firmware` left in `build/`,
   LZMA-compressed and listed in the trailer as a component the stub installs
   ([the trailer format](../reference/trailer.md#components)). Build the firmware

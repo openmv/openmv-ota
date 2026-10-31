@@ -1,5 +1,5 @@
 /*
- * OpenMV boot stub -- STM32 entry.
+ * OpenMV boot stub -- Cortex-M entry (every port).
  *
  * The bootloader jumps to the word at the flash address + 4 and never sets the stack
  * pointer, so the head does. It runs in place (XIP), copies the rest of the image

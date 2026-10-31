@@ -254,12 +254,12 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
     without its firmware is not a release. Refuses a firmware that would not fit the stub's
     install window, before anything is signed."""
     from openmv_ota.ota import components
-    from openmv_ota.romfs.boards import get_board
+    from openmv_ota.romfs.boards import coprocessor_image_name, firmware_image_name, get_board
 
     stub = get_board(t.name).stub
-    if stub is None:
+    if stub is None or t.role != "main":        # a coprocessor romfs is plain: no firmware in it
         return body, []
-    firmware = _build_product(p, t, out_dir, "%s-firmware.bin" % _target_name(t))
+    firmware = _build_product(p, t, out_dir, firmware_image_name(t.name))
     if len(firmware) > stub.firmware_max:
         raise BuildError("%s firmware is %d bytes but the boot stub's window holds %d (%d over)"
                          % (t.name, len(firmware), stub.firmware_max,
@@ -275,6 +275,14 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
                              exit_code=1)
         if text2:
             blobs.append((stub.text2_dest, text2))
+    if stub.coproc_dest is not None:
+        # The second core's image (the AE3's M55_HE): its own partition, so its own component.
+        coproc = _build_product(p, t, out_dir, coprocessor_image_name(t.name))
+        if len(coproc) > stub.coproc_max:
+            raise BuildError("%s coprocessor firmware is %d bytes but its window holds %d (%d over)"
+                             % (t.name, len(coproc), stub.coproc_max, len(coproc) - stub.coproc_max),
+                             exit_code=1)
+        blobs.append((stub.coproc_dest, coproc))
     return components.append(body, blobs)
 
 

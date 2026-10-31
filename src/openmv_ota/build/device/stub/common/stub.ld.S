@@ -1,5 +1,5 @@
 /*
- * OpenMV boot stub -- STM32 linker script (preprocessed with the board's stub_config.h).
+ * OpenMV boot stub -- linker script, every port (preprocessed with the board's stub_config.h).
  *
  * FLASH holds the image as the bootloader sees it: an 8-byte head (stack, entry) and
  * the copier run in place; everything else is loaded there and copied to CODE/RAM by

@@ -539,6 +539,32 @@ def test_ota_image_carries_the_firmware_as_a_component(make_project):
     assert verify_image(image, trailer_bytes, read_root_keys(ProjectPaths(root).root_keys))[0]
 
 
+def test_ae3_image_carries_both_cores_as_components(make_project):
+    """The AE3's stub installs two images from one slot: the HP core's into the HP partition
+    behind the stub, the HE core's into the HE partition. The coprocessor ROMFS (the HE
+    core's own, which the main core writes) carries no firmware at all."""
+    from openmv_ota.ota import components as C
+    from openmv_ota.ota import parse_trailer
+    from tests.build.conftest import FAKE_COPROC, FAKE_FIRMWARE
+
+    root, repo, app = _build_ota(make_project, boards=("OPENMV_AE3",), ca="tiny")
+    results = build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+    main_r = next(r for r in results if r.partition_index == 0)
+    image, trailer_bytes = _read_bundle(main_r)
+    hp, he = parse_trailer(trailer_bytes).components
+    assert (hp.dest, hp.installed_size) == (0x80028000, len(FAKE_FIRMWARE))
+    assert (he.dest, he.installed_size) == (0x80320000, len(FAKE_COPROC))
+    assert he.offset >= hp.offset + hp.size and he.offset % 16 == 0
+    assert C.decompress(image[he.offset:he.offset + he.size], he.installed_size) == FAKE_COPROC
+    assert hashlib.sha256(FAKE_COPROC).digest() == he.installed_sha256
+    copro_r = next(r for r in results if r.partition_index == 1)
+    assert not copro_r.ota and not copro_r.output.name.endswith(".zip")   # a plain romfs, no trailer
+    # an HE image over its partition is refused before anything is signed
+    (Path(root) / "build" / "OPENMV_AE3-firmware-M55_HE.bin").write_bytes(b"\xee" * (0x15D000 + 1))
+    with pytest.raises(BuildError, match="coprocessor firmware is 1429505 bytes but its window holds 1429504"):
+        build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
+
+
 def test_h7_plus_image_carries_both_firmware_regions_as_components(make_project):
     """A board whose stub layout has a second text region ships two blobs: the main window's
     and the spare sector's, each with its own destination and hashes, in that order."""
