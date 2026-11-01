@@ -110,6 +110,20 @@ def test_boards_list_and_detail(capsys):
     assert main(["romfs", "boards", "OPENMV_N6"]) == 0
     detail = capsys.readouterr().out
     assert "tflite=32" in detail
+    assert "updates:  app + firmware, A/B slots of " in detail
+
+
+def test_boards_say_what_updates_reach_them(capsys):
+    """The classics take app-only updates in one slot: the list tags them, the detail says so."""
+    assert main(["romfs", "boards"]) == 0
+    out = capsys.readouterr().out
+    h7 = next(line for line in out.splitlines() if line.startswith("OPENMV4 "))
+    assert "(app-only updates)" in h7
+    n6 = next(line for line in out.splitlines() if line.startswith("OPENMV_N6 "))
+    assert "app-only" not in n6
+    assert main(["romfs", "boards", "OPENMV2"]) == 0
+    assert ("updates:  app only, one 120 KiB slot (no fallback); firmware over USB; no network"
+            in capsys.readouterr().out)
 
 
 def test_boards_listing_flags_retired(capsys):

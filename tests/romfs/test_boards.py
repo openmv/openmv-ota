@@ -228,3 +228,38 @@ def test_live_framesize_belongs_to_full_boards_only():
         boards_mod._live_framesize("X", "full", None)
     with pytest.raises(ValueError, match="needs live_framesize"):
         boards_mod._live_framesize("X", "full", "HD")
+
+
+def test_update_capability_is_read_off_the_board_table():
+    """Nothing a project chooses: a boot stub means the release carries the firmware, two
+    slots fitting the partition means a fallback, and the M4's runtime has no network."""
+    from openmv_ota.romfs import boards as B
+    n6 = B.update_capability("OPENMV_N6")
+    assert n6.firmware and n6.ab and n6.network and n6.slot_bytes > 10 << 20
+    h7 = B.update_capability("OPENMV4")
+    assert not h7.firmware and not h7.ab and h7.network and h7.slot_bytes == 128 * 1024 - 8192
+    m4 = B.update_capability("OPENMV2")
+    assert not m4.firmware and not m4.ab and not m4.network
+    assert B.update_capability("ARDUINO_NANO_33_BLE_SENSE") is None   # retired: no OTA partition
+    mps2 = B.update_capability("MPS2_AN500")                          # the QEMU target hosts OTA
+    assert mps2.ab and not mps2.firmware
+    assert B.capability_line("OPENMV_N6").startswith("app + firmware, A/B slots of ")
+    assert B.capability_line("OPENMV4") == "app only, one 120 KiB slot (no fallback); firmware over USB"
+    assert B.capability_line("OPENMV2") == ("app only, one 120 KiB slot (no fallback); firmware over USB; "
+                                            "no network, so the app updates over USB too")
+    assert B.capability_line("OPENMV3") == "app only, one 248 KiB slot (no fallback); firmware over USB"
+    assert B.capability_line("ARDUINO_NANO_33_BLE_SENSE") == "no OTA partition"
+    assert B._size_text(12 << 20) == "12 MiB" and B._size_text((12 << 20) - 8192) == "12.0 MiB"
+
+
+def test_update_capability_needs_a_main_partition_with_a_known_erase_block(monkeypatch):
+    from openmv_ota.romfs import boards as B
+    n6 = B.get_board("OPENMV_N6")
+    coproc_only = B.BoardConfig(name="X", display_name="x", arch="x", mpy_args=[],
+                                partitions=[B.Partition("ROMFS1", 1, 1 << 20, 4096, role="coprocessor")])
+    no_erase = B.BoardConfig(name="Y", display_name="y", arch="y", mpy_args=[],
+                             partitions=[B.Partition("ROMFS", 0, 1 << 20, 0)])
+    table = {"X": coproc_only, "Y": no_erase, "OPENMV_N6": n6}
+    monkeypatch.setattr(B, "get_board", lambda name: table[name])
+    assert B.update_capability("X") is None and B.update_capability("Y") is None
+    assert B.update_capability("OPENMV_N6").firmware
