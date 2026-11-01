@@ -131,6 +131,19 @@ static int write_enable(void) {
 // where it ignores 1-line instructions altogether. A reset is the one thing a QPI part still
 // obeys, so send the pair on 4 lines first (a no-op to a part in SPI mode, which sees nothing
 // it recognises) and then on 1 line, and only then ask the part for its status.
+// Back to a usable controller after a HAL call timed out (the HAL leaves the handle in its
+// error state, and every later call refuses). The HAL's own abort would drag in MDMA; this is
+// the register-level half of it, bounded.
+static void controller_recover(void) {
+    SET_BIT(qspi.Instance->CR, QUADSPI_CR_ABORT);
+    uint32_t start = port_ticks_ms();
+    while ((qspi.Instance->SR & QUADSPI_SR_BUSY) && (port_ticks_ms() - start) < 10) {
+    }
+    qspi.Instance->FCR = QUADSPI_FCR_CTCF | QUADSPI_FCR_CTEF | QUADSPI_FCR_CSMF | QUADSPI_FCR_CTOF;
+    qspi.ErrorCode = HAL_QSPI_ERROR_NONE;
+    qspi.State = HAL_QSPI_STATE_READY;
+}
+
 static int chip_reset(void) {
     static const uint32_t modes[] = { QSPI_INSTRUCTION_4_LINES, QSPI_INSTRUCTION_1_LINE };
     for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
@@ -184,8 +197,29 @@ int qspi_flash_init(void) {
         return -1;
     }
     if (chip_reset() != 0) {
-        log_line("qspi reset timeout");         // no part answered on 1 line: slot reads will fail
-        return -1;
+        // The status poll never saw WIP clear. Say what the part DID answer (0xFF: nothing is
+        // driving the line; a busy bit: a program or erase the reset did not interrupt) and
+        // give it one more go after a settle: the fleet's Portenta loses about one boot in ten
+        // this way at a J-Link core reset, and boots from the install record without its
+        // slots when it does.
+        uint32_t err = qspi.ErrorCode;
+        controller_recover();
+        uint8_t sr = 0xEE;
+        QSPI_CommandTypeDef c = command(CMD_READ_STATUS);
+        c.DataMode = QSPI_DATA_1_LINE;
+        c.NbData = 1;
+        if (send(&c) == 0) {
+            HAL_QSPI_Receive(&qspi, &sr, QSPI_CMD_TIMEOUT);
+        }
+        log_kv("qspi reset timeout, hal err", err);
+        log_kv("qspi status", sr);
+        controller_recover();
+        port_delay_ms(10);
+        if (chip_reset() != 0) {
+            log_line("qspi reset timeout");     // no part answered on 1 line: slot reads will fail
+            return -1;
+        }
+        log_line("qspi reset retry ok");
     }
     {
         // The part's JEDEC id, read right after the reset: the first proof the bus samples
