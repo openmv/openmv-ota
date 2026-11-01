@@ -877,6 +877,41 @@ def test_ae3_ota_build_relinks_the_hp_core_behind_the_stub(make_project, monkeyp
     assert fw._stub_record_addr("OPENMV_AE3") == 0x8047D000
 
 
+def test_rt1060_ota_build_relinks_the_image_and_its_text_behind_the_stub(make_project, monkeypatch):
+    """The RT1062's image is a header block (FCB, IVT, vectors at +0x2000) and then the text at
+    +0x3000, two origin defines: the relink moves the one that starts where the stub goes
+    (OMV_FLASH_APP_ORIGIN) and every origin inside the stub's old span with it, each keeping
+    its offset and ending where the firmware window ends. The part's own origin and /flash,
+    outside the span, stay put."""
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    monkeypatch.setattr(fw, "_ensure_mpy_cross", lambda repo: None)
+    root, repo, _app = make_project(ota=True, boards=("OPENMV_RT1060",))
+    seen = {}
+
+    def spy(repo_, args):
+        if "clean" not in args:
+            overlay = Path(next(a.split("=", 1)[1] for a in args if a.startswith("OMV_BOARD_CONFIG_DIR=")))
+            seen["h"] = (overlay / "board_config.h").read_text()
+            seen["mk"] = (overlay / "board_config.mk").read_text()
+        return fake(repo_, args)
+    monkeypatch.setattr(fw, "_run_make", spy)
+
+    [r] = fw.build_firmware(root, firmware=repo, keep_build_dir=False)
+    assert "#define OMV_FLASH_APP_ORIGIN            0x60050000   // 256K reserved for bootloader\n" in seen["h"]
+    assert "#define OMV_FLASH_APP_LENGTH            3772K\n" in seen["h"]        # 0x3AF000, to the record
+    assert "#define OMV_FLASH_TXT_ORIGIN            0x60053000\n" in seen["h"]   # +0x3000, as before
+    assert "#define OMV_FLASH_TXT_LENGTH            3760K\n" in seen["h"]        # 0x3AF000 - 0x3000
+    assert "#define OMV_FLASH_ORIGIN                0x60000000\n" in seen["h"]   # the part: untouched
+    assert "#define OMV_FLASH_LENGTH                0x00800000\n" in seen["h"]
+    assert "#define OMV_FLASH_FFS_ORIGIN            0x60400000\n" in seen["h"]   # /flash: untouched
+    assert "#define OMV_FLASH_FFS_LENGTH            0x00400000\n" in seen["h"]
+    assert "OMV_FIRM_BASE=0x60000000\nOMV_FIRM_ADDR=0x60050000\n" in seen["mk"]
+    assert "\nOMV_BOOT_CFLAGS += -UOMV_BOOT_JUMP -DOMV_BOOT_JUMP=0x60040000\n" in seen["mk"]
+    assert sorted(o.name for o in r.outputs) == ["OPENMV_RT1060-firmware.bin", "OPENMV_RT1060-stub.bin"]
+    assert fw._stub_record_addr("OPENMV_RT1060") == 0x603FF000
+
+
 def test_h7_plus_ota_build_relinks_behind_the_stub_and_gets_its_second_region(make_project, monkeypatch):
     """One 128 KiB sector for the stub, 1660K for the firmware (the record takes the last 4 KiB
     of the last sector) and the spare 0x08020000 sector as a second text region, relinked after
@@ -1106,7 +1141,17 @@ def test_relink_refuses_a_board_config_that_disagrees_with_the_table(tmp_path):
     with pytest.raises(BuildError, match="exactly once"):
         fw._relink_for_stub(overlay, "OPENMV_N6", stub)
     (overlay / "board_config.h").write_text("#define OMV_FLASH_TXT_ORIGIN 0x70080000\n")
-    with pytest.raises(BuildError, match="no OMV_FLASH_TXT_LENGTH / OMV_FLASH_LENGTH define after"):
+    with pytest.raises(BuildError, match="no OMV_FLASH_TXT_LENGTH define after OMV_FLASH_TXT_ORIGIN"):
+        fw._relink_for_stub(overlay, "OPENMV_N6", stub)
+    (overlay / "board_config.h").write_text(               # a sub-region inside the span, no LENGTH of its own
+        "#define OMV_FLASH_TXT_ORIGIN 0x70080000\n#define OMV_FLASH_TXT_LENGTH 3584K\n"
+        "#define OMV_FLASH_APP_ORIGIN 0x70088000\n")
+    with pytest.raises(BuildError, match="no OMV_FLASH_APP_LENGTH define after OMV_FLASH_APP_ORIGIN"):
+        fw._relink_for_stub(overlay, "OPENMV_N6", stub)
+    (overlay / "board_config.h").write_text(               # two origins, one LENGTH between them
+        "#define OMV_FLASH_TXT_ORIGIN 0x70080000\n#define OMV_FLASH_TXT_ORIGIN 0x70088000\n"
+        "#define OMV_FLASH_TXT_LENGTH 3584K\n")
+    with pytest.raises(BuildError, match="pairs two origins with one OMV_FLASH"):
         fw._relink_for_stub(overlay, "OPENMV_N6", stub)
     (overlay / "board_config.h").write_text(
         "#define OMV_FLASH_TXT_ORIGIN 0x70080000\n#define OMV_FLASH_TXT_LENGTH 3584K\n")
@@ -1135,7 +1180,17 @@ def test_board_overlay_refuses_a_firmware_that_disagrees_with_the_table(tmp_path
         "#define IMLIB_ENABLE_FIND_LBP\n")
     with pytest.raises(BuildError, match="does not define IMLIB_ENABLE_DATAMATRICES"):
         fw._board_overlay(repo, "OPENMV4", tmp_path / "t2")
-    assert fw._board_overlay(repo, "OPENMV_RT1060", tmp_path / "t3") is None   # drops nothing, no stub
+    bd = repo / "boards" / "OPENMV_RT1060"                 # drops nothing, but has a stub: relinked only
+    bd.mkdir()
+    (bd / "board_config.h").write_text("#define OMV_FLASH_APP_ORIGIN 0x60040000\n"
+                                       "#define OMV_FLASH_APP_LENGTH 0x007C0000\n"
+                                       "#define OMV_FLASH_TXT_ORIGIN 0x60043000\n"
+                                       "#define OMV_FLASH_TXT_LENGTH 0x00380000\n")
+    (bd / "board_config.mk").write_text("PORT=mimxrt\nOMV_FIRM_ADDR=0x60000000\n")
+    (bd / "imlib_config.h").write_text("#define IMLIB_ENABLE_LAB_LUT\n")
+    overlay = fw._board_overlay(repo, "OPENMV_RT1060", tmp_path / "t3")
+    assert overlay is not None and "0x60050000" in (overlay / "board_config.h").read_text()
+    assert (overlay / "imlib_config.h").read_text() == "#define IMLIB_ENABLE_LAB_LUT\n"
 
 
 def test_speed_options_with_no_port_config_file(tmp_path):

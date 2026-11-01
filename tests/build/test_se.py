@@ -1364,9 +1364,14 @@ def test_soft_a_sealed_record_cut_short_is_skipped_or_loud(sealed, cut):
     with pytest.raises(OSError):
         soft.SecureElement.provision()
     sealed.cut = None
-    if bytes(sealed.flash[TOP + 224:]) == b"\xff" * 32:
+    check = bytes(sealed.flash[TOP + 224:])
+    if check == b"\xff" * 32:
         se, made = soft.SecureElement.provision()
         assert made and se.public_key()
+    elif check == hashlib.sha256(bytes(sealed.flash[TOP:TOP + 224])).digest():
+        # the cut dropped the check's last byte, which the sealed keys happened to hash to
+        # 0xFF anyway (1 in 256): the record IS whole, and opening it is right -- not a flake
+        assert soft.SecureElement().public_key()
     else:
         with pytest.raises(OSError, match="damaged"):
             soft.SecureElement()

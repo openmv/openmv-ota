@@ -211,7 +211,8 @@ def _imx_files(board: str, op: str, raw: dict, out_dir: Path) -> dict[str, Path]
         files["sdphost_loader"] = _loader(sd["loader"], board)   # bundled secure bootloader (SBL).
         files["blhost_loader"] = _loader(bl["sbl_loader"], board)   # the resident-SBL ops need neither.
     if op in ("firmware", "factory", "provision"):
-        files["firmware"] = out_dir / ("%s-firmware.bin" % board)
+        # a stub board's composed image goes where the bare firmware went, see _firmware_image
+        files["firmware"] = _firmware_image(board, out_dir) or out_dir / ("%s-firmware.bin" % board)
     if op in ("factory", "provision"):
         files["romfs"] = out_dir / ("%s-factory-romfs.img" % board)
     elif op == "romfs":

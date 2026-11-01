@@ -51,6 +51,20 @@ def test_stub_layout_is_parsed_where_a_board_has_one():
     assert B.get_board("OPENMV4") .stub is None                # 128 KiB romfs: no room for a firmware
 
 
+def test_the_rt1060_stub_layout_keeps_the_images_header_block():
+    """The RT1062's resident bootloader jumps to the vectors at +0x2000 of the image that
+    started at 0x60040000, so the stub's region starts there (its head 8 KiB in) and the
+    firmware moves up one 64 KiB region with its header block intact. The record takes the
+    sector after the firmware window, the default, so boards.json names none."""
+    from openmv_ota.romfs import boards as B
+    rt = B.get_board("OPENMV_RT1060").stub
+    assert (rt.origin, rt.firmware_dest, rt.firmware_max) == (0x60040000, 0x60050000, 0x603FF000 - 0x60050000)
+    assert rt.stub_max == 0x10000
+    assert rt.record_addr == 0x603FF000 == rt.firmware_dest + rt.firmware_max
+    assert rt.text2_dest is None and rt.coproc_dest is None
+    assert B.firmware_image_name("OPENMV_RT1060") == "OPENMV_RT1060-firmware.bin"
+
+
 def test_the_ae3_stub_layout_spans_both_cores():
     """MRAM has no erase blocks, so the stub takes 32 KiB of the HP partition and the HP
     firmware follows it; the HE image is a second component in its own partition, and the
