@@ -62,6 +62,7 @@ def test_build_ota_romfs_cli_relative_urls(make_project, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "OPENMV_N6-ota.img.gz" in out and "OPENMV_N6-manifest.bin" in out
+    assert ", app + firmware)" in out                      # the N6's stub installs the firmware
     body = parse_manifest((root / "build" / "OPENMV_N6-manifest.bin").read_bytes()).body
     assert body["representations"][0]["url"] == "OPENMV_N6-ota.img.gz.enc"   # relative
     # the build is recorded in the project's operations history
@@ -120,6 +121,19 @@ def test_build_firmware_cli(make_project, monkeypatch, capsys):
     assert main(["build", "firmware", str(root), "-f", str(repo)]) == 0
     out = capsys.readouterr().out
     assert "OPENMV_N6-firmware.bin" in out and "firmware" in out
+
+
+def test_build_firmware_cli_says_when_the_firmware_is_usb_only(make_project, monkeypatch, capsys):
+    """An OTA firmware for a board with no boot stub never reaches a camera over the air; the
+    build line says so where the person who expected otherwise is looking."""
+    _fake_firmware_make(monkeypatch)
+    root, repo, _app = make_project(ota=True, boards=("OPENMV4",))
+    assert main(["build", "firmware", str(root), "-f", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "(OTA firmware; no boot stub on this board, so it is flashed over USB only)" in out
+    from openmv_ota.build import cli as build_cli
+    assert build_cli._reaches("OPENMV_N6") == "app + firmware"
+    assert build_cli._reaches("OPENMV4") == "app only: no boot stub on this board"
 
 
 def test_build_firmware_cli_ota_keep(make_project, monkeypatch, capsys):

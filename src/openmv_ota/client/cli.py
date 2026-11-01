@@ -1017,8 +1017,15 @@ def cmd_publish(args: argparse.Namespace) -> int:
         res = api.publish_release(manifest.read_bytes(), image_bytes,
                                   _declared_deltas(manifest, out), args.allow_republish,
                                   sbom=sbom_bytes, display_name=args.name)
-        lines = ["published %s  version %s  (%s)" % (res["release_id"], res.get("version"),
-                                                     ", ".join(res["representations"]))]
+        body = _manifest_body(manifest)
+        # Where the fact matters most: someone publishing a firmware fix expects it to reach
+        # the fleet. A manifest with no stub floor carries no firmware component -- this
+        # board has no boot stub, so its cameras take the app alone.
+        reaches = ("app + firmware" if body.get("min_stub", 0) > 0
+                   else "app only (no boot stub on %s)" % body.get("board", args.board))
+        lines = ["published %s  version %s  (%s; reaches %s)"
+                 % (res["release_id"], res.get("version"), ", ".join(res["representations"]),
+                    reaches)]
         payload = dict(res)
         # No CVE scan here: CVE monitoring covers the releases devices RUN, and the scheduled
         # pass picks this one up once one does (`client advisories scan --release-id` asks now).
