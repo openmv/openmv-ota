@@ -221,6 +221,21 @@ def ensure_sdk(repo: Path, override: Path | None, install_sdk: bool) -> sdk_res.
 _IDENTITY_OVERRIDE_KEYS = ("product_id", "board_name")
 
 
+def _app_only_warnings(lock: lock_mod.Lock) -> list[str]:
+    """One warning per board whose releases carry the app alone (no boot stub: the
+    discontinued M4/M7/H7). A warning and not a refusal: the board works, it just does less,
+    and the same line is written into the scaffolded config above the boards list."""
+    out = []
+    for rb in lock.targets.get("resolved", []):
+        if rb.get("role", "main") != "main":
+            continue
+        cap = boards_mod.update_capability(rb["name"])
+        if cap is not None and not cap.firmware:
+            out.append("%s takes app-only updates (%s): its firmware never updates over the "
+                       "air" % (rb["name"], boards_mod.capability_line(rb["name"])))
+    return out
+
+
 def _ensure_ota_capable(lock: lock_mod.Lock) -> None:
     """Raise if any resolved target's ROMFS partition cannot host OTA **in any mode**.
 
@@ -445,6 +460,7 @@ def create_project(
         # so, not complain about key passphrases (and no keys get generated for it).
         _ensure_ota_capable(lock)  # fail before writing anything for an impossible board
         _ensure_ota_mbedtls(lock)
+        warnings += _app_only_warnings(lock)
         if force and keys_from is None and paths.trusted_keys.exists():
             warnings.append(
                 "this regenerates the signing keys; devices already in the field trust the "

@@ -264,8 +264,15 @@ def render_config(
     # scaffold shape. In a plain project the id is inert (recorded in system.json,
     # nothing enforces it; delete the line to re-derive from the product name); under
     # OTA it is the cross-flash guard fielded devices bake in.
+    # What a release reaches on each board, read off the board table (romfs.boards): the fact
+    # sits right above the line people edit, so a board added later is read against its
+    # neighbours. No flag, nothing to acknowledge -- this is a property of the board.
+    width = max((len(b) for b in boards), default=0)
+    reaches = "".join("#   %-*s  %s\n" % (width, b, boards_mod.capability_line(b)) for b in boards)
     targets = (
-        "[targets]\nboards = [%s]\n\n" % board_list
+        ("# What an OTA release reaches on each board (from the board table):\n" + reaches
+         if boards else "")
+        + "[targets]\nboards = [%s]\n\n" % board_list
         + "".join(_render_target(name, b) for b in boards)
         + "# A board's table can also set partition_size = N to override the firmware\n"
         "# partition geometry. Multi-core boards (e.g. AE3) build every partition\n"

@@ -97,6 +97,22 @@ def test_render_config_roundtrips(tmp_path):
     assert c.ota is False
 
 
+def test_render_config_says_what_a_release_reaches_per_board(tmp_path):
+    """The board table's capability line sits above the boards list, one per board, aligned:
+    the fact lives next to the line people edit, and needs no flag."""
+    text = cfg.render_config("prod", None, ["OPENMV_N6", "OPENMV4", "OPENMV2"], ota=True,
+                             signing_key_id=256)
+    assert ("# What an OTA release reaches on each board (from the board table):\n"
+            "#   OPENMV_N6  app + firmware, A/B slots of 12.0 MiB\n"
+            "#   OPENMV4    app only, one 120 KiB slot (no fallback); firmware over USB\n"
+            "#   OPENMV2    app only, one 120 KiB slot (no fallback); firmware over USB; "
+            "no network, so the app updates over USB too\n"
+            "[targets]\n") in text
+    c = cfg.load_config(_write(tmp_path / cfg.CONFIG_NAME, text))   # comments parse away
+    assert c.boards == ["OPENMV_N6", "OPENMV4", "OPENMV2"]
+    assert "What an OTA release reaches" not in cfg.render_config("prod", None, [])   # no boards, no table
+
+
 def test_render_config_non_ota_leaves_section_commented(tmp_path):
     text = cfg.render_config("prod", None, ["OPENMV_N6"])
     assert "# [ota]" in text
