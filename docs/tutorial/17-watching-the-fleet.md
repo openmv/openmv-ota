@@ -157,7 +157,8 @@ $ openmv-ota client device list --cohort beta --limit 1
       "orders_by_seq": 0,
       "stub_version": 1,
       "stub_reason": "normal",
-      "fallback_version": "1.1.0"
+      "fallback_version": "1.1.0",
+      "firmware_updates": true
     }
   ],
   "total": 412
@@ -168,7 +169,10 @@ Versions appear twice on purpose: the packed number is what the device reports a
 comparisons use; the decoded form (`current_version`, `fallback_version`) is for you.
 `stub_version` and `stub_reason` describe the boot stub on a board that has one: the stub
 that installed the running firmware, and why it installed (`normal`, `trial`, `reverted`,
-`reinstalled`). Both are `null` on a board without a stub.
+`reinstalled`). Both are `null` on a board without a stub. `firmware_updates` is the board
+table's answer to whether a firmware release will ever reach this camera: `true` on a board
+with a boot stub, `false` on the discontinued M4, M7 and H7 (their releases carry the app
+alone; the firmware is flashed over USB), `null` for a board the table does not know.
 Filters: `--product-id`, `--cohort`; pages with `--limit`/`--offset`, and `total` always
 counts the whole scoped fleet so a full page is distinguishable from a complete list.
 One camera by id, same row shape:
@@ -234,6 +238,7 @@ $ openmv-ota client release list --limit 1
       "publish_seq": 0,
       "min_platform_version": 84017152,
       "min_stub": 0,
+      "firmware": false,
       "image_sha256": "5d41402abc4b2a76b9719d911017c592a9c25e1e6cf1d5f4f34eaa1f5f5f4b2c",
       "image_size": 1467392,
       "representations": [
@@ -261,7 +266,9 @@ Worth knowing in there: `dev` marks a release signed with a throwaway `--dev` ke
 project uses one (`0` otherwise), `product_id_str` is the id as a string for JSON
 parsers that cannot hold a 64-bit integer, and `representations` is the signed
 manifest's own list — the deltas a device can choose from, each naming the base it
-patches.
+patches. `firmware` says whether the image carries the firmware too (a component the
+board's boot stub installs) or the app alone; it is spelled out from `min_stub`, which
+is set only when a firmware component rides along.
 
 One release by id, and the evidence that shipped with it:
 

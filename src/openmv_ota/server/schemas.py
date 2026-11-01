@@ -82,6 +82,10 @@ class Release(_Row):
     """The oldest boot stub that can install this release's image (``0`` = no stub
     involved). The server offers the release only to cameras whose ``stub_version`` meets
     it; the camera refuses it before any download if offered anyway."""
+    firmware: bool = False
+    """Whether the image carries the firmware too (a component the boot stub installs), or
+    the app alone. Spelled out from ``min_stub`` by the API: a stub floor is set only when a
+    firmware component rides along."""
     image_sha256: str = ""
     image_size: int = 0
     representations: Any = None
@@ -163,6 +167,11 @@ class Device(_Row):
     """Why the stub installed what is running: ``normal``, ``trial``, ``reverted`` (the other
     slot failed its trial) or ``reinstalled`` (the firmware area was corrupt). ``null`` with
     ``stub_version``."""
+    firmware_updates: bool | None = None
+    """Whether a firmware release will ever reach this camera over the air: its board has a
+    boot stub. Read off the board table by the API, not reported by the camera. ``false`` on
+    the discontinued M4/M7/H7, whose releases carry the app alone; ``null`` for a board the
+    table does not know."""
 
 
 class FleetBase(_Row):

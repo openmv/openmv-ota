@@ -795,7 +795,8 @@ def test_fleet_devices_audit(tmp_path):
     # the packed number is what the store keeps; a READER gets it decoded, so nobody has to
     # work out that 16777216 means 1.0.0 to answer "what would this device fall back to"
     assert dev["fallback_payload_version"] == 0x01000000 and dev["fallback_version"] == "1.0.0"
-    assert (dev["stub_version"], dev["stub_reason"]) == (None, None)   # no stub on this board
+    assert (dev["stub_version"], dev["stub_reason"]) == (None, None)   # no stub boot recorded
+    assert dev["firmware_updates"] is True        # ...but the N6 has one: firmware releases reach it
     events = c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
     assert events[0]["action"] == "release.publish"
 
@@ -1220,7 +1221,24 @@ def test_device_detail_matches_the_list_row(tmp_path):
     one = c.get("/api/v1/admin/devices/d1", headers=AUTH).json()
     listed = c.get("/api/v1/admin/devices", headers=AUTH).json()["devices"][0]
     assert one == listed
-    assert one["fallback_version"] == "1.0.0"
+    assert one["fallback_version"] == "1.0.0" and one["firmware_updates"] is True
+
+
+def test_device_rows_say_whether_firmware_ever_reaches_them(tmp_path):
+    """From the board table, not the camera: an H7's releases carry the app alone, a board
+    the table does not know (or a row without one) is "no idea", never "no"."""
+    from openmv_ota.server import admin as admin_mod
+    assert admin_mod._firmware_updates("OPENMV4") is False
+    assert admin_mod._firmware_updates("OPENMV_RT1060") is True
+    assert admin_mod._firmware_updates("ARDUINO_NANO_33_BLE_SENSE") is None   # no OTA partition
+    assert admin_mod._firmware_updates("NOT_A_BOARD") is None
+    assert admin_mod._firmware_updates(None) is None and admin_mod._firmware_updates("") is None
+    app, store = _app(tmp_path)
+    store.upsert_device(device_id="h7", product_id=BID, board="OPENMV4", current_version="1.0.0")
+    store.upsert_device(device_id="x", product_id=BID, board="B", current_version="1.0.0")
+    c = TestClient(app)
+    rows = {d["device_id"]: d for d in c.get("/api/v1/admin/devices", headers=AUTH).json()["devices"]}
+    assert rows["h7"]["firmware_updates"] is False and rows["x"]["firmware_updates"] is None
 
 
 def test_release_detail_returns_the_release(tmp_path):
@@ -1229,6 +1247,12 @@ def test_release_detail_returns_the_release(tmp_path):
     r = TestClient(app).get("/api/v1/admin/releases/rel1", headers=AUTH).json()
     assert r["release_id"] == "rel1" and r["version"] == "2.0.0"
     assert r["representations"][0]["format"] == "full"   # parsed, not the stored JSON string
+    assert r["firmware"] is False                         # no stub floor: the app alone
+    listed = TestClient(app).get("/api/v1/admin/releases", headers=AUTH).json()["releases"]
+    assert [x["firmware"] for x in listed] == [False]
+    from openmv_ota.server import admin as admin_mod
+    assert admin_mod._with_contents([{"min_stub": 1}, {"min_stub": 0}, {}]) == [
+        {"min_stub": 1, "firmware": True}, {"min_stub": 0, "firmware": False}, {"firmware": False}]
 
 
 def test_detail_reads_need_observe_scope(tmp_path):
