@@ -28,6 +28,7 @@
 #define QSPI_MAX_HZ             (25000000)
 #define QSPI_CMD_TIMEOUT        (1000)
 #define QSPI_READ_CHUNK         (0x10000)       // one transfer per timeout
+#define QSPI_RESET_RETRIES      (3)             // reset attempts after the first, 10/20/40 ms apart
 
 #define CMD_WRITE_ENABLE        (0x06)
 #define CMD_READ_STATUS         (0x05)
@@ -124,48 +125,12 @@ static int write_enable(void) {
     return poll_status(SR_WEL, SR_WEL, QSPI_CMD_TIMEOUT);
 }
 
-// Power-on state: 3-byte addressing, write-disabled, no operation in progress.
-//
-// The part is whatever the previous owner left it: the firmware's driver (1-line commands,
-// continuous read off) or the Arduino DFU bootloader's, which may have switched it to QPI,
-// where it ignores 1-line instructions altogether. A reset is the one thing a QPI part still
-// obeys, so send the pair on 4 lines first (a no-op to a part in SPI mode, which sees nothing
-// it recognises) and then on 1 line, and only then ask the part for its status.
-// Back to a usable controller after a HAL call timed out (the HAL leaves the handle in its
-// error state, and every later call refuses). The HAL's own abort would drag in MDMA; this is
-// the register-level half of it, bounded.
-static void controller_recover(void) {
-    SET_BIT(qspi.Instance->CR, QUADSPI_CR_ABORT);
-    uint32_t start = port_ticks_ms();
-    while ((qspi.Instance->SR & QUADSPI_SR_BUSY) && (port_ticks_ms() - start) < 10) {
-    }
-    qspi.Instance->FCR = QUADSPI_FCR_CTCF | QUADSPI_FCR_CTEF | QUADSPI_FCR_CSMF | QUADSPI_FCR_CTOF;
-    qspi.ErrorCode = HAL_QSPI_ERROR_NONE;
-    qspi.State = HAL_QSPI_STATE_READY;
-}
-
-static int chip_reset(void) {
-    static const uint32_t modes[] = { QSPI_INSTRUCTION_4_LINES, QSPI_INSTRUCTION_1_LINE };
-    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
-        QSPI_CommandTypeDef c = command(CMD_RESET_ENABLE);
-        c.InstructionMode = modes[i];
-        if (send(&c) != 0) {
-            return -1;
-        }
-        c = command(CMD_RESET_MEMORY);
-        c.InstructionMode = modes[i];
-        if (send(&c) != 0) {
-            return -1;
-        }
-        port_delay_ms(1);                       // tRST: 30 us on the parts fitted
-    }
-    return poll_status(SR_WIP, 0, QSPI_CMD_TIMEOUT);
-}
-
-int qspi_flash_init(void) {
-    if (inited) {
-        return 0;
-    }
+// The controller from its reset state: an RCC peripheral reset, then the HAL's init at the
+// slowest prescaler QSPI_MAX_HZ allows. Also the way back from a HAL call that timed out: the
+// HAL leaves its handle in the error state and the controller BUSY (an auto-poll that never
+// matched keeps polling until it is aborted), and every later call refuses. A peripheral reset
+// needs no cooperation from either, which the HAL's own abort would (and it drags in MDMA).
+static int controller_init(void) {
     __HAL_RCC_QSPI_CLK_ENABLE();
     __HAL_RCC_QSPI_FORCE_RESET();
     __HAL_RCC_QSPI_RELEASE_RESET();
@@ -177,7 +142,6 @@ int qspi_flash_init(void) {
     if (presc > 256) {
         presc = 256;
     }
-    log_kv("qspi presc", presc);
     memset(&qspi, 0, sizeof(qspi));
     qspi.Instance = QUADSPI;
     qspi.Init.ClockPrescaler = presc - 1;
@@ -196,43 +160,99 @@ int qspi_flash_init(void) {
         log_line("qspi init failed");
         return -1;
     }
-    if (chip_reset() != 0) {
-        // The status poll never saw WIP clear. Say what the part DID answer (0xFF: nothing is
-        // driving the line; a busy bit: a program or erase the reset did not interrupt) and
-        // give it one more go after a settle: the fleet's Portenta loses about one boot in ten
-        // this way at a J-Link core reset, and boots from the install record without its
-        // slots when it does.
-        uint32_t err = qspi.ErrorCode;
-        controller_recover();
-        uint8_t sr = 0xEE;
-        QSPI_CommandTypeDef c = command(CMD_READ_STATUS);
-        c.DataMode = QSPI_DATA_1_LINE;
-        c.NbData = 1;
-        if (send(&c) == 0) {
-            HAL_QSPI_Receive(&qspi, &sr, QSPI_CMD_TIMEOUT);
+    return 0;
+}
+
+// One 1-line, address-less read of n bytes (RDSR, RDID). -1 when the controller did not
+// complete it; a part that answers nothing is not an error here (an idle 1-line bus reads 0xFF).
+static int read_bytes(uint8_t instruction, uint8_t *buf, uint32_t n) {
+    QSPI_CommandTypeDef c = command(instruction);
+    c.DataMode = QSPI_DATA_1_LINE;
+    c.NbData = n;
+    if (send(&c) != 0 || HAL_QSPI_Receive(&qspi, buf, QSPI_CMD_TIMEOUT) != HAL_OK) {
+        return -1;
+    }
+    return 0;
+}
+
+// The part's JEDEC id as one word (0xFFFFFFFF when the controller could not read it): the
+// first proof the bus samples cleanly (a torn id was the tell on the Nicla), and the one
+// answer a part gives in any state short of deep power-down.
+static uint32_t read_id(void) {
+    uint8_t id[3] = {0};
+    if (read_bytes(CMD_READ_ID, id, 3) != 0) {
+        return 0xFFFFFFFFU;
+    }
+    return ((uint32_t) id[0] << 16) | ((uint32_t) id[1] << 8) | id[2];
+}
+
+// Power-on state: 3-byte addressing, write-disabled, no operation in progress.
+//
+// The part is whatever the previous owner left it: the firmware's driver (1-line commands,
+// continuous read off) or the Arduino DFU bootloader's, which may have switched it to QPI,
+// where it ignores 1-line instructions altogether. A reset is the one thing a QPI part still
+// obeys, so send the pair on 4 lines first (a no-op to a part in SPI mode, which sees nothing
+// it recognises) and then on 1 line, and only then ask the part for its status.
+//
+// Returns 0, or the step that failed: 1-4 the four reset instructions (the controller never
+// finished sending one), 5 the status poll (the part never reported idle, or never answered).
+static int chip_reset(void) {
+    static const uint32_t modes[] = { QSPI_INSTRUCTION_4_LINES, QSPI_INSTRUCTION_1_LINE };
+    for (int i = 0; i < (int) (sizeof(modes) / sizeof(modes[0])); i++) {
+        QSPI_CommandTypeDef c = command(CMD_RESET_ENABLE);
+        c.InstructionMode = modes[i];
+        if (send(&c) != 0) {
+            return 2 * i + 1;
         }
-        log_kv("qspi reset timeout, hal err", err);
-        log_kv("qspi status", sr);
-        controller_recover();
-        port_delay_ms(10);
-        if (chip_reset() != 0) {
-            log_line("qspi reset timeout");     // no part answered on 1 line: slot reads will fail
+        c = command(CMD_RESET_MEMORY);
+        c.InstructionMode = modes[i];
+        if (send(&c) != 0) {
+            return 2 * i + 2;
+        }
+        port_delay_ms(1);                       // tRST: 30 us on the parts fitted
+    }
+    return (poll_status(SR_WIP, 0, QSPI_CMD_TIMEOUT) == 0) ? 0 : 5;
+}
+
+int qspi_flash_init(void) {
+    if (inited) {
+        return 0;
+    }
+    if (controller_init() != 0) {
+        return -1;
+    }
+    log_kv("qspi presc", qspi.Init.ClockPrescaler + 1);
+    int step = chip_reset();
+    for (int attempt = 0; step != 0; attempt++) {
+        // The reset sequence did not end with the part reporting idle. Say where it stopped
+        // and what the controller holds, bring the controller back with a peripheral reset
+        // (the failed HAL call leaves it refusing everything), let the part settle, and ask
+        // it for its status and id before trying again -- the two answers that tell a silent
+        // part (0xFF: nothing drives the line) from a busy one (WIP set: a program or erase
+        // the reset did not interrupt) or a torn read. The fleet's Portenta loses about one
+        // boot in six this way at the harness's first debug-core reset after a DFU
+        // provisioning, never by hand, and boots from the install record without its slots
+        // when it does.
+        log_kv("qspi reset failed at step", step);
+        log_kv("qspi hal err", qspi.ErrorCode);
+        log_kv("qspi sr", QUADSPI->SR);
+        if (attempt == QSPI_RESET_RETRIES) {
+            log_line("qspi reset timeout");     // slot reads will fail; the record decides
             return -1;
         }
-        log_line("qspi reset retry ok");
-    }
-    {
-        // The part's JEDEC id, read right after the reset: the first proof the bus samples
-        // cleanly (a torn id was the tell on the Nicla).
-        uint8_t id[4] = {0};
-        QSPI_CommandTypeDef c = command(CMD_READ_ID);
-        c.DataMode = QSPI_DATA_1_LINE;
-        c.NbData = 3;
-        if (send(&c) == 0) {
-            HAL_QSPI_Receive(&qspi, id, QSPI_CMD_TIMEOUT);
+        port_delay_ms(10U << attempt);
+        if (controller_init() != 0) {
+            return -1;
         }
-        log_kv("qspi jedec", ((uint32_t) id[0] << 16) | ((uint32_t) id[1] << 8) | id[2]);
+        uint8_t sr = 0;
+        log_kv("qspi status", (read_bytes(CMD_READ_STATUS, &sr, 1) == 0) ? sr : 0x100);
+        log_kv("qspi jedec", read_id());
+        step = chip_reset();
+        if (step == 0) {
+            log_line("qspi reset retry ok");
+        }
     }
+    log_kv("qspi jedec", read_id());
     if (ADDR4) {
         if (write_enable() != 0) {
             return -1;
