@@ -32,6 +32,7 @@ SDK_BASE_URL = "https://download.openmv.io/sdk"
 # The CDN serving the bundles rejects the default ``Python-urllib`` agent with 403;
 # any explicit User-Agent is accepted (the firmware's shell installer uses wget's).
 _USER_AGENT = "openmv-ota/%s" % __version__
+DOWNLOAD_ATTEMPTS = 3   # a ~1 GB transfer that ends early is retried this many times in all
 
 # CPU name (lowercased ``platform.machine()``) -> the token used in bundle names.
 _ARCH = {"x86_64": "x86_64", "amd64": "x86_64", "arm64": "arm64", "aarch64": "arm64"}
@@ -53,7 +54,15 @@ def install_sdk(version: str, dest: Path, *, base_url: str = SDK_BASE_URL,
                 plat: str | None = None) -> None:
     """Download, sha256-verify, and extract the SDK ``version`` bundle into ``dest``
     (the ``~/openmv-sdk-<version>`` layout the firmware build expects). Raises
-    :class:`ProjectError` on any download / checksum / extraction failure."""
+    :class:`ProjectError` on any download / checksum / extraction failure.
+
+    The bundle is close to a gigabyte, and a transfer that ends early leaves a file
+    that is complete as far as the socket is concerned and wrong as far as the
+    checksum is. So the download is retried, up to :data:`DOWNLOAD_ATTEMPTS` times,
+    when it comes up short of the server's Content-Length or hashes to anything but
+    the published digest (CI lost a build to exactly one such download); a mismatch
+    on the last attempt is reported as the checksum error it is.
+    """
     name = "openmv-sdk-%s-%s.tar.xz" % (version, plat or sdk_platform())
     url = "%s/%s" % (base_url, name)
     dest = Path(dest)
@@ -61,13 +70,14 @@ def install_sdk(version: str, dest: Path, *, base_url: str = SDK_BASE_URL,
 
     with tempfile.TemporaryDirectory() as td:
         archive = Path(td) / name
-        _download(url, archive)
         expected = _fetch_text(url + ".sha256").split()[0].lower()
-        actual = _sha256(archive)
-        if actual != expected:
-            raise ProjectError(
-                "OpenMV SDK checksum mismatch for %s (expected %s, got %s)"
-                % (name, expected, actual), exit_code=1)
+        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+            if _download(url, archive) and _sha256(archive) == expected:
+                break
+            if attempt == DOWNLOAD_ATTEMPTS:
+                raise ProjectError(
+                    "OpenMV SDK checksum mismatch for %s (expected %s, got %s)"
+                    % (name, expected, _sha256(archive)), exit_code=1)
         _extract_strip1(archive, dest)
 
 
@@ -77,13 +87,18 @@ def _open(url: str):
         urllib.request.Request(url, headers={"User-Agent": _USER_AGENT}))  # noqa: S310
 
 
-def _download(url: str, dest: Path) -> None:
+def _download(url: str, dest: Path) -> bool:
+    """Fetch ``url`` into ``dest``. False when the body ended before the server's
+    Content-Length said it would (a truncated transfer, which the caller retries);
+    a server that sends no length is taken at its word."""
     try:
         with _open(url) as resp, open(dest, "wb") as f:
             shutil.copyfileobj(resp, f)
+            length = resp.headers.get("Content-Length")
     except OSError as e:
         raise ProjectError("OpenMV SDK download failed (%s): %s" % (url, e),
                            exit_code=1) from None
+    return length is None or dest.stat().st_size == int(length)
 
 
 def _fetch_text(url: str) -> str:
