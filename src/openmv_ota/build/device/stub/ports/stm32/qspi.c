@@ -49,29 +49,24 @@
 static QSPI_HandleTypeDef qspi;
 static bool inited = false;
 
-// The controller's kernel clock, from whatever tree the bootloader left running.
-static uint32_t kernel_clock(void) {
-    switch (__HAL_RCC_GET_QSPI_SOURCE()) {
-        case RCC_QSPICLKSOURCE_D1HCLK:
-            return HAL_RCC_GetHCLKFreq();
-        case RCC_QSPICLKSOURCE_PLL: {
-            PLL1_ClocksTypeDef c;
-            HAL_RCCEx_GetPLL1ClockFreq(&c);
-            return c.PLL1_Q_Frequency;
-        }
-        case RCC_QSPICLKSOURCE_PLL2: {
-            PLL2_ClocksTypeDef c;
-            HAL_RCCEx_GetPLL2ClockFreq(&c);
-            return c.PLL2_R_Frequency;
-        }
-        default: {
-            uint32_t sel = __HAL_RCC_GET_CLKP_SOURCE();
-            if (sel == RCC_CLKPSOURCE_HSI) {
-                return HSI_VALUE >> ((RCC->CR & RCC_CR_HSIDIV) >> RCC_CR_HSIDIV_Pos);
-            }
-            return (sel == RCC_CLKPSOURCE_CSI) ? CSI_VALUE : HSE_VALUE;
-        }
-    }
+// The kernel clock source the stub found selected (restored at deinit). The firmware runs the
+// controller from PLL2; the stub runs it from the AHB clock, which is alive for as long as the
+// stub is, whatever a reset left of the PLLs.
+static uint32_t inherited_qspisel;
+
+// Everything a failed reset should say about the clock tree and the controller, once.
+static void dump_state(void) {
+    log_kv("qspi sel inherited", inherited_qspisel);
+    log_kv("rcc cr", RCC->CR);
+    log_kv("rcc cfgr", RCC->CFGR);
+    log_kv("rcc d1cfgr", RCC->D1CFGR);
+    log_kv("rcc d1ccipr", RCC->D1CCIPR);
+    log_kv("rcc ahb3enr", RCC->AHB3ENR);
+    log_kv("rcc gcr", RCC->GCR);
+    log_kv("qspi cr", QUADSPI->CR);
+    log_kv("qspi dcr", QUADSPI->DCR);
+    log_kv("qspi ccr", QUADSPI->CCR);
+    log_kv("dbgmcu cr", DBGMCU->CR);
 }
 
 static QSPI_CommandTypeDef command(uint8_t instruction) {
@@ -134,8 +129,9 @@ static int controller_init(void) {
     __HAL_RCC_QSPI_CLK_ENABLE();
     __HAL_RCC_QSPI_FORCE_RESET();
     __HAL_RCC_QSPI_RELEASE_RESET();
+    __HAL_RCC_QSPI_CONFIG(RCC_QSPICLKSOURCE_D1HCLK);
 
-    uint32_t presc = (kernel_clock() + QSPI_MAX_HZ - 1) / QSPI_MAX_HZ;
+    uint32_t presc = (HAL_RCC_GetHCLKFreq() + QSPI_MAX_HZ - 1) / QSPI_MAX_HZ;
     if (presc < 1) {
         presc = 1;
     }
@@ -218,6 +214,7 @@ int qspi_flash_init(void) {
     if (inited) {
         return 0;
     }
+    inherited_qspisel = __HAL_RCC_GET_QSPI_SOURCE();
     if (controller_init() != 0) {
         return -1;
     }
@@ -236,6 +233,9 @@ int qspi_flash_init(void) {
         log_kv("qspi reset failed at step", step);
         log_kv("qspi hal err", qspi.ErrorCode);
         log_kv("qspi sr", QUADSPI->SR);
+        if (attempt == 0) {
+            dump_state();
+        }
         if (attempt == QSPI_RESET_RETRIES) {
             log_line("qspi reset timeout");     // slot reads will fail; the record decides
             return -1;
@@ -276,6 +276,7 @@ int qspi_flash_deinit(void) {
     __HAL_RCC_QSPI_FORCE_RESET();
     __HAL_RCC_QSPI_RELEASE_RESET();
     __HAL_RCC_QSPI_CLK_DISABLE();
+    __HAL_RCC_QSPI_CONFIG(inherited_qspisel);
     memset(&qspi, 0, sizeof(qspi));
     inited = false;
     return 0;
