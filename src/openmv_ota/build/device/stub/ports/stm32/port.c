@@ -43,6 +43,13 @@ void SystemCoreClockUpdate(void) {
     #endif
 }
 
+#if defined(STM32H7)
+// The MPU table as the bootloader left it, restored at the jump (see port_init).
+#define MPU_SAVED_MAX           (16)
+static uint32_t mpu_saved[MPU_SAVED_MAX][2];
+static uint32_t mpu_regions;
+#endif
+
 // Called by start.s from the flash-resident head, before the image is copied to SRAM:
 // undo what the bootloader left on that would make that copy incoherent. The OpenMV
 // bootloader hands over with the caches off; MCUboot on the Arduino boards does not
@@ -145,6 +152,41 @@ int port_init(void) {
     }
     #endif
     port_led(false);
+
+    #if defined(STM32H7)
+    // The QSPI part is only ever driven in indirect mode here, and in the default memory map
+    // its 256 MiB window at STUB_QSPI_BASE is Normal memory: the Cortex-M7 may load from any
+    // such address it has in flight, down a branch it then does not take. One speculative
+    // read into the window while the controller is in indirect mode wedges its state
+    // machine -- BUSY forever, every command times out, no re-init helps -- which is how the
+    // Portenta lost about one boot in seven at a hard reset (the first reset instruction never
+    // completed, with the whole clock tree textbook). The firmware's driver guards the window
+    // with a no-access MPU region whenever it leaves memory-mapped mode; the stub does the
+    // same for its whole life, over the default map for everything else. port_jump puts the
+    // table back and leaves the MPU off, as it was found.
+    //
+    // The table is not empty on arrival: the Arduino bootloader is an mbed application, and
+    // mbed leaves its regions behind, among them one that makes all of SRAM execute-never.
+    // Disabling the MPU (stub_head_prep) only sleeps them; the first enable, with any
+    // configuration at all, woke that region under the stub's own code in AXI SRAM and
+    // parked the board in HardFault (IACCVIOL on the fetch right after the enable; bench,
+    // 2026-11-02). So every region is saved and switched off before ours goes in.
+    ARM_MPU_Disable();
+    mpu_regions = (MPU->TYPE & MPU_TYPE_DREGION_Msk) >> MPU_TYPE_DREGION_Pos;
+    if (mpu_regions > MPU_SAVED_MAX) {
+        mpu_regions = MPU_SAVED_MAX;
+    }
+    for (uint32_t i = 0; i < mpu_regions; i++) {
+        MPU->RNR = i;
+        mpu_saved[i][0] = MPU->RBAR;
+        mpu_saved[i][1] = MPU->RASR;
+        MPU->RASR = 0;
+        MPU->RBAR = 0;
+    }
+    ARM_MPU_SetRegion(ARM_MPU_RBAR(0, STUB_QSPI_BASE),
+                      ARM_MPU_RASR(1, ARM_MPU_AP_NONE, 0, 0, 0, 0, 0, ARM_MPU_REGION_SIZE_256MB));
+    ARM_MPU_Enable(MPU_CTRL_PRIVDEFENA_Msk);
+    #endif
 
     SCB_EnableICache();
     #ifndef STUB_DCACHE_OFF
@@ -632,6 +674,12 @@ void port_jump(uint32_t addr) {
     jump_step(2);
     for (size_t i = STUB_QSPI_PIN_START; i < STUB_QSPI_PIN_START + STUB_QSPI_PIN_COUNT; i++) {
         HAL_GPIO_DeInit(stub_pins[i].gpio, stub_pins[i].pin);
+    }
+    ARM_MPU_Disable();                      // the QSPI window guard goes with the driver,
+    for (uint32_t i = 0; i < mpu_regions; i++) {    // and the bootloader's table comes back
+        MPU->RNR = i;
+        MPU->RBAR = mpu_saved[i][0];        // VALID clear: RNR names the region
+        MPU->RASR = mpu_saved[i][1];
     }
     jump_step(3);
     #endif
