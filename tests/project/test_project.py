@@ -580,6 +580,16 @@ def test_sync_ota_project_rechecks_capability(tmp_path, make_firmware, make_sdk)
     assert lock.ota is True
 
 
+def test_create_ota_warns_once_per_app_only_board(tmp_path, make_firmware, make_sdk):
+    """A classic in an OTA project builds and works, so it is a warning, not a refusal -- one
+    per board, naming what its releases reach; the stub boards draw none."""
+    _, (_, warnings) = _create(tmp_path, make_firmware, make_sdk, ota=True,
+                               boards=["OPENMV_N6", "OPENMV4"])
+    app_only = [w for w in warnings if "app-only updates" in w]
+    assert app_only == ["OPENMV4 takes app-only updates (app only, one 120 KiB slot (no fallback); "
+                        "firmware over USB): its firmware never updates over the air"]
+
+
 def test_create_ota_small_pool_warns(tmp_path, make_firmware, make_sdk):
     _, (_, warnings) = _create(tmp_path, make_firmware, make_sdk, ota=True,
                                factory_keys=1, ota_keys=2)

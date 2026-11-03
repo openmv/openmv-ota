@@ -1536,25 +1536,53 @@ def releases(request: Request, product_id: int | None = None, limit: int = _LIMI
     collection: `limit`, `offset`, `sort`, `dir`, and a filter-aware `total` beside the
     rows, so a full page is never mistaken for a complete list."""
     ms = request.app.state.metastore
-    return {"releases": ms.list_releases(product_id, account_id=principal.account_id,
-                                         limit=limit, offset=offset, sort=sort, direction=dir,
-                                         products=principal.scoped()),
+    return {"releases": _with_contents(ms.list_releases(product_id, account_id=principal.account_id,
+                                                        limit=limit, offset=offset, sort=sort,
+                                                        direction=dir, products=principal.scoped())),
             "total": ms.count_releases(product_id, principal.account_id,
                                        products=principal.scoped())}
 
 
+def _firmware_updates(board) -> bool | None:
+    """Whether a camera of this board takes firmware over the air -- its board has a boot
+    stub -- read off the board table the server ships with. None for a board the table does
+    not know (or a row that never said its board), which is "no idea", not "no"."""
+    from openmv_ota.romfs.boards import update_capability
+
+    if not isinstance(board, str) or not board:
+        return None
+    try:
+        cap = update_capability(board)
+    except KeyError:
+        return None
+    return None if cap is None else cap.firmware
+
+
 def _with_fallback_version(rows: list[dict]) -> list[dict]:
-    """Add a human-readable ``fallback_version`` beside the stored uint32.
+    """Add a human-readable ``fallback_version`` beside the stored uint32, and
+    ``firmware_updates`` beside the board.
 
     The store keeps the packed number because that is what the device reports and what
     comparisons need; a reader should not have to decode `16711680` in their head to answer
     "what would this device fall back to". Absent when the device did not tell us, which is
-    deliberately distinct from a device that reported no fallback."""
+    deliberately distinct from a device that reported no fallback. ``firmware_updates`` is the
+    board table's answer to "will a firmware release ever reach this camera" -- the thing an
+    operator wonders when an H7 sits on old firmware -- and nothing the camera reports."""
     from openmv_ota.ota.version import decode_app_version
 
     for row in rows:
         packed = row.get("fallback_payload_version")
         row["fallback_version"] = decode_app_version(packed) if packed else None
+        row["firmware_updates"] = _firmware_updates(row.get("board"))
+    return rows
+
+
+def _with_contents(rows: list[dict]) -> list[dict]:
+    """Add ``firmware`` to release rows: whether the image carries a firmware component for
+    a boot stub to install. The manifest's stub floor is set only when one does, so the
+    stored ``min_stub`` already says it; this spells it out for the reader."""
+    for row in rows:
+        row["firmware"] = bool(row.get("min_stub", 0))
     return rows
 
 
@@ -1565,7 +1593,7 @@ def release(release_id: str, request: Request,
     filter client-side, which means paging until the row turns up on any fleet with real history.
     Ownership is checked the same way as everywhere else, so another account's release is a 404 and
     not a probe."""
-    return _owned(request.app.state.metastore.get_release(release_id), principal)
+    return _with_contents([_owned(request.app.state.metastore.get_release(release_id), principal)])[0]
 
 
 @admin.get("/devices/{device_id}", responses={200: {"model": Device}})

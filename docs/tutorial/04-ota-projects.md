@@ -200,6 +200,35 @@ firmware. **`openmv_wdt.py`** is a watchdog helper — `openmv_wdt.feed()` from 
 main loop, `with openmv_wdt.relax():` around long blocking ops (a timer ISR feeds
 through them) — and `install()` uses it automatically.
 
+## What a release reaches on each board
+
+A release updates the app on every board. On a board with a **boot stub** it carries the
+firmware too, and the stub installs it before the app runs ([Building](06-building.md));
+on a board without one the firmware is flashed over USB and a release carries the app
+alone. Whether a failed update has a fallback depends on the ROMFS partition: two slots
+fit on every board but the three discontinued classics, whose single slot re-downloads
+(or needs USB) instead. None of this is a project setting. It is read off the board
+table, written as a comment above `boards` in the scaffolded `openmv-ota.toml`, said at
+`build` and `publish`, and shown per camera and per release on the cloud (`openmv-ota
+romfs boards <board>` prints the same line).
+
+| Board | What a release reaches |
+|-------|------------------------|
+| OPENMV_N6 | app + firmware, A/B slots of 12.0 MiB |
+| OPENMV_AE3 | app + firmware, A/B slots of 12.0 MiB |
+| OPENMV_RT1060 | app + firmware, A/B slots of 4.0 MiB |
+| OPENMV4P | app + firmware, A/B slots of 4.0 MiB |
+| OPENMVPT | app + firmware, A/B slots of 4.0 MiB |
+| ARDUINO_PORTENTA_H7 | app + firmware, A/B slots of 2.0 MiB |
+| ARDUINO_GIGA | app + firmware, A/B slots of 2.0 MiB |
+| ARDUINO_NICLA_VISION | app + firmware, A/B slots of 2.0 MiB |
+| OPENMV4 | app only, one 120 KiB slot (no fallback); firmware over USB |
+| OPENMV3 | app only, one 248 KiB slot (no fallback); firmware over USB |
+| OPENMV2 | app only, one 120 KiB slot (no fallback); firmware over USB; no network, so the app updates over USB too |
+
+The M4, M7 and H7 also connect to the server without verifying its certificate unless
+`[ota].ca` is set (see above), and the M4's runtime has no network at all.
+
 ## What each board does on the hosted cloud
 
 Each board has a **cloud level**: how much of the hosted OpenMV Cloud it runs. Smaller

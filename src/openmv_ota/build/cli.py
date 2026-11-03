@@ -24,6 +24,17 @@ from . import romfs as build_mod
 from .errors import BuildError
 
 
+def _has_stub(board: str) -> bool:
+    from openmv_ota.romfs.boards import get_board
+    return get_board(board).stub is not None
+
+
+def _reaches(board: str) -> str:
+    """What this OTA set reaches on its board: the firmware too (a boot stub installs it) or
+    the app alone -- said on the build line, where someone expecting a firmware update looks."""
+    return "app + firmware" if _has_stub(board) else "app only: no boot stub on this board"
+
+
 def _add_signing_flags(p: argparse.ArgumentParser) -> None:
     """The --key-passphrase-file / --allow-dev-key flags shared by every signing build verb."""
     p.add_argument("--key-passphrase-file", metavar="FILE",
@@ -311,8 +322,8 @@ def cmd_ota_romfs(args: argparse.Namespace) -> int:
 
     for r in results:
         extra = ("".join(" + %s" % d.name for d in r.deltas)) if r.deltas else ""
-        print("Built %s%s + %s  (OTA set, key 0x%04x)"
-              % (r.image.name, extra, r.manifest.name, r.key_id))
+        print("Built %s%s + %s  (OTA set, key 0x%04x, %s)"
+              % (r.image.name, extra, r.manifest.name, r.key_id, _reaches(r.target)))
     history.record(args.project, "build-ota-romfs", sets=[
         {"board": r.target, "image": r.image.name, "manifest": r.manifest.name,
          "deltas": [d.name for d in r.deltas], "key_id": r.key_id}
@@ -335,6 +346,8 @@ def cmd_firmware(args: argparse.Namespace) -> int:
 
     for r in results:
         kind = "OTA firmware" if r.ota else "firmware"
+        if r.ota and not _has_stub(r.board):
+            kind += "; no boot stub on this board, so it is flashed over USB only"
         print("Built %s  (%s)" % (", ".join(o.name for o in r.outputs), kind))
         if r.build_dir is not None:
             print("  wrapper dir kept: %s" % r.build_dir)

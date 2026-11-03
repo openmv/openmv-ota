@@ -407,6 +407,7 @@ def cmd_boards(args: argparse.Namespace) -> int:
         if b.unsupported:
             print("  RETIRED:  %s" % b.unsupported)
         print("  arch:     %s" % b.arch)
+        print("  updates:  %s" % boards_mod.capability_line(b.name))
         if b.mpy_args:
             print("  mpy_args: %s   (used by `build romfs` when compiling .py)" % " ".join(b.mpy_args))
         for p in b.partitions:
@@ -424,5 +425,8 @@ def cmd_boards(args: argparse.Namespace) -> int:
         b = boards[name]
         sizes = "/".join(_human(p.size) for p in b.partitions)
         tail = "  (retired -- no longer supported)" if b.unsupported else ""
+        cap = boards_mod.update_capability(name)
+        if cap is not None and not cap.firmware:
+            tail = "  (app-only updates)" + tail
         print("%-*s  %-34s  %s%s" % (width, name, b.display_name, sizes, tail))
     return 0

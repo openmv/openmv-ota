@@ -284,6 +284,72 @@ def _live_framesize(board: str, level: str | None, size: str | None) -> str | No
     return size
 
 
+@dataclass(frozen=True)
+class UpdateCapability:
+    """What an OTA release reaches on a board, read off the board table alone -- nothing a
+    project chooses. ``firmware``: the board has a boot stub, so a release carries the
+    firmware and the stub installs it; without one only the app updates and the firmware is
+    flashed over USB. ``ab``: two slots fit the ROMFS partition, so a failed update falls back
+    to the other; a single slot re-downloads (or needs USB) instead. ``slot_bytes``: the usable
+    image body per slot. ``network``: the OTA runtime keeps the network stack (the M4's does
+    not, so it updates over USB only)."""
+    firmware: bool
+    ab: bool
+    slot_bytes: int
+    network: bool = True
+
+
+def _main_partition(b: BoardConfig) -> Partition | None:
+    for p in b.partitions:
+        if p.role == "main":
+            return p
+    return None
+
+
+def update_capability(name: str) -> UpdateCapability | None:
+    """The board's update capability, or None for a board with no OTA partition at all
+    (a QEMU target, a board the table lists only to name it)."""
+    from openmv_ota.ota import geometry
+    b = get_board(name)
+    part = _main_partition(b)
+    if part is None or part.erase_size <= 0:
+        return None
+    mode = geometry.derive_mode(part.size, part.erase_size)
+    if mode is None:
+        return None
+    ab = mode == geometry.AB
+    slot = (geometry.body_capacity(part.size, part.erase_size) if ab
+            else geometry.single_body_capacity(part.size, part.erase_size))
+    return UpdateCapability(firmware=b.stub is not None, ab=ab, slot_bytes=slot,
+                            network=not b.ota_runtime_drops_network)
+
+
+def _size_text(n: int) -> str:
+    if n >= 1 << 20 and n % (1 << 20) == 0:
+        return "%d MiB" % (n >> 20)
+    if n >= 1 << 20:
+        return "%.1f MiB" % (n / (1 << 20))
+    return "%d KiB" % (n >> 10)
+
+
+def capability_line(name: str) -> str:
+    """One line for a human: what a release reaches and what a failed one costs, e.g.
+    ``app + firmware, A/B slots of 11.9 MiB`` or ``app only, one 112 KiB slot (no fallback);
+    firmware over USB``."""
+    cap = update_capability(name)
+    if cap is None:
+        return "no OTA partition"
+    what = "app + firmware" if cap.firmware else "app only"
+    slots = ("A/B slots of %s" % _size_text(cap.slot_bytes) if cap.ab
+             else "one %s slot (no fallback)" % _size_text(cap.slot_bytes))
+    line = "%s, %s" % (what, slots)
+    if not cap.firmware:
+        line += "; firmware over USB"
+    if not cap.network:
+        line += "; no network, so the app updates over USB too"
+    return line
+
+
 def load_boards() -> dict[str, BoardConfig]:
     """Return every known board keyed by its firmware-folder name."""
     raw = _load_raw()

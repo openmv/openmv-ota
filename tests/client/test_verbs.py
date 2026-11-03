@@ -55,13 +55,14 @@ def wired(tmp_path, monkeypatch):
     return store, tmp_path
 
 
-def _build_release(project, board="OPENMV_N6", pv=0x02000000):
+def _build_release(project, board="OPENMV_N6", pv=0x02000000, min_stub=0):
     build = project / "build"
     build.mkdir(parents=True, exist_ok=True)
     img = b"\xA5" * 64
     image_gz = gzip.compress(img, mtime=0)
     body = {"schema": 1, "product_id": BID, "product": "P", "version": "2.0.0", "payload_version": pv,
-            "min_platform_version": 0, "size": len(img), "sha256": hashlib.sha256(img).hexdigest(),
+            "min_platform_version": 0, "min_stub": min_stub, "board": board,
+            "size": len(img), "sha256": hashlib.sha256(img).hexdigest(),
             "representations": [{"format": "full", "url": "%s-ota.img.gz" % board,
                                  "size": len(image_gz)}]}
     manifest = pack_manifest(Manifest(body=body, certificate=_CERT, sig_alg=ES256,
@@ -82,6 +83,16 @@ def _rewrite_manifest(build, board, reps):
                                             signature=b"\x00" * 64)))
 
 
+def test_publish_says_the_firmware_rides_along_on_a_stub_board(wired, tmp_path, capsys):
+    """A manifest with a stub floor carries a firmware component the boot stub installs: the
+    publish line says the release reaches the firmware, where someone shipping a firmware
+    fix is looking."""
+    project = tmp_path / "proj"
+    _build_release(project, min_stub=1)
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    assert "; reaches app + firmware)" in capsys.readouterr().out
+
+
 def test_publish_and_rollout(wired, tmp_path, capsys):
     store, _ = wired
     project = tmp_path / "proj"
@@ -89,6 +100,7 @@ def test_publish_and_rollout(wired, tmp_path, capsys):
     assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6", "--cohort", "beta", "--percent", "5", "--name", "First light"]) == 0
     out = capsys.readouterr().out
     assert "published rel_" in out and "rollout ro_" in out
+    assert "; reaches app only (no boot stub on OPENMV_N6))" in out   # this manifest has no stub floor
     releases = store.list_releases(BID)
     assert len(releases) == 1 and store.list_rollouts(BID)[0]["cohort"] == "beta"
     assert releases[0]["key_id"] == _CERT_KEY_ID   # the manifest's certified key, recorded

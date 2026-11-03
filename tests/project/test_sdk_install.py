@@ -136,19 +136,104 @@ def test_install_sdk_uses_host_platform(tmp_path, monkeypatch):
     assert (dest / "sdk.version").read_text() == VERSION
 
 
-def test_install_sdk_checksum_mismatch(tmp_path):
+def test_install_sdk_checksum_mismatch(tmp_path, monkeypatch):
+    """A digest that never matches is reported after every attempt is spent -- and only then."""
     serve = tmp_path / "serve"
     serve.mkdir()
     archive = _make_bundle("openmv-sdk-%s-%s" % (VERSION, PLAT), {"sdk.version": VERSION.encode()})
     base = _publish(serve, archive, checksum="00" * 32)  # wrong digest
+    calls = []
+    real = si._download
+    monkeypatch.setattr(si, "_download", lambda url, dest: calls.append(url) or real(url, dest))
     with pytest.raises(ProjectError, match="checksum mismatch"):
         si.install_sdk(VERSION, tmp_path / "sdk", base_url=base, plat=PLAT)
+    assert len(calls) == si.DOWNLOAD_ATTEMPTS
+
+
+def test_install_sdk_retries_a_corrupt_download(tmp_path, monkeypatch):
+    """The first transfer lands wrong bytes (CI saw one such ~1 GB download); the second
+    is good, so the install succeeds without a word about the first."""
+    serve = tmp_path / "serve"
+    serve.mkdir()
+    archive = _make_bundle("openmv-sdk-%s-%s" % (VERSION, PLAT), {"sdk.version": VERSION.encode()})
+    base = _publish(serve, archive)
+    calls = []
+    real = si._download
+
+    def flaky(url, dest):
+        calls.append(url)
+        if len(calls) == 1:
+            dest.write_bytes(b"not the bundle")
+            return True                       # a complete transfer of the wrong bytes
+        return real(url, dest)
+
+    monkeypatch.setattr(si, "_download", flaky)
+    dest = tmp_path / "sdk"
+    si.install_sdk(VERSION, dest, base_url=base, plat=PLAT)
+    assert len(calls) == 2
+    assert (dest / "sdk.version").read_text() == VERSION
+
+
+class _Response:
+    """A stand-in for urlopen's response: the real body, headers of the test's choosing."""
+
+    def __init__(self, inner, headers):
+        self._inner = inner
+        self.headers = headers
+
+    def read(self, n=-1):
+        return self._inner.read(n)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._inner.close()
+
+
+def test_install_sdk_retries_a_short_download(tmp_path, monkeypatch):
+    """A body that ends before Content-Length is a truncated transfer: retried, not hashed
+    and reported as corruption."""
+    serve = tmp_path / "serve"
+    serve.mkdir()
+    archive = _make_bundle("openmv-sdk-%s-%s" % (VERSION, PLAT), {"sdk.version": VERSION.encode()})
+    base = _publish(serve, archive)
+    seen = []
+    real = si._open
+
+    def short_once(url):
+        resp = real(url)
+        if url.endswith(".tar.xz"):
+            seen.append(url)
+            if len(seen) == 1:
+                return _Response(resp, {"Content-Length": str(len(archive) + 1)})
+        return resp
+
+    monkeypatch.setattr(si, "_open", short_once)
+    dest = tmp_path / "sdk"
+    si.install_sdk(VERSION, dest, base_url=base, plat=PLAT)
+    assert len(seen) == 2
+    assert (dest / "sdk.version").read_text() == VERSION
+
+
+def test_install_sdk_accepts_a_server_without_content_length(tmp_path, monkeypatch):
+    serve = tmp_path / "serve"
+    serve.mkdir()
+    archive = _make_bundle("openmv-sdk-%s-%s" % (VERSION, PLAT), {"sdk.version": VERSION.encode()})
+    base = _publish(serve, archive)
+    real = si._open
+    monkeypatch.setattr(si, "_open", lambda url: _Response(real(url), {}))
+    dest = tmp_path / "sdk"
+    si.install_sdk(VERSION, dest, base_url=base, plat=PLAT)
+    assert (dest / "sdk.version").read_text() == VERSION
 
 
 def test_install_sdk_download_failure(tmp_path):
-    base = (tmp_path / "empty").as_uri()  # nothing published there
+    serve = tmp_path / "serve"
+    serve.mkdir()
+    (serve / (NAME + ".sha256")).write_text("%s  %s\n" % ("00" * 32, NAME))  # digest, no archive
     with pytest.raises(ProjectError, match="download failed"):
-        si.install_sdk(VERSION, tmp_path / "sdk", base_url=base, plat=PLAT)
+        si.install_sdk(VERSION, tmp_path / "sdk", base_url=serve.as_uri(), plat=PLAT)
 
 
 def test_install_sdk_missing_checksum(tmp_path):
