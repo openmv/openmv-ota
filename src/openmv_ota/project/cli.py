@@ -149,11 +149,51 @@ def register(project_parser: argparse.ArgumentParser):
     p_kdv.add_argument("key_id", type=int, help="desk key id")
     p_kdv.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_kdv.set_defaults(func=cmd_desk_revoke, _command="project keys desk revoke")
-    p_kdp = kd_sub.add_parser("push", help="send the desk keys' public halves to the server")
+    p_kdp = kd_sub.add_parser("push", help="send the desk keys (public halves + certificates) "
+                                           "to the server")
     p_kdp.add_argument("--server", help="server URL (default: client config)")
     p_kdp.add_argument("--token", help="a manage token (default: client config)")
     p_kdp.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_kdp.set_defaults(func=cmd_desk_push, _command="project keys desk push")
+    p_kdy = kd_sub.add_parser("certify", help="certify desk keys made before the project had "
+                                              "an issuer")
+    p_kdy.add_argument("--key-passphrase-file", help="file holding the project passphrase")
+    p_kdy.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kdy.set_defaults(func=cmd_desk_certify, _command="project keys desk certify")
+
+    p_ki = keys_sub.add_parser("issuer", help="the issuer key: certified once by root 0, it "
+                                              "certifies every desk key")
+    ki_sub = p_ki.add_subparsers(dest="_issuer_action", required=True)
+    p_kic = ki_sub.add_parser("create", help="make the issuer (needs keys/private/root-0.pem)")
+    p_kic.add_argument("--key-passphrase-file", help="file holding the project passphrase")
+    p_kic.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kic.set_defaults(func=cmd_issuer_create, _command="project keys issuer create", replace=False)
+    p_kir = ki_sub.add_parser("replace", help="a new issuer in place of the current one")
+    p_kir.add_argument("--key-passphrase-file", help="file holding the project passphrase")
+    p_kir.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kir.set_defaults(func=cmd_issuer_create, _command="project keys issuer replace", replace=True)
+    p_kis = ki_sub.add_parser("show", help="the issuer's id, key and certificate")
+    p_kis.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kis.set_defaults(func=cmd_issuer_show, _command="project keys issuer show")
+
+    p_kro = keys_sub.add_parser("roots", help="the account's pinned roots on the server: what "
+                                              "every desk key must chain to")
+    kro_sub = p_kro.add_subparsers(dest="_roots_action", required=True)
+    p_krp = kro_sub.add_parser("push", help="pin the account to this project's roots (set once)")
+    p_krp.add_argument("--server", help="server URL (default: client config)")
+    p_krp.add_argument("--token", help="a manage token (default: client config)")
+    p_krp.add_argument("--rotation-key", metavar="PEM",
+                       help="replace roots the account already has: a PEM of one of its CURRENT "
+                            "roots, which signs the statement (its id comes from the file name, "
+                            "root-<id>.pem)")
+    p_krp.add_argument("--key-passphrase-file", help="file holding the passphrase of --rotation-key")
+    p_krp.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_krp.set_defaults(func=cmd_roots_push, _command="project keys roots push")
+    p_krs = kro_sub.add_parser("show", help="the account's pinned roots, against this project's")
+    p_krs.add_argument("--server", help="server URL (default: client config)")
+    p_krs.add_argument("--token", help="an observe token (default: client config)")
+    p_krs.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_krs.set_defaults(func=cmd_roots_show, _command="project keys roots show")
 
     p_kk = keys_sub.add_parser("keykeeper", help="keykeeper's keys: what releases encrypted "
                                                  "for each camera are sealed to")
@@ -536,8 +576,32 @@ def cmd_desk_create(args: argparse.Namespace) -> int:
         e = desk_keys.create(args.dir, args.label, phrase, days=args.days)
         history.record(args.dir, "desk-key-create", key_id=e.key_id, label=e.label)
         print("Desk key %d for %r, expires %s." % (e.key_id, e.label, e.expires))
-        print("  Commit keys/desk_keys.json, then `openmv-ota project keys desk push` so the")
-        print("  server accepts the cameras this desk registers.")
+        if e.certified:
+            print("  Commit keys/desk_keys.json, then `openmv-ota project keys desk push` so the")
+            print("  server accepts the cameras this desk registers.")
+        else:
+            print("  UNCERTIFIED: this project has no issuer key, and the server takes no desk")
+            print("  key without one. `openmv-ota project keys issuer create` (needs root-0.pem)")
+            print("  then `openmv-ota project keys desk certify`, then `desk push`.")
+        return 0
+    return _desk_error(run)
+
+
+def cmd_desk_certify(args: argparse.Namespace) -> int:
+    from . import desk_keys
+    from .passphrase import resolve_passphrase
+
+    def run():
+        phrase, _ = resolve_passphrase(args.dir, passphrase_file=args.key_passphrase_file)
+        done = desk_keys.certify(args.dir, phrase)
+        for e in done:
+            history.record(args.dir, "desk-key-certify", key_id=e.key_id, label=e.label)
+        if done:
+            print("Certified %d desk key%s: %s. Commit keys/desk_keys.json, then "
+                  "`openmv-ota project keys desk push`."
+                  % (len(done), "" if len(done) == 1 else "s", ", ".join(e.label for e in done)))
+        else:
+            print("Every live desk key is certified already.")
         return 0
     return _desk_error(run)
 
@@ -551,6 +615,8 @@ def cmd_desk_list(args: argparse.Namespace) -> int:
             print("No desk keys -- `openmv-ota project keys desk create <label>` makes one.")
         for e in keys:
             state = "revoked" if e.revoked else "expires %s" % e.expires
+            if not e.revoked and not e.certified:
+                state += "  UNCERTIFIED (`project keys desk certify`)"
             print("%3d  %-20s  %s  %s" % (e.key_id, e.label, state, e.pubkey[:16] + "..."))
         return 0
     return _desk_error(run)
@@ -590,11 +656,132 @@ def cmd_desk_push(args: argparse.Namespace) -> int:
 
     def run():
         keys = desk_keys.read(args.dir)
+        live = [e for e in keys if not e.revoked]
+        if any(not e.certified for e in live):
+            raise ProjectError("desk key(s) %s are not certified, and the server takes no desk "
+                               "key without its chain: `openmv-ota project keys desk certify` "
+                               "first (`issuer create` before that, if the project has none)"
+                               % ", ".join(repr(e.label) for e in live if not e.certified))
+        # a revoked key the server never took (made before the issuer) has nothing to revoke
+        send = [e for e in keys if e.certified]
         api = Api(client_config.resolve(args.server, args.token))
-        for e in keys:
+        for e in send:
             api.put_desk_key(e)
-        print("Pushed %d desk key%s." % (len(keys), "" if len(keys) == 1 else "s"))
+        print("Pushed %d desk key%s." % (len(send), "" if len(send) == 1 else "s"))
         return 0
+    return _desk_error(run)
+
+
+def cmd_issuer_create(args: argparse.Namespace) -> int:
+    from . import issuer as issuer_mod
+    from .passphrase import resolve_passphrase
+
+    def run():
+        phrase, _ = resolve_passphrase(args.dir, passphrase_file=args.key_passphrase_file)
+        e = (issuer_mod.replace if args.replace else issuer_mod.create)(args.dir, phrase)
+        history.record(args.dir, "issuer-replace" if args.replace else "issuer-create",
+                       key_id=e.key_id)
+        print("Issuer key %d, certified by root 0. Commit keys/issuer.json." % e.key_id)
+        if args.replace:
+            print("  Desk keys keep the certificates they have; new desks chain through this one.")
+        return 0
+    return _desk_error(run)
+
+
+def cmd_issuer_show(args: argparse.Namespace) -> int:
+    from . import issuer as issuer_mod
+
+    def run():
+        e = issuer_mod.read(args.dir)
+        if e is None:
+            print("No issuer key -- `openmv-ota project keys issuer create` makes one.")
+            return 0
+        print("Issuer key %d, created %s%s" % (e.key_id, e.created,
+                                             (", backend %s" % e.backend.get("backend"))
+                                             if e.backend else ""))
+        print("  key   %s" % e.pubkey)
+        print("  cert  %s" % e.cert)
+        return 0
+    return _desk_error(run)
+
+
+def _project_roots(root):
+    from openmv_ota.ota.keys import read_root_keys
+    from .project import ProjectPaths
+    return [{"root_id": r.root_id, "pubkey": r.pubkey}
+            for r in read_root_keys(ProjectPaths(Path(root)).root_keys)]
+
+
+def cmd_roots_push(args: argparse.Namespace) -> int:
+    from openmv_ota.client import config as client_config
+    from openmv_ota.client.api import Api
+    from openmv_ota.ota import account_roots as ar
+    from openmv_ota.ota.errors import OtaError
+
+    def run():
+        try:
+            roots = _project_roots(args.dir)
+        except OtaError as e:
+            raise ProjectError(str(e)) from None
+        api = Api(client_config.resolve(args.server, args.token))
+        statement = None
+        if args.rotation_key:
+            from openmv_ota.ota.algorithms import ES256, algorithm_for
+            from openmv_ota.ota.keys import load_private_key_pem
+            from openmv_ota.ota.signer import LocalSigner
+            from .config import load_config
+            from .passphrase import resolve_passphrase
+            from .project import ProjectPaths
+            pem = Path(args.rotation_key)
+            try:
+                root_id = int(pem.stem.split("-", 1)[1])
+            except (IndexError, ValueError):
+                raise ProjectError("--rotation-key must be named root-<id>.pem (the id of the "
+                                   "current root that signs the statement)") from None
+            phrase, _ = resolve_passphrase(args.dir, passphrase_file=args.key_passphrase_file)
+            try:
+                key = load_private_key_pem(pem.read_bytes(), phrase)
+            except OSError:
+                raise ProjectError("cannot read %s" % pem) from None
+            except OtaError as e:
+                raise ProjectError(str(e)) from None
+            account = load_config(ProjectPaths(Path(args.dir)).config).account_id
+            if not account:
+                raise ProjectError("a rotation statement names the account it is for: set "
+                                   "[product] account_id in openmv-ota.toml first")
+            statement = ar.sign_statement(account, roots,
+                                          LocalSigner(key, root_id, ES256, algorithm_for(ES256)))
+        got = api.put_roots(roots, statement)
+        print("%s the account to %d root%s%s." % (
+            "Re-pinned" if got.get("replaced") else "Pinned", len(roots),
+            "" if len(roots) == 1 else "s",
+            " (statement signed by root %d)" % statement["signed_by"] if statement else ""))
+        return 0
+    return _desk_error(run)
+
+
+def cmd_roots_show(args: argparse.Namespace) -> int:
+    from openmv_ota.client import config as client_config
+    from openmv_ota.client.api import Api
+    from openmv_ota.ota.errors import OtaError
+
+    def run():
+        try:
+            mine = {r["root_id"]: r["pubkey"] for r in _project_roots(args.dir)}
+        except OtaError as e:
+            raise ProjectError(str(e)) from None
+        api = Api(client_config.resolve(args.server, args.token))
+        theirs = {r["root_id"]: r["pubkey"] for r in api.roots()}
+        if not theirs:
+            print("The account has no pinned roots -- `openmv-ota project keys roots push`.")
+            return 1
+        for root_id in sorted(set(mine) | set(theirs)):
+            a, b = mine.get(root_id), theirs.get(root_id)
+            state = "match" if a == b else ("not on the server" if b is None
+                                            else "not in this project" if a is None
+                                            else "DIFFER")
+            print("root %d  %s  %s..." % (root_id, state, (b or a)[:16]))
+        return 0 if mine == theirs else 1
     return _desk_error(run)
 
 

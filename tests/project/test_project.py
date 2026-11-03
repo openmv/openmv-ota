@@ -384,9 +384,14 @@ def test_create_ota_project(tmp_path, make_firmware, make_sdk):
     keys = read_trusted_keys(paths.trusted_keys)
     assert sorted(k.role for k in keys) == ["factory", "factory", "ota", "ota", "ota"]
     pems = sorted(p.name for p in paths.private_keys_dir.glob("*.pem"))
-    assert pems == ["factory-0001.pem", "factory-0002.pem",
-                    "ota-0100.pem", "ota-0101.pem", "ota-0102.pem",
-                    "root-0.pem", "root-1.pem"]            # the roots, minted with the set
+    issuer_pems = [p for p in pems if p.startswith("issuer-")]
+    assert len(issuer_pems) == 1                           # the issuer, certified by root 0
+    assert [p for p in pems if p not in issuer_pems] == [
+        "factory-0001.pem", "factory-0002.pem",
+        "ota-0100.pem", "ota-0101.pem", "ota-0102.pem",
+        "root-0.pem", "root-1.pem"]                        # the roots, minted with the set
+    from openmv_ota.project import issuer as issuer_mod
+    assert issuer_mod.path_for(paths.root).exists()
     assert "keys/private/" in paths.gitignore.read_text()
 
 

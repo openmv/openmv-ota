@@ -263,7 +263,9 @@ registered to you, and the registration keeps its seat under the device limit.
 Ownership itself is proved by **registering** the camera: `flash factory` (or
 `flash register`) reads its keys over USB and uploads a record your desk key signed,
 so only someone with the camera in hand can register it, and only to their own
-account. A camera registered to another account can't be registered or bound by yours
+account. The desk key is trusted through its certificate chain to the roots your
+account is pinned to (`project keys roots push`), not through the token that pushed
+it, so the token alone can add no desk. A camera registered to another account can't be registered or bound by yours
 (not-found again). Registering is bounded like the claim it is: only a known board
 type, a camera new to the account only within its device limit, and a rate limit per
 account and per address.

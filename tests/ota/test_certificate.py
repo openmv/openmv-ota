@@ -89,7 +89,7 @@ def test_pack_rejects_a_wider_curve(signing):
 
 def test_pack_rejects_unknown_kind(signing):
     with pytest.raises(OtaError, match="unknown certificate kind"):
-        cert_mod.pack(_cert(signing[1], kind=2))
+        cert_mod.pack(_cert(signing[1], kind=4))
 
 
 @pytest.mark.parametrize("pubkey", [b"\x04" * 64, b"\x02" + b"\x00" * 64])
@@ -196,3 +196,77 @@ def test_key_id_is_never_zero(monkeypatch):
             return b"\x80\x00\x00\x00" + b"\x00" * 28      # top bit only -> masked to 0
     monkeypatch.setattr(cert_mod.hashlib, "sha256", lambda _b: _Zero())
     assert cert_mod.key_id_of(b"\x04" * 65) == 1
+
+
+# --- kinds that never reach a camera: issuer and desk ----------------------------------------
+
+def test_an_image_verifier_refuses_an_issuer_or_desk_certificate(root, signing):
+    for kind in (cert_mod.KIND_ISSUER, cert_mod.KIND_DESK):
+        out = cert_mod.pack(cert_mod.issue(root[0], 0, kind, 0, signing[1]))
+        assert cert_mod.parse(out).kind == kind                  # structurally fine
+        with pytest.raises(OtaError, match="kind %d is not accepted here" % kind):
+            cert_mod.verify(out, {0: root[1]})                   # default = image kinds
+        assert cert_mod.verify(out, {0: root[1]}, kinds=(kind,)).kind == kind
+
+
+def test_issue_with_a_signer_matches_issue(root, signing):
+    from openmv_ota.ota.signer import LocalSigner
+    signer = LocalSigner(root[0], 7, ES256, _SPEC)
+    c = cert_mod.issue_with(signer, 0, cert_mod.KIND_ISSUER, 0, signing[1])
+    got = cert_mod.verify(cert_mod.pack(c), {0: root[1]}, kinds=(cert_mod.KIND_ISSUER,))
+    assert got.pubkey == signing[1] and got.kind == cert_mod.KIND_ISSUER
+
+
+def test_issue_with_refuses_a_non_p256_signer(root, signing):
+    from openmv_ota.ota.signer import LocalSigner
+    wide = keys.generate_private_key(algorithm_for(ES384))
+    signer = LocalSigner(wide, 7, ES384, algorithm_for(ES384))
+    with pytest.raises(OtaError, match="must be a P-256 key"):
+        cert_mod.issue_with(signer, 0, cert_mod.KIND_ISSUER, 0, signing[1])
+
+
+def _chain(root, issuer, desk, *, root_id=0, desk_root_id=None, issuer_kind=None,
+           desk_kind=None):
+    issuer_cert = cert_mod.pack(cert_mod.issue(
+        root[0], root_id, issuer_kind if issuer_kind is not None else cert_mod.KIND_ISSUER, 0,
+        issuer[1]))
+    desk_cert = cert_mod.pack(cert_mod.issue(
+        issuer[0], desk_root_id if desk_root_id is not None else root_id,
+        desk_kind if desk_kind is not None else cert_mod.KIND_DESK, 0, desk[1]))
+    return desk_cert, issuer_cert
+
+
+def test_verify_chain_root_issuer_desk(root, signing):
+    issuer = _keypair()
+    desk_cert, issuer_cert = _chain(root, issuer, signing, root_id=1)
+    desk, iss = cert_mod.verify_chain(desk_cert, issuer_cert, {1: root[1]})
+    assert desk.pubkey == signing[1] and desk.kind == cert_mod.KIND_DESK
+    assert iss.pubkey == issuer[1] and iss.kind == cert_mod.KIND_ISSUER
+    assert desk.key_id == cert_mod.key_id_of(signing[1])
+
+
+def test_verify_chain_names_the_failing_link(root, signing):
+    issuer = _keypair()
+    roots = {0: root[1]}
+    # the issuer must be root-signed: a self-made "issuer" anchors nowhere
+    stranger = _keypair()
+    desk_cert, bad_issuer = _chain(stranger, issuer, signing)
+    with pytest.raises(OtaError, match="does not verify against root 0"):
+        cert_mod.verify_chain(desk_cert, bad_issuer, roots)
+    # an OTA signing key's certificate is not an issuer's
+    desk_cert, not_issuer = _chain(root, issuer, signing, issuer_kind=cert_mod.KIND_OTA)
+    with pytest.raises(OtaError, match="kind 0 is not accepted here"):
+        cert_mod.verify_chain(desk_cert, not_issuer, roots)
+    # the desk must name its issuer's root
+    desk_cert, issuer_cert = _chain(root, issuer, signing, desk_root_id=1)
+    with pytest.raises(OtaError, match="names root 1, its issuer's is 0"):
+        cert_mod.verify_chain(desk_cert, issuer_cert, roots)
+    # the desk must be signed by THIS issuer, not by the root or anyone else
+    desk_cert, issuer_cert = _chain(root, issuer, signing)
+    other_desk = cert_mod.pack(cert_mod.issue(root[0], 0, cert_mod.KIND_DESK, 0, signing[1]))
+    with pytest.raises(OtaError, match="does not verify"):
+        cert_mod.verify_chain(other_desk, issuer_cert, roots)
+    # and be a desk certificate, not an issuer's
+    desk_cert, issuer_cert = _chain(root, issuer, signing, desk_kind=cert_mod.KIND_ISSUER)
+    with pytest.raises(OtaError, match="kind 2 is not accepted here"):
+        cert_mod.verify_chain(desk_cert, issuer_cert, roots)

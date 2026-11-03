@@ -509,6 +509,10 @@ def create_project(
     lock_mod.write(paths.lock, lock)
     if provisioned is not None:
         _write_keys(paths, provisioned)
+        # The issuer: the helper root 0 certifies once, here, so desk keys can be certified
+        # later without the root leaving the drawer -- see project/issuer.
+        from . import issuer as issuer_mod
+        issuer_mod.replace(paths.root, key_passphrase)      # fresh keys, fresh issuer (--force)
         # The payload keys, minted in the same breath as the signing keys and for the
         # same reason: a project should arrive with confidentiality rather than with a
         # decision about it. One per board target -- see project/payload_keys.
@@ -578,6 +582,10 @@ def _adopt_keys(paths: ProjectPaths, source: Path, boards: list[str],
     paths.trusted_keys.parent.mkdir(parents=True, exist_ok=True)
     paths.trusted_keys.write_bytes(src.trusted_keys.read_bytes())
     paths.root_keys.write_bytes(src.root_keys.read_bytes())    # the same roots: one fleet
+    from . import issuer as issuer_mod
+    src_issuer = issuer_mod.path_for(src.root)
+    if src_issuer.exists():                                    # and the same issuer: one chain
+        issuer_mod.path_for(paths.root).write_bytes(src_issuer.read_bytes())
     paths.private_keys_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
     for pem in sorted(src.private_keys_dir.glob("*.pem")):

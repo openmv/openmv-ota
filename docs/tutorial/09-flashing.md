@@ -121,10 +121,14 @@ until it is registered.
 
 `flash factory` registers the camera right after it checks its keys. The record
 is signed with a **desk key** — the key of wherever cameras are first flashed,
-kept with the project — and uploaded with your login, so set both up once:
+kept with the project — and uploaded with your login. The server takes a desk key
+only through its chain of trust: the project's issuer certified it, and a root the
+account is pinned to certified the issuer. So set three things up once: your login,
+the account's roots, and the desk:
 
 ```
 openmv-ota client login
+openmv-ota project keys roots push ./my-product
 openmv-ota project keys desk create bench-1 ./my-product
 openmv-ota project keys desk push ./my-product
 ```

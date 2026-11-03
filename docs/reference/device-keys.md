@@ -145,6 +145,32 @@ with the project passphrase (or in an HSM or KMS, like the signing keys). A desk
 firmware. Its id comes from the key itself, so every project in an account can make its own desk
 keys without their ids clashing on the server.
 
+### What makes a desk key trusted
+
+Not the token that pushed it. A desk key carries a **certificate chain**, the same idea a
+signing key's certificate is to a camera: the project's **issuer key** certifies each desk key
+when it is made, and root 0 certified the issuer once, when the project was made
+(`keys/issuer.json`, its private half in `keys/private/issuer-<id>.pem`). The server records a
+desk key only if that chain ends at the roots the account is **pinned** to, so someone holding
+the account's admin token can neither add a desk of their own nor register cameras with it.
+
+```
+openmv-ota project keys roots push .          # pin the account to this project's roots (once)
+openmv-ota project keys roots show .          # the server's pinned roots against this project's
+openmv-ota project keys issuer show .         # the issuer: id, key, root-signed certificate
+openmv-ota project keys issuer create .       # a project from before issuers (needs root-0.pem)
+openmv-ota project keys desk certify .        # certify desk keys made before the issuer existed
+```
+
+Pinning is set-once. The first push on a fresh account sets its roots; the same roots again
+change nothing; a different set is refused unless the push carries a statement signed by one of
+the roots the account already has (`roots push --rotation-key keys/private/root-1.pem`). The
+issuer is the one key besides the root that can introduce desks, so it lives like a signing
+key: a passphrase-encrypted PEM, or the same HSM or KMS the signing keys moved to
+(`project keys backend provision` mints it there too). Replacing it
+(`project keys issuer replace`) is one root ceremony; every desk key keeps the certificates it
+has, because each entry carries its issuer's certificate beside its own.
+
 Desk keys **expire** after 90 days unless renewed. An expired key stops registering cameras;
 every camera it registered stays registered. The server only takes a record from a desk key that
 is unrevoked and unexpired, and only one issued within the last hour, so an old key can't

@@ -12,13 +12,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "ci", "hi
 import ota_cycle  # noqa: E402
 
 from openmv_ota.project import desk_keys  # noqa: E402
+from openmv_ota.project import issuer  # noqa: E402
 from openmv_ota.project.passphrase import dev_passphrase_path  # noqa: E402
+from tests.project.test_issuer import roots_for  # noqa: E402
 
 
 def _project(tmp_path, monkeypatch):
     p = dev_passphrase_path(tmp_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("dev-pass", encoding="utf-8")
+    roots_for(tmp_path, "dev-pass")              # the node's project has its roots (and root PEM)
     pushed = []
     monkeypatch.setattr(ota_cycle.subprocess, "run",
                         lambda argv, **kw: pushed.append((argv, kw["env"]["SSL_CERT_FILE"])))
@@ -45,16 +48,27 @@ def test_the_desk_key_is_made_once_renewed_when_lapsed_and_pushed_every_run(tmp_
     pushed = _project(tmp_path, monkeypatch)
     ota_cycle._desk_ready()
     [entry] = desk_keys.read(tmp_path)
-    assert entry.label == ota_cycle._DESK
+    assert entry.label == ota_cycle._DESK and entry.certified   # the issuer was made first
+    made = issuer.read(tmp_path)
+    assert made is not None
     ota_cycle._desk_ready()                                    # still good: nothing new
-    assert len(desk_keys.read(tmp_path)) == 1
+    assert len(desk_keys.read(tmp_path)) == 1 and issuer.read(tmp_path) == made
     entry.expires = (datetime.now(timezone.utc) - timedelta(days=1)).strftime(
         "%Y-%m-%dT%H:%M:%SZ")
     desk_keys._write(tmp_path, [entry])
     ota_cycle._desk_ready()                                    # lapsed: renewed, same key
     [renewed] = desk_keys.read(tmp_path)
     assert renewed.key_id == entry.key_id and renewed.expires > entry.expires
-    assert len(pushed) == 3
-    argv, ca = pushed[0]
-    assert argv[-7:] == ["desk", "push", "--server", "https://bench:8443", "--token", "tok",
-                         str(tmp_path)] and ca == "/tmp/ca.pem"
+    assert len(pushed) == 6                                    # roots, then desks, every run
+    for (argv, ca), verb in zip(pushed[:2], ("roots", "desk"), strict=True):
+        assert argv[-7:] == [verb, "push", "--server", "https://bench:8443", "--token", "tok",
+                             str(tmp_path)] and ca == "/tmp/ca.pem"
+
+
+def test_a_desk_from_before_issuers_is_certified_on_the_next_run(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch)
+    plain = desk_keys.create(tmp_path, ota_cycle._DESK, "dev-pass")   # no issuer yet
+    assert not plain.certified
+    ota_cycle._desk_ready()
+    [entry] = desk_keys.read(tmp_path)
+    assert entry.key_id == plain.key_id and entry.certified

@@ -532,6 +532,17 @@ _MIGRATIONS: list[list[str]] = [
         # to a camera whose stub cannot install it.
         "ALTER TABLE releases ADD COLUMN min_stub INTEGER NOT NULL DEFAULT 0",
     ],
+    [   # v38 -- desk keys trusted through a chain, not through the token that pushed them. An
+        # account PINS its project's roots (set once; replaced only by a statement a current root
+        # signed), and a desk key is recorded only with a certificate chaining to them: the desk's
+        # (by the project's issuer) and the issuer's (by a root). Both ride on the row so the chain
+        # can be shown and re-checked.
+        "CREATE TABLE IF NOT EXISTS account_roots ("
+        "account_id TEXT NOT NULL, root_id INTEGER NOT NULL, pubkey TEXT NOT NULL, "
+        "set_at TEXT NOT NULL, PRIMARY KEY (account_id, root_id))",
+        "ALTER TABLE desk_keys ADD COLUMN cert TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE desk_keys ADD COLUMN issuer_cert TEXT NOT NULL DEFAULT ''",
+    ],
 ]
 
 # The most unclaimed boards remembered per account (see migration v35).
@@ -1731,11 +1742,31 @@ class SqlMetadataStore:
 
     # --- signed identity: desk keys and camera registrations ------------------------------
 
+    def account_roots(self, account_id: str) -> list[dict]:
+        """The roots an account is pinned to (``root_id``, ``pubkey``, ``set_at``), by id;
+        empty until the project pushed them."""
+        return [_d(r) for r in self.query_all(
+            "SELECT root_id, pubkey, set_at FROM account_roots WHERE account_id = ? "
+            "ORDER BY root_id", (account_id,))]
+
+    def set_account_roots(self, account_id: str, roots: list[dict]) -> None:
+        """Pin (or, after a verified statement, replace) an account's roots, as one write."""
+        now = _now_iso()
+        with self._session() as conn:
+            cur = conn.cursor()
+            cur.execute(self._sql("DELETE FROM account_roots WHERE account_id = ?"), (account_id,))
+            for r in roots:
+                cur.execute(self._sql("INSERT INTO account_roots (account_id, root_id, pubkey, "
+                                      "set_at) VALUES (?,?,?,?)"),
+                            (account_id, int(r["root_id"]), r["pubkey"], now))
+            conn.commit()
+
     def put_desk_key(self, account_id: str, key_id: int, *, label: str, pubkey: str,
-                     expires: str, revoked: bool) -> None:
+                     expires: str, revoked: bool, cert: str = "", issuer_cert: str = "") -> None:
         """Record (or update) one of an account's desk keys. Its public half is fixed once
         recorded -- a different key under the same id is a ValueError -- and revoking is one-way:
-        a key revoked here stays revoked whatever a later upload says."""
+        a key revoked here stays revoked whatever a later upload says. The certificates are the
+        chain the caller verified (the API does, against :meth:`account_roots`)."""
         cur = self.query_one("SELECT pubkey, revoked FROM desk_keys "
                              "WHERE account_id = ? AND key_id = ?", (account_id, key_id))
         if cur is not None and cur["pubkey"] != pubkey:
@@ -1743,16 +1774,19 @@ class SqlMetadataStore:
         revoked = bool(revoked) or bool(cur and cur["revoked"])
         self.execute(
             "INSERT INTO desk_keys (account_id, key_id, label, pubkey, expires, revoked, "
-            "updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT (account_id, key_id) DO UPDATE SET "
+            "updated_at, cert, issuer_cert) VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT (account_id, key_id) DO UPDATE SET "
             "label = excluded.label, expires = excluded.expires, revoked = excluded.revoked, "
-            "updated_at = excluded.updated_at",
-            (account_id, key_id, label, pubkey, expires, int(revoked), _now_iso()))
+            "updated_at = excluded.updated_at, cert = excluded.cert, "
+            "issuer_cert = excluded.issuer_cert",
+            (account_id, key_id, label, pubkey, expires, int(revoked), _now_iso(), cert,
+             issuer_cert))
 
     def desk_keys(self, account_id: str) -> list[dict]:
         """An account's desk keys, by id."""
         return [_d(r) | {"revoked": bool(r["revoked"])} for r in self.query_all(
-            "SELECT key_id, label, pubkey, expires, revoked, updated_at FROM desk_keys "
-            "WHERE account_id = ? ORDER BY key_id", (account_id,))]
+            "SELECT key_id, label, pubkey, expires, revoked, updated_at, cert, issuer_cert "
+            "FROM desk_keys WHERE account_id = ? ORDER BY key_id", (account_id,))]
 
     def put_registration(self, device_id: str, account_id: str, *, record: bytes,
                          signature: str, identity: str, exchange: str, desk_key_id: int,

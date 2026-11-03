@@ -378,13 +378,20 @@ def _register_args():
 
 
 def _desk_ready():
-    """Give the HIL project a usable desk key (made once, renewed when it lapses -- the node's
-    project outlives 90 days) and record it on this run's bench server, which starts empty."""
+    """Give the HIL project a usable, certified desk key (made once, renewed when it lapses --
+    the node's project outlives 90 days) and record it on this run's bench server, which starts
+    empty: pin the project's roots there first, since the server takes a desk key only through
+    its chain to them. A project from before issuers gets one (its root PEM is on the node)."""
     from openmv_ota.project import desk_keys
+    from openmv_ota.project import issuer as issuer_mod
     from openmv_ota.project import passphrase as passphrase_mod
     from openmv_ota.project.errors import ProjectError
 
     root = CFG["project"]
+    phrase = passphrase_mod.resolve_passphrase(root)[0]
+    if issuer_mod.read(root) is None:
+        issuer_mod.create(root, phrase)
+        log("desk: made the project's issuer key")
     try:
         desk_keys.current(root, _DESK)
     except ProjectError:
@@ -393,11 +400,17 @@ def _desk_ready():
             desk_keys.renew(root, live[-1].key_id)
             log("desk: renewed the bench desk key")
         else:
-            desk_keys.create(root, _DESK, passphrase_mod.resolve_passphrase(root)[0])
+            desk_keys.create(root, _DESK, phrase)
             log("desk: made the bench desk key")
+    if desk_keys.certify(root, phrase):
+        log("desk: certified the bench desk key")
+    env = dict(os.environ, SSL_CERT_FILE=CFG["ca_node"])
+    subprocess.run([ota("openmv-ota"), "project", "keys", "roots", "push", "--server",
+                    CFG["server"], "--token", CFG["token"], root],
+                   env=env, check=True, timeout=60)
     subprocess.run([ota("openmv-ota"), "project", "keys", "desk", "push", "--server",
                     CFG["server"], "--token", CFG["token"], root],
-                   env=dict(os.environ, SSL_CERT_FILE=CFG["ca_node"]), check=True, timeout=60)
+                   env=env, check=True, timeout=60)
 
 COVERAGE = {
     # v2 HAS NO GOLDEN SLOT, so these no longer name one. boot.py mounts whichever slot is

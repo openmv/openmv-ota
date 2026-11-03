@@ -46,6 +46,7 @@ from .schemas import (
     DeviceBound,
     DeskKeyInfo,
     DeskKeyList,
+    RootsInfo,
     DeviceRegistered,
     Registration,
     DeviceForgotten,
@@ -174,6 +175,14 @@ class DeskKeyIn(BaseModel):
     pubkey: str                            # uncompressed P-256 point, hex
     expires: str                           # ISO 8601 UTC
     revoked: bool = False
+    cert: str                              # the desk's KIND_DESK certificate (by the issuer), hex
+    issuer_cert: str                       # the issuer's KIND_ISSUER certificate (by a root), hex
+
+
+class RootsIn(BaseModel):
+    roots: list[dict]                      # [{"root_id": int, "pubkey": hex}, ...]
+    statement: dict | None = None          # {"signed_by": root_id, "signature": hex}: a current
+    #                                        root's signature over the new set (replacing only)
 
 
 class RegistrationIn(BaseModel):
@@ -1138,14 +1147,68 @@ def _fingerprint(identity_hex: str) -> str:
     return hashlib.sha256(bytes.fromhex(identity_hex)).hexdigest()
 
 
+@admin.put("/roots", responses={200: {"model": RootsInfo}})
+def put_roots(body: RootsIn, request: Request,
+              principal: Principal = Depends(require_scope("manage"))):
+    """Pin the account to its project's roots (`openmv-ota project keys roots push` sends
+    `keys/root_keys.json`): the keys its cameras embed, and what every desk key's certificate
+    must chain to from now on. Set once: a fresh account takes its first set from the token;
+    the same set again is a no-op; a DIFFERENT set is a 409 unless `statement` carries a
+    current root's signature over it (`roots push --rotation-key`), so the token alone can
+    never swap an account's trust anchor. Malformed roots or a statement that does not verify
+    are a 400."""
+    from openmv_ota.ota import account_roots as ar
+    ms = request.app.state.metastore
+    try:
+        roots = ar.check_roots(body.roots)
+    except ar.RootsError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    current = [{"root_id": r["root_id"], "pubkey": r["pubkey"]}
+               for r in ms.account_roots(principal.account_id)]
+    replaced = False
+    if current and current != roots:
+        if body.statement is None:
+            raise HTTPException(status_code=409, detail="the account is pinned to different roots; "
+                                "replacing them takes a statement signed by a current root")
+        try:
+            ar.verify_statement(principal.account_id, roots, body.statement, current)
+        except ar.RootsError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from None
+        replaced = True
+    if not current or replaced:
+        ms.set_account_roots(principal.account_id, roots)
+        ms.append_audit(actor=principal.name,
+                        action="account.roots_replaced" if replaced else "account.roots_pinned",
+                        entity_type="account", entity_id=principal.account_id,
+                        data={"roots": [{"root_id": r["root_id"],
+                                         "fingerprint": _fingerprint(r["pubkey"])} for r in roots],
+                              **({"signed_by": int(body.statement["signed_by"])} if replaced else {})},
+                        account_id=principal.account_id)
+    return {"roots": ms.account_roots(principal.account_id), "replaced": replaced}
+
+
+@admin.get("/roots", responses={200: {"model": RootsInfo}})
+def get_roots(request: Request, principal: Principal = Depends(require_scope("observe"))):
+    """The roots the account is pinned to: what its desk keys must chain to. Empty until the
+    project pushed them."""
+    return {"roots": request.app.state.metastore.account_roots(principal.account_id)}
+
+
 @admin.put("/desk-keys/{key_id}", responses={200: {"model": DeskKeyInfo}})
 def put_desk_key(key_id: int, body: DeskKeyIn, request: Request,
                  principal: Principal = Depends(require_scope("manage"))):
     """Record one of the account's desk keys (`openmv-ota project keys desk push` sends them):
-    the public half of a key a desk signs registration records with. A key's public half is fixed
-    once recorded (a different one under the same id is a 409), and revoking is one-way. A key that
-    isn't a P-256 point, or an expiry without a time zone, is a 400."""
+    the public half of a key a desk signs registration records with, and its chain of trust.
+    The key is recorded only if `cert` is a desk certificate over exactly this key, signed by
+    the issuer `issuer_cert` names, and that issuer's certificate is signed by one of the
+    account's pinned roots (`PUT /roots` first, else a 400): the token that pushes is not what
+    makes a desk trusted. The key's id must be the one its public key derives. A key's public
+    half is fixed once recorded (a different one under the same id is a 409), and revoking is
+    one-way. A key that isn't a P-256 point, an expiry without a time zone, or a chain that
+    does not verify is a 400 saying why."""
+    from openmv_ota.ota import certificate as certificate_mod
     from openmv_ota.ota import registration as reg
+    from openmv_ota.ota.errors import OtaError
     try:
         reg.check_public_key(body.pubkey)
         if datetime.fromisoformat(body.expires.replace("Z", "+00:00")).tzinfo is None:
@@ -1153,9 +1216,27 @@ def put_desk_key(key_id: int, body: DeskKeyIn, request: Request,
     except (reg.RegistrationError, ValueError):
         raise HTTPException(status_code=400, detail="not a P-256 public key and UTC expiry") from None
     ms = request.app.state.metastore
+    pubkey = body.pubkey.lower()
+    roots = {r["root_id"]: bytes.fromhex(r["pubkey"]) for r in ms.account_roots(principal.account_id)}
+    if not roots:
+        raise HTTPException(status_code=400, detail="the account has no pinned roots yet: push "
+                            "the project's roots first (openmv-ota project keys roots push)")
     try:
-        ms.put_desk_key(principal.account_id, key_id, label=body.label,
-                        pubkey=body.pubkey.lower(), expires=body.expires, revoked=body.revoked)
+        desk, _issuer = certificate_mod.verify_chain(bytes.fromhex(body.cert),
+                                                     bytes.fromhex(body.issuer_cert), roots)
+        if desk.pubkey.hex() != pubkey:
+            raise OtaError("the desk certificate is for a different key")
+        if desk.key_id != key_id:
+            raise OtaError("desk key id %d is not this key's (%d)" % (key_id, desk.key_id))
+    except (OtaError, ValueError) as e:
+        ms.append_audit(actor=principal.name, action="desk_key.refused", entity_type="desk_key",
+                        entity_id=str(key_id), data={"reason": str(e), "label": body.label},
+                        account_id=principal.account_id)
+        raise HTTPException(status_code=400, detail="desk key chain does not verify: %s" % e) from None
+    try:
+        ms.put_desk_key(principal.account_id, key_id, label=body.label, pubkey=pubkey,
+                        expires=body.expires, revoked=body.revoked, cert=body.cert.lower(),
+                        issuer_cert=body.issuer_cert.lower())
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
     row = next(k for k in ms.desk_keys(principal.account_id) if k["key_id"] == key_id)

@@ -190,8 +190,13 @@ key → component hashes. Confirming a release raises the stored epoch. The root
 signs certificates offline; the everyday (KMS) key signs images. Rotate = new
 certificate; retire = higher epoch.
 
-*Open:* desk-key certification without a root ceremony each time (an "issuer" key
-certified once by the root, or desk keys certified by the KMS key).
+*Settled (2026-11-02):* desk keys are certified by an **issuer** key that root 0
+certifies once at project creation (certificate kinds `ISSUER` = 2 and `DESK` = 3, which
+a camera's parser rejects, so neither ever passes as an image's). The server pins each
+account to its project's roots, set once and replaced only under a statement a current
+root signs, and records a desk key only through the chain root → issuer → desk. The
+alternatives were rejected: the root signing desks directly would bring it out for every
+bench, and the everyday KMS key signing desks would let a release key mint desks.
 
 ## Status sector marks
 

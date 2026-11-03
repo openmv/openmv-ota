@@ -17,6 +17,13 @@ registering cameras; the cameras it registered stay registered.
 A key's id comes from the key itself (:func:`id_for`), not a counter: the server holds an
 ACCOUNT's desk keys by id, and one account can have several projects.
 
+A desk key is trusted through a chain, not through whoever pushed it: the project's issuer
+(:mod:`.issuer`, certified once by root 0) certifies each desk key when it is made, and the
+entry carries both certificates (``cert``, ``issuer_cert``). The server checks that chain against
+the roots the account pinned before it records the key, so the admin token alone introduces no
+desk. A key made in a project that has no issuer yet is uncertified: it works locally, the server
+refuses it, and :func:`certify` fixes it once the issuer exists.
+
 A desk key never signs firmware: the image-signing keys stay away from a factory floor, where a
 leaked desk key costs fake registrations, not malicious firmware.
 """
@@ -52,21 +59,30 @@ class DeskEntry:
     expires: str
     revoked: bool = False
     backend: dict | None = field(default=None)
+    cert: str = ""                               # KIND_DESK certificate by the issuer, hex
+    issuer_cert: str = ""                        # that issuer's root-signed certificate, hex
     alg: int = ES256                             # what build_signer reads off an entry
     role: str = ROLE
+
+    @property
+    def certified(self) -> bool:
+        return bool(self.cert and self.issuer_cert)
 
     def to_dict(self) -> dict:
         d = {"key_id": self.key_id, "label": self.label, "pubkey": self.pubkey,
              "created": self.created, "expires": self.expires, "revoked": self.revoked}
         if self.backend:
             d["backend"] = self.backend
+        if self.certified:
+            d["cert"], d["issuer_cert"] = self.cert, self.issuer_cert
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "DeskEntry":
         return cls(key_id=int(d["key_id"]), label=str(d["label"]), pubkey=str(d["pubkey"]),
                    created=str(d["created"]), expires=str(d["expires"]),
-                   revoked=bool(d.get("revoked", False)), backend=d.get("backend") or None)
+                   revoked=bool(d.get("revoked", False)), backend=d.get("backend") or None,
+                   cert=str(d.get("cert", "")), issuer_cert=str(d.get("issuer_cert", "")))
 
     def public(self) -> DeskKey:
         """The key as a verifier knows it."""
@@ -122,9 +138,16 @@ def id_for(pubkey: str) -> int:
         or 1
 
 
+def _certify(root: str | Path, entry: DeskEntry, passphrase: str) -> None:
+    from . import issuer as issuer_mod
+    entry.cert, entry.issuer_cert = issuer_mod.certify_desk(
+        root, entry.pubkey, passphrase_provider=lambda: (passphrase, "file"))
+
+
 def create(root: str | Path, label: str, passphrase: str, *, days: int = DEFAULT_DAYS,
            now: datetime | None = None) -> DeskEntry:
-    """A new desk key, its private half encrypted with the project passphrase."""
+    """A new desk key, its private half encrypted with the project passphrase, certified by the
+    project's issuer when it has one (``entry.certified`` says; see :func:`certify`)."""
     if not label or not label.strip():
         raise ProjectError("a desk key needs a label (which desk it is)")
     keys = read(root)
@@ -139,12 +162,31 @@ def create(root: str | Path, label: str, passphrase: str, *, days: int = DEFAULT
             break
     entry = DeskEntry(key_id=id_for(pubkey), label=label, pubkey=pubkey, created=_iso(now),
                       expires=_iso(now + timedelta(days=days)))
+    from . import issuer as issuer_mod
+    if issuer_mod.read(root) is not None:
+        _certify(root, entry, passphrase)
     private = Path(root) / "keys" / "private"
     private.mkdir(parents=True, exist_ok=True)
     (private / ("%s-%04x.pem" % (ROLE, entry.key_id))).write_bytes(
         private_key_pem(key, passphrase))
     _write(root, keys + [entry])
     return entry
+
+
+def certify(root: str | Path, passphrase: str) -> list[DeskEntry]:
+    """Certify every live desk key that has no certificate yet (made before the project had an
+    issuer), and return them. Needs the issuer, which the passphrase unlocks. Revoked keys are
+    left alone: the server never took them, so there is nothing to revoke there."""
+    keys = read(root)
+    done = []
+    for entry in keys:
+        if entry.revoked or entry.certified:
+            continue
+        _certify(root, entry, passphrase)
+        done.append(entry)
+    if done:
+        _write(root, keys)
+    return done
 
 
 def renew(root: str | Path, key_id: int, *, days: int = DEFAULT_DAYS,

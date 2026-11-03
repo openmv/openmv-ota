@@ -369,12 +369,13 @@ def test_audit_names_an_account_or_every_account_for_the_root():
 def test_desk_keys_and_registrations_go_to_their_endpoints():
     api, c = _api(_Resp(200, {"key_id": 3}))
     entry = SimpleNamespace(key_id=3, label="bench-1", pubkey="04ab", expires="2027-01-01T00:00:00Z",
-                            revoked=False)
+                            revoked=False, cert="4f4d5643", issuer_cert="4f4d5643aa")
     api.put_desk_key(entry)
     method, path, kw = c.calls[0]
     assert (method, path) == ("PUT", "/api/v1/admin/desk-keys/3")
     assert kw["json"] == {"label": "bench-1", "pubkey": "04ab",
-                          "expires": "2027-01-01T00:00:00Z", "revoked": False}
+                          "expires": "2027-01-01T00:00:00Z", "revoked": False,
+                          "cert": "4f4d5643", "issuer_cert": "4f4d5643aa"}
     api.register_device(b'{"v":1}', "aa")
     method, path, kw = c.calls[1]
     assert (method, path) == ("POST", "/api/v1/admin/registrations")
@@ -385,3 +386,15 @@ def test_the_keykeeper_chain_comes_from_its_endpoint():
     api, c = _api(_Resp(200, {"chain": [{"record": "{}", "signature": "00"}]}))
     assert api.keykeeper_chain() == [{"record": "{}", "signature": "00"}]
     assert c.calls[0][:2] == ("GET", "/api/v1/keykeeper/chain")
+
+
+def test_roots_are_pinned_and_read_at_their_endpoint():
+    api, c = _api(_Resp(200, {"roots": [{"root_id": 0, "pubkey": "04aa"}], "replaced": False}))
+    roots = [{"root_id": 0, "pubkey": "04aa"}]
+    api.put_roots(roots)
+    method, path, kw = c.calls[0]
+    assert (method, path) == ("PUT", "/api/v1/admin/roots") and kw["json"] == {"roots": roots}
+    api.put_roots(roots, statement={"signed_by": 1, "signature": "00"})
+    assert c.calls[1][2]["json"] == {"roots": roots, "statement": {"signed_by": 1, "signature": "00"}}
+    assert api.roots() == roots
+    assert c.calls[2][:2] == ("GET", "/api/v1/admin/roots")

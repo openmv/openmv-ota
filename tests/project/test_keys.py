@@ -160,7 +160,11 @@ def test_provision_backend_rekeys(tmp_path, make_firmware, make_sdk):
     records = read_backends(root)
     assert {k.key_id for k in trusted} == set(records)               # every key has a backend record
     assert all(r["backend"] == "aws-kms" for r in records.values())
-    assert len(fake.calls) == 3
+    assert len(fake.calls) == 4 and fake.calls[-1] == (0x0200, "issuer")  # the issuer moved too
+    from openmv_ota.project import issuer as issuer_mod
+    issuer = issuer_mod.read(root)
+    assert issuer.backend["backend"] == "aws-kms" and not list(
+        proj.ProjectPaths(root).private_keys_dir.glob("issuer-*.pem"))  # no PEM: it lives there
 
 
 def test_provision_backend_needs_the_root_key(tmp_path, make_firmware, make_sdk):

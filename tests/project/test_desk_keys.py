@@ -127,3 +127,42 @@ def test_a_backend_record_round_trips_and_a_damaged_file_says_so(tmp_path):
 def test_by_default_it_is_now(tmp_path):
     entry = dk.create(tmp_path, "bench-1", PASS)
     assert dk.current(tmp_path).key_id == entry.key_id     # made now, good for 90 days
+
+
+# --- certification: the issuer's chain, carried by the entry -----------------------------------
+
+def test_a_desk_made_without_an_issuer_is_uncertified_and_certify_fixes_it(tmp_path):
+    from openmv_ota.project import issuer
+    from tests.project.test_issuer import roots_for
+    plain = dk.create(tmp_path, "bench-1", PASS, now=NOW)
+    assert not plain.certified and "cert" not in plain.to_dict()
+    assert dk.read(tmp_path) == [plain]
+    revoked = dk.create(tmp_path, "gone", PASS, now=NOW)
+    dk.revoke(tmp_path, revoked.key_id)
+    with pytest.raises(ProjectError, match="no issuer key"):   # it says what is missing
+        dk.certify(tmp_path, PASS)
+    roots = roots_for(tmp_path)
+    issuer.create(tmp_path, PASS)
+    done = dk.certify(tmp_path, PASS)
+    assert [e.key_id for e in done] == [plain.key_id]  # the revoked one is left alone
+    again = {e.key_id: e for e in dk.read(tmp_path)}
+    assert again[plain.key_id].certified and not again[revoked.key_id].certified
+    from openmv_ota.ota import certificate as cert_mod
+    d, _ = cert_mod.verify_chain(bytes.fromhex(again[plain.key_id].cert),
+                                 bytes.fromhex(again[plain.key_id].issuer_cert), roots)
+    assert d.pubkey.hex() == plain.pubkey
+    assert dk.certify(tmp_path, PASS) == []        # idempotent
+    assert again[plain.key_id].public() == plain.public()
+
+
+def test_a_desk_made_with_an_issuer_is_certified_at_birth(tmp_path):
+    from openmv_ota.ota import certificate as cert_mod
+    from openmv_ota.project import issuer
+    from tests.project.test_issuer import roots_for
+    roots = roots_for(tmp_path)
+    issuer.create(tmp_path, PASS)
+    entry = dk.create(tmp_path, "bench-1", PASS, now=NOW)
+    assert entry.certified
+    on_disk = dk.read(tmp_path)[0]
+    assert on_disk.cert == entry.cert and on_disk.issuer_cert == entry.issuer_cert
+    cert_mod.verify_chain(bytes.fromhex(entry.cert), bytes.fromhex(entry.issuer_cert), roots)
