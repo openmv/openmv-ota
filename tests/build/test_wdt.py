@@ -21,7 +21,7 @@ _spec.loader.exec_module(_mod)
 
 def test_disabled_by_default():
     assert _mod.ENABLED is False
-    assert _mod._wdt is None and _mod._timer is None and _mod._feed is None
+    assert _mod._wdt is None and _mod._ticker is None and _mod._feed is None
 
 
 def test_timer_id_is_the_soft_timer():
@@ -67,7 +67,7 @@ def test_relax_is_a_noop_context_when_disabled():
     # no watchdog -> relax() enters/exits without starting a timer
     with _mod.relax():
         pass
-    assert _mod._timer is None
+    assert _mod._ticker is None
 
 
 # --- the stm32 IWDG guard ---------------------------------------------------
@@ -118,13 +118,16 @@ def test_relax_does_not_import_inside_the_armed_region():
     itself a chance to be bitten. It is imported at module load now: core MicroPython, always
     present, and boot is unwatched.
 
-    The feed still comes first, because the Timer construction below allocates."""
+    Nor does entering allocate the feed timer any more: start() makes the module's one timer
+    before the watchdog is armed, so a relax() entry is a feed and two small-int stores. The
+    defensive make-it-now branch still feeds first, because that allocation can collect."""
     import inspect
 
     src = inspect.getsource(_mod._Relax.__enter__)
     body = "\n".join(line.split("#")[0] for line in src.splitlines())
     assert "import " not in body, "no import may run inside a relax region"
-    assert body.index("_wdt.feed()") < body.index("_machine.Timer("), "feed before allocating"
+    assert "_machine.Timer(" not in body, "a relax() entry must not allocate the timer"
+    assert body.index("_wdt.feed()") < body.index("_ticker_start()"), "feed before the fallback"
 
 def test_relax_nesting_keeps_the_feed_running(monkeypatch):
     """An INNER relax() exiting must not stop the OUTER region's feed.
@@ -147,8 +150,10 @@ def test_relax_nesting_keeps_the_feed_running(monkeypatch):
             events.append("feed")
 
     monkeypatch.setattr(_mod, "_wdt", _FakeWdt(), raising=False)
-    monkeypatch.setattr(_mod, "_timer", None, raising=False)
+    monkeypatch.setattr(_mod, "_ticker", _FakeTimer(), raising=False)   # as start() left it
     monkeypatch.setattr(_mod, "_depth", 0, raising=False)
+    monkeypatch.setattr(_mod, "_budget", 0, raising=False)
+    events.clear()
     fake = type(sys)("machine")
     fake.Timer = _FakeTimer
     monkeypatch.setattr(_mod, "_machine", fake, raising=False)
@@ -156,12 +161,12 @@ def test_relax_nesting_keeps_the_feed_running(monkeypatch):
     with _mod.relax():
         with _mod.relax():
             events.append("inner-body")
+        assert _mod._budget > 0, "the feed must still be running for the rest of the OUTER region"
         events.append("outer-body-after-inner")
 
-    assert events.count("start") == 1, "the timer must be started once"
-    assert events.index("outer-body-after-inner") < events.index("stop"), (
-        "the feed must still be running for the rest of the OUTER region")
-    assert _mod._depth == 0, "depth must return to zero"
+    assert "start" not in events and "stop" not in events, "the timer is neither made nor torn down"
+    assert events.count("feed") == 3, "one feed per entry, one at the outermost exit"
+    assert _mod._budget == 0 and _mod._depth == 0, "budget and depth return to zero"
 
 
 def test_unbalanced_relax_exit_does_not_wedge_the_depth():
@@ -298,9 +303,9 @@ def test_guard_resets_the_board_when_progress_stops(monkeypatch):
     monkeypatch.setattr(_mod, "_stall_reload", 3, raising=False)
     monkeypatch.setattr(_mod, "_stall_budget", 3, raising=False)
     for _ in range(3):
-        _mod._stall_tick(None)
+        _mod._tick(None)
     assert resets == [], "must not reset while the allowance remains"
-    _mod._stall_tick(None)
+    _mod._tick(None)
     assert resets == [1], "a drained allowance must reset the board"
 
 
@@ -311,7 +316,7 @@ def test_progress_keeps_the_guard_from_firing(monkeypatch):
     monkeypatch.setattr(_mod, "_stall_reload", 2, raising=False)
     monkeypatch.setattr(_mod, "_stall_budget", 2, raising=False)
     for _ in range(20):
-        _mod._stall_tick(None)
+        _mod._tick(None)
         _mod.feed()                     # the installer feeds as it works
     assert resets == [], "progress must hold the guard off indefinitely"
 
@@ -320,7 +325,7 @@ def test_guard_is_disarmed_on_the_way_out(monkeypatch):
     """Reversible is the property that makes this safe to wrap around just the install --
     unlike WWDG/IWDG, which cannot be turned off once armed. A guard that outlived its region
     would reset the app later, for doing nothing wrong."""
-    monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
+    monkeypatch.setattr(_mod, "_ticker", None, raising=False)
     g = _mod.stall_guard(1000)
     g.__exit__()
     assert _mod._stall_reload == 0, "a torn-down guard must not police anything"
@@ -334,16 +339,21 @@ def test_a_disarmed_guard_never_resets(monkeypatch):
     monkeypatch.setattr(_mod, "_reset", lambda: resets.append(1), raising=False)
     monkeypatch.setattr(_mod, "_stall_reload", 0, raising=False)
     monkeypatch.setattr(_mod, "_stall_budget", 0, raising=False)
-    monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
+    monkeypatch.setattr(_mod, "_ticker", None, raising=False)
+    monkeypatch.setattr(_mod, "_budget", 0, raising=False)
     _mod.feed()
     assert _mod._stall_budget == 0
-    # The ISR is only ever wired while a guard is armed, so an unarmed budget is never ticked.
-    assert _mod._stall_timer is None, "no timer means the ISR cannot run"
+    # The ISR runs for the module's whole life now, so an unarmed budget must simply be ignored.
+    for _ in range(50):
+        _mod._tick(None)
+    assert resets == [], "an unarmed guard must never reset the board"
 
 
-def test_guard_arms_a_hard_irq_timer_and_tears_it_down(monkeypatch):
+def test_guard_arms_the_hard_irq_timer_once_and_keeps_it(monkeypatch):
     """HARD IRQ is the whole mechanism: a soft-scheduled callback would not run while the main
-    thread is parked in a C call, which is exactly the state this exists to escape."""
+    thread is parked in a C call, which is exactly the state this exists to escape. The timer is
+    the module's one ticker: made here only when start() has not made it, and never torn down --
+    disarming is a reload of 0, which the ISR reads as "do nothing"."""
     made = {}
 
     class _FakeTimer:
@@ -357,7 +367,7 @@ def test_guard_arms_a_hard_irq_timer_and_tears_it_down(monkeypatch):
     fake.Timer = _FakeTimer
     fake.reset = lambda: made.setdefault("reset", True)
     monkeypatch.setattr(_mod, "_machine", fake, raising=False)
-    monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
+    monkeypatch.setattr(_mod, "_ticker", None, raising=False)
     monkeypatch.setattr(_mod, "_stall_reload", 0, raising=False)
     monkeypatch.setattr(_mod, "_stall_budget", 0, raising=False)
 
@@ -368,9 +378,12 @@ def test_guard_arms_a_hard_irq_timer_and_tears_it_down(monkeypatch):
         assert _mod._stall_budget == _mod._stall_reload, "must start with a full allowance"
         assert _mod._reset is fake.reset, "machine.reset must be PRE-BOUND (no ISR allocation)"
 
-    assert made.get("deinit") is True, "the timer must not outlive the region"
-    assert _mod._stall_timer is None
-    assert _mod._stall_reload == 0
+    assert made.get("deinit") is None, "the ticker is never torn down"
+    assert _mod._ticker is not None
+    assert _mod._stall_reload == 0, "disarmed: reload 0 means the ISR never resets"
+    with _mod.stall_guard(1000):
+        pass
+    assert made.get("n", 1) == 1 and "deinit" not in made, "a second guard reuses the ticker"
 
 
 def test_nested_guards_keep_policing_the_outer_region(monkeypatch):
@@ -392,7 +405,7 @@ def test_nested_guards_keep_policing_the_outer_region(monkeypatch):
     fake.Timer = _FakeTimer
     fake.reset = lambda: None
     monkeypatch.setattr(_mod, "_machine", fake, raising=False)
-    monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
+    monkeypatch.setattr(_mod, "_ticker", None, raising=False)
     monkeypatch.setattr(_mod, "_stall_depth", 0, raising=False)
     monkeypatch.setattr(_mod, "_stall_budget", 0, raising=False)
     monkeypatch.setattr(_mod, "_stall_reload", 0, raising=False)
@@ -401,28 +414,28 @@ def test_nested_guards_keep_policing_the_outer_region(monkeypatch):
         outer = _mod._stall_reload
         with _mod.stall_guard(1000):
             pass
-        assert _mod._stall_timer is not None, "the inner exit must NOT tear down the outer guard"
-        assert _mod._stall_reload == outer, "an inner region must not shrink the outer allowance"
-    assert made.get("deinit") == 1, "torn down exactly once, at the outermost exit"
+        assert _mod._stall_reload == outer, "the inner exit must NOT disarm the outer guard"
+    assert _mod._stall_reload == 0, "disarmed at the outermost exit"
+    assert made.get("deinit") is None, "the ticker is never torn down"
     assert _mod._stall_depth == 0
 
 
 def test_unbalanced_guard_exit_does_not_wedge_the_depth(monkeypatch):
     monkeypatch.setattr(_mod, "_stall_depth", 0, raising=False)
-    monkeypatch.setattr(_mod, "_stall_timer", None, raising=False)
+    monkeypatch.setattr(_mod, "_ticker", None, raising=False)
     _mod._StallGuard(1000).__exit__()
     assert _mod._stall_depth == 0
 
 
 def test_an_orphaned_timer_must_not_reset_a_healthy_board(monkeypatch):
-    """If the stall timer ever outlived its region -- a deinit that did not take -- the ISR would
-    see budget 0, read it as "stalled", and reset the board. Forever. Refuse unless armed."""
+    """The ticker outlives every region by design, so the ISR sees budget 0 all the time a guard
+    is NOT armed; it must read reload 0 as "nothing to police", never as a stall."""
     resets = []
     monkeypatch.setattr(_mod, "_reset", lambda: resets.append(1), raising=False)
     monkeypatch.setattr(_mod, "_stall_reload", 0, raising=False)   # nothing armed
     monkeypatch.setattr(_mod, "_stall_budget", 0, raising=False)
     for _ in range(50):
-        _mod._stall_tick(None)
+        _mod._tick(None)
     assert resets == [], "an unarmed guard must never reset the board"
 
 

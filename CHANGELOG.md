@@ -372,6 +372,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Each build now records a digest of those inputs under `build/<TARGET>/`; a differing digest
   forces the clean, a matching one (or none, from a tree built before the stamp) keeps the
   flag's word. `-j` is not an input.
+- **A relaxed watchdog region no longer allocates on entry.** `openmv_wdt` makes its one
+  hard soft-timer when the watchdog is armed (`start()`, or the first `stall_guard()`) and keeps
+  it for the life of the app; `relax()` and `stall_guard()` only adjust the ISR's budget on the
+  way in and out. The old design made a `machine.Timer` on every `relax()` entry and tore it
+  down on exit, which put an allocation -- and the automatic garbage collection it can trigger,
+  65-100 ms on an H7 -- in the one gap nothing was feeding: between the TLS handshake's region
+  and the collect that follows it. That is where the OpenMV Cam H7 Plus bit its 100 ms WWDG
+  right after `install: TLS up` on the `watchdog` leg. The installer also logs
+  `install: collected`, `install: request sent` and `install: status line` at DEBUG, so the next
+  such bite says which step it landed in.
 
 ## [1.0.7] - 2026-10-07
 

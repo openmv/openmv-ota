@@ -103,15 +103,19 @@ with openmv_wdt.relax():
     do_long_thing()
 ```
 
-`relax()` runs a `machine.Timer` whose callback feeds the watchdog at **interrupt time**,
-so the board survives the op *as long as the CPU is healthy* (interrupts still firing) —
-effectively suspending the watchdog without disabling it, and on exit it stops and hands
+`relax()` lets the helper's `machine.Timer` callback feed the watchdog at **interrupt
+time**, so the board survives the op *as long as the CPU is healthy* (interrupts still
+firing) — effectively suspending the watchdog without disabling it, and on exit it hands
 feeding back to your loop. Use it only around genuinely long ops; outside `relax()` the
 watchdog still catches a hung loop. On every OpenMV port `machine.Timer` *is* the
 virtual/soft timer (`-1`, the only id it accepts), and the helper creates it with
 `hard=True` — that runs its callback in the SysTick/PendSV interrupt handler, which is
 what lets the feed fire mid-erase. Without `hard=True` the callback is *scheduled* and
-wouldn't run while the CPU is blocked, so the erase would still trip the watchdog.
+wouldn't run while the CPU is blocked, so the erase would still trip the watchdog. The
+helper makes that timer **once**, in `start()` before the watchdog is armed, and keeps it
+for the life of the app: entering `relax()` allocates nothing, so no automatic garbage
+collection can land in the unfed gap between two regions (that gap is how an H7 Plus bit
+its 100 ms window right after a TLS handshake).
 
 **`install()` and `sync()` already do this, minimally** — each `relax()`es *only* the one
 long flash erase (which it can't feed from a loop and which can exceed even the WDT's max

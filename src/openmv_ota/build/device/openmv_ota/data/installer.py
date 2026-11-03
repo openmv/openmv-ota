@@ -492,6 +492,7 @@ def _read_response(reader):
     """Read the status line + headers from ``reader``; return ``(code, headers)`` with
     header names lowercased. Leaves ``reader`` positioned at the body."""
     code = _parse_status(reader.readline())
+    log.debug("install: status line")
     headers = {}
     left = _HEADERS_MAX
     while True:
@@ -1397,10 +1398,12 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
         # allocations below (the GET, the reader's buffer, the header lines) make an automatic
         # collect land in the unfed gap between them (see _collect_fed).
         _collect_fed()
+        log.debug("install: collected")
         try:
             # The small GET is one blocking send -- unsplittable, like the handshake: relax() it.
             with (openmv_wdt.relax() if openmv_wdt is not None else _NoWdt()):
                 sock.write(_request_bytes(host, port, path, start))
+            log.debug("install: request sent")
             # Go NON-BLOCKING for every read from here (headers AND body): the reader then feeds the
             # watchdog from the main thread between recvs (see _Reader._fill). This is what a slow FIRST
             # byte needs -- the server can be seconds slow to answer (a stored delta whose first fetch
