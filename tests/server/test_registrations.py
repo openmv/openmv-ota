@@ -3,6 +3,9 @@
 A token alone registers nothing: a record must carry a desk key's signature, from a key the
 account recorded, unrevoked and unexpired, issued just now. And one account can't take another's
 camera by registering it.
+
+Nor does a token alone record a desk key: the account is pinned to its project's roots, and a
+desk key is taken only with a certificate chaining to them (tests/server/trust.py builds that).
 """
 
 from __future__ import annotations
@@ -14,15 +17,16 @@ from fastapi.testclient import TestClient
 from openmv_ota.ota import registration as reg
 from openmv_ota.ota.algorithms import ES256, algorithm_for
 from openmv_ota.ota.keys import generate_private_key, public_point_hex
-from openmv_ota.ota.signer import LocalSigner
 from openmv_ota.server.app import create_app
 from openmv_ota.server.auth import hash_token
 from openmv_ota.server.metastore import SqliteMetadataStore
 from openmv_ota.server.settings import ServerSettings
 from openmv_ota.server.storage import LocalArtifactStorage
 from openmv_ota.server.verify import Registration
+from tests.server.trust import Chain
 
 ALG = algorithm_for(ES256)
+CHAIN = Chain()
 A = {"Authorization": "Bearer tokA"}
 B = {"Authorization": "Bearer tokB"}
 DESK = {"Authorization": "Bearer tokD"}           # acctA's factory: register, nothing else
@@ -48,22 +52,23 @@ def _server(tmp_path):
                                     swd_ids_verify_token="t"),
                      metastore=store, storage=LocalArtifactStorage(str(tmp_path / "blobs")),
                      verifier=_Verifier())
-    return TestClient(app), store
+    c = TestClient(app)
+    for headers in (A, B):                    # both accounts pinned to the same project's roots
+        assert CHAIN.pin(c, headers).status_code == 200
+    return c, store
 
 
-def _desk(key_id=1):
-    key = generate_private_key(ALG)
-    return LocalSigner(key, key_id, ES256, ALG), public_point_hex(key.public_key())
+def _desk():
+    return CHAIN.desk()
 
 
 def _expires(days=90):
     return (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _push(c, headers, key_id, pub, *, expires=None, revoked=False, label="bench-1"):
-    return c.put("/api/v1/admin/desk-keys/%d" % key_id, headers=headers,
-                  json={"label": label, "pubkey": pub, "expires": expires or _expires(),
-                        "revoked": revoked})
+def _push(c, headers, pub, *, key_id=None, expires=None, revoked=False, label="bench-1"):
+    return CHAIN.push(c, headers, pub, key_id=key_id, expires_at=expires, revoked=revoked,
+                      label=label)
 
 
 def _record(signer, *, account="acctA", device="OPENMV4:01", board="OPENMV4", identity=None,
@@ -75,23 +80,31 @@ def _record(signer, *, account="acctA", device="OPENMV4:01", board="OPENMV4", id
     return {"record": record.decode(), "signature": reg.sign(record, signer)}, identity
 
 
-def test_an_account_records_its_desk_keys(tmp_path):
-    c, _store = _server(tmp_path)
-    _signer, pub = _desk()
-    r = _push(c, A, 1, pub)
+def test_an_account_records_its_desk_keys(tmp_path, monkeypatch):
+    c, store = _server(tmp_path)
+    signer, pub = _desk()
+    r = _push(c, A, pub)
     assert r.status_code == 200 and r.json()["pubkey"] == pub and not r.json()["revoked"]
+    assert r.json()["cert"] == CHAIN.certs[pub] and r.json()["issuer_cert"] == CHAIN.issuer_cert
     listed = c.get("/api/v1/admin/desk-keys", headers=OBSERVER).json()["desk_keys"]
-    assert [k["key_id"] for k in listed] == [1]
+    assert [k["key_id"] for k in listed] == [signer.key_id]
     assert c.get("/api/v1/admin/desk-keys", headers=B).json()["desk_keys"] == []   # per account
-    assert _push(c, A, 1, pub, expires=_expires(180)).status_code == 200            # renewed
+    assert _push(c, A, pub, expires=_expires(180)).status_code == 200              # renewed
     _other, pub2 = _desk()
-    assert _push(c, A, 1, pub2).status_code == 409                     # id's key is fixed
-    assert _push(c, A, 1, pub, revoked=True).json()["revoked"]
-    assert _push(c, A, 1, pub, revoked=False).json()["revoked"]        # revoking is one-way
-    assert _push(c, A, 2, "04abcd").status_code == 400
-    assert _push(c, A, 2, pub2, expires="2027-01-01T00:00:00").status_code == 400   # no zone
-    assert _push(c, A, 2, pub2, expires="soon").status_code == 400
-    assert _push(c, DESK, 3, pub2).status_code == 403                  # a desk can't add keys
+    # the id is the key's own: another key under this id is refused before the store sees it
+    assert _push(c, A, pub2, key_id=signer.key_id).status_code == 400
+    assert _push(c, A, pub, revoked=True).json()["revoked"]
+    assert _push(c, A, pub, revoked=False).json()["revoked"]          # revoking is one-way
+    assert _push(c, A, "04abcd", key_id=2).status_code == 400
+    assert _push(c, A, pub2, expires="2027-01-01T00:00:00").status_code == 400     # no zone
+    assert _push(c, A, pub2, expires="soon").status_code == 400
+    assert _push(c, DESK, pub2).status_code == 403                    # a desk can't add keys
+    # the store's own guard (a different public half under a recorded id) is still a 409
+    real = store.put_desk_key
+    monkeypatch.setattr(store, "put_desk_key",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError("fixed")))
+    assert _push(c, A, pub2).status_code == 409
+    monkeypatch.setattr(store, "put_desk_key", real)
     actions = [e["action"] for e in c.get("/api/v1/admin/audit", headers=A).json()["events"]]
     assert "desk_key.put" in actions
 
@@ -99,7 +112,7 @@ def test_an_account_records_its_desk_keys(tmp_path):
 def test_a_desk_signed_record_registers_and_binds_the_camera(tmp_path):
     c, store = _server(tmp_path)
     signer, pub = _desk()
-    _push(c, A, 1, pub)
+    _push(c, A, pub)
     body, identity = _record(signer)
     r = c.post("/api/v1/admin/registrations", headers=DESK, json=body)
     assert r.status_code == 200, r.text
@@ -111,14 +124,14 @@ def test_a_desk_signed_record_registers_and_binds_the_camera(tmp_path):
     assert row["record"] == body["record"] and row["registered_by"] == "factory-1"
     # the stored record still verifies: the exact bytes came back
     assert reg.verify(row["record"].encode(), row["signature"],
-                      [reg.DeskKey(1, pub, _expires())]).identity == identity
+                      [reg.DeskKey(signer.key_id, pub, _expires())]).identity == identity
     assert c.get("/api/v1/admin/devices/OPENMV4:01/registration", headers=B).status_code == 404
 
 
 def test_registering_again_with_new_keys_is_a_rekey(tmp_path):
     c, _store = _server(tmp_path)
     signer, pub = _desk()
-    _push(c, A, 1, pub)
+    _push(c, A, pub)
     first, identity = _record(signer)
     c.post("/api/v1/admin/registrations", headers=DESK, json=first)
     same, _ = _record(signer, identity=identity)
@@ -136,7 +149,7 @@ def test_a_token_alone_registers_nothing(tmp_path):
     body, _ = _record(signer)
     post = lambda b, h=DESK: c.post("/api/v1/admin/registrations", headers=h, json=b)  # noqa: E731
     assert post(body).status_code == 400                       # the account has no such desk key
-    _push(c, A, 1, pub)
+    _push(c, A, pub)
     forged = dict(body, signature="00" * 64)
     assert post(forged).status_code == 400
     stale, _ = _record(signer, issued=datetime.now(timezone.utc) - timedelta(hours=3))
@@ -146,7 +159,7 @@ def test_a_token_alone_registers_nothing(tmp_path):
     mislabelled, _ = _record(signer, device="OPENMV_N6:01")
     assert "isn't the board's" in post(mislabelled).json()["detail"]
     assert post(body, OBSERVER).status_code == 403             # observe can't register
-    _push(c, A, 1, pub, revoked=True)
+    _push(c, A, pub, revoked=True)
     assert "revoked" in post(body).json()["detail"]
     assert store.get_registration("OPENMV4:01") is None
     refused = [e for e in c.get("/api/v1/admin/audit", headers=A).json()["events"]
@@ -157,7 +170,7 @@ def test_a_token_alone_registers_nothing(tmp_path):
 def test_an_expired_desk_key_cant_register(tmp_path):
     c, _store = _server(tmp_path)
     signer, pub = _desk()
-    _push(c, A, 1, pub, expires=(datetime.now(timezone.utc) - timedelta(minutes=1))
+    _push(c, A, pub, expires=(datetime.now(timezone.utc) - timedelta(minutes=1))
           .strftime("%Y-%m-%dT%H:%M:%SZ"))
     body, _ = _record(signer, issued=datetime.now(timezone.utc) - timedelta(minutes=10))
     assert "has expired" in c.post("/api/v1/admin/registrations", headers=DESK,
@@ -168,8 +181,8 @@ def test_one_account_cant_take_another_s_camera(tmp_path):
     c, store = _server(tmp_path)
     sig_a, pub_a = _desk()
     sig_b, pub_b = _desk()
-    _push(c, A, 1, pub_a)
-    _push(c, B, 1, pub_b)
+    _push(c, A, pub_a)
+    _push(c, B, pub_b)
     body_a, _ = _record(sig_a)
     assert c.post("/api/v1/admin/registrations", headers=A, json=body_a).status_code == 200
     body_b, _ = _record(sig_b, account="acctB")
@@ -184,7 +197,7 @@ def test_one_account_cant_take_another_s_camera(tmp_path):
 def test_registrations_survive_forget_and_go_with_the_account(tmp_path):
     c, store = _server(tmp_path)
     signer, pub = _desk()
-    _push(c, A, 1, pub)
+    _push(c, A, pub)
     body, _ = _record(signer)
     c.post("/api/v1/admin/registrations", headers=A, json=body)
     store.upsert_device(device_id="OPENMV4:01", product_id=7, account_id="acctA")

@@ -129,10 +129,13 @@ my-product/
 └── keys/
     ├── root_keys.json       # committed: the two roots baked into firmware
     ├── trusted_keys.json    # committed: the signing keys, each with its certificate
+    ├── issuer.json          # committed: the issuer (certified by root 0; it certifies desk keys)
+    ├── desk_keys.json       # committed, once a desk exists: the desk keys + their certificates
     └── private/             # GITIGNORED: the private keys (PKCS#8 PEM)
         ├── root-0.pem, root-1.pem      # the roots -- keep these OFFLINE
         ├── factory-0001.pem … factory-0008.pem
-        └── ota-0100.pem     … ota-011f.pem
+        ├── ota-0100.pem     … ota-011f.pem
+        └── issuer-<id>.pem, desk-<id>.pem
 ```
 
 The generated `.gitignore` already excludes `keys/private/` (and `keys/*.pem`,

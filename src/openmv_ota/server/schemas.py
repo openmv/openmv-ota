@@ -576,10 +576,31 @@ class DeskKeyInfo(BaseModel):
     expires: str
     revoked: bool
     updated_at: str = ""
+    cert: str = ""
+    """The desk's certificate (hex), signed by the project's issuer: the chain the server
+    checked against the account's pinned roots before recording this key."""
+    issuer_cert: str = ""
+    """That issuer's own certificate (hex), signed by one of the pinned roots."""
 
 
 class DeskKeyList(BaseModel):
     desk_keys: list[DeskKeyInfo]
+
+
+class RootInfo(BaseModel):
+    root_id: int
+    pubkey: str
+    """Uncompressed P-256 point, hex: a root the account's cameras embed."""
+    set_at: str = ""
+
+
+class RootsInfo(BaseModel):
+    roots: list[RootInfo]
+    """The roots the account is pinned to -- what every desk key must chain to. Empty until
+    the project pushed them (`openmv-ota project keys roots push`)."""
+    replaced: bool = False
+    """On a PUT: whether this write replaced a different pinned set (under a root-signed
+    statement) rather than setting the first one or repeating the same one."""
 
 
 class DeviceRegistered(BaseModel):

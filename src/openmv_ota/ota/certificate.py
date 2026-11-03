@@ -19,6 +19,15 @@ which is why it is a certified property and not a convention on key ids. ``root_
 embedded root that signed the certificate. ``epoch`` moves only when a key is retired; a camera
 that has confirmed a release at epoch N refuses certificates below N from then on.
 
+Two more kinds never reach a camera (its parser rejects them): :data:`KIND_ISSUER`, the
+project's helper key that a root certifies once, and :data:`KIND_DESK`, a desk key the issuer
+certifies. A desk registers cameras to the account, and the server trusts a desk only through
+this chain -- root, issuer, desk -- anchored in the roots the account pinned, so the account's
+admin token alone can introduce no desk. A desk certificate's ``root_id`` names the root the
+chain ends at (its issuer's), and its ``epoch`` is 0: desks are retired by the server's revoke
+flag, not by the camera's floor. Every verifier says which kinds it will take
+(:func:`verify`'s ``kinds``); an image verifier never takes a desk's.
+
 Certificates carry **P-256 keys only** (``alg`` = ES256, a 65-byte uncompressed point, a 64-byte
 root signature): the stub's verifier is p256-m, and one curve keeps the format fixed-size. The
 wider curves in :mod:`.algorithms` remain for manifests, not for certified keys.
@@ -43,7 +52,10 @@ SIGNED_SIZE = 96          # magic .. pubkey+pad; the root signs exactly these by
 
 KIND_OTA = 0              # signs releases
 KIND_FACTORY = 1          # signs factory images (whose first boot provisions the camera's keys)
-_KINDS = (KIND_OTA, KIND_FACTORY)
+KIND_ISSUER = 2           # certifies desk keys; certified by a root (never reaches a camera)
+KIND_DESK = 3             # registers cameras; certified by an issuer (never reaches a camera)
+_KINDS = (KIND_OTA, KIND_FACTORY, KIND_ISSUER, KIND_DESK)
+IMAGE_KINDS = (KIND_OTA, KIND_FACTORY)     # what a trailer or manifest may carry
 
 _STRUCT = "<4sIIIIi65s7x64s"       # == SIZE bytes; pinned by a test
 
@@ -133,10 +145,24 @@ def issue(root_private_key, root_id: int, kind: int, epoch: int, pubkey: bytes) 
     return c
 
 
-def verify(data, roots) -> Certificate:
-    """Parse ``data`` and check the root's signature against ``roots`` (``{root_id: pubkey
-    bytes}``, the set a camera embeds). Returns the trusted :class:`Certificate`; raises
-    ``OtaError`` for an unknown root or a signature that does not verify."""
+def issue_with(signer, root_id: int, kind: int, epoch: int, pubkey: bytes) -> Certificate:
+    """Certify ``pubkey`` with a :class:`~openmv_ota.ota.signer.Signer` -- an issuer key that may
+    live in an HSM or a KMS, where :func:`issue` needs the private key in hand. The signer must
+    be a P-256 key (``alg`` ES256), the only curve a certificate's signature slot fits."""
+    if signer.sig_alg != ES256:
+        raise OtaError("a certificate's signer must be a P-256 key (alg %d is not ES256)"
+                       % signer.sig_alg)
+    c = Certificate(kind, root_id, epoch, bytes(pubkey))
+    c.signature = bytes(signer.sign(signed_region(c)))
+    return c
+
+
+def verify(data, roots, *, kinds=IMAGE_KINDS) -> Certificate:
+    """Parse ``data`` and check the signature against ``roots`` (``{root_id: pubkey bytes}``:
+    the set a camera embeds, or one issuer's key when checking a desk). Returns the trusted
+    :class:`Certificate`; raises ``OtaError`` for an unknown root, a signature that does not
+    verify, or a kind the caller does not take (``kinds``: image kinds unless the caller says
+    otherwise, so no desk or issuer certificate ever passes as a release's)."""
     from .keys import public_key_from_hex
     from .sign import verify_region
 
@@ -147,4 +173,20 @@ def verify(data, roots) -> Certificate:
     pub = public_key_from_hex(bytes(root).hex(), _SPEC)
     if not verify_region(pub, signed_region(data), c.signature, _SPEC):
         raise OtaError("certificate signature does not verify against root %d" % c.root_id)
+    if c.kind not in kinds:
+        raise OtaError("certificate kind %d is not accepted here (%s)"
+                       % (c.kind, "/".join(str(k) for k in kinds)))
     return c
+
+
+def verify_chain(desk_data, issuer_data, roots) -> tuple[Certificate, Certificate]:
+    """A desk key's chain of trust: ``issuer_data`` must be an issuer certificate one of
+    ``roots`` signed, and ``desk_data`` a desk certificate that issuer signed, naming the same
+    root. Returns ``(desk, issuer)``; raises ``OtaError`` naming the link that fails."""
+    issuer = verify(issuer_data, roots, kinds=(KIND_ISSUER,))
+    desk = parse(desk_data)
+    if desk.root_id != issuer.root_id:
+        raise OtaError("desk certificate names root %d, its issuer's is %d"
+                       % (desk.root_id, issuer.root_id))
+    desk = verify(desk_data, {issuer.root_id: issuer.pubkey}, kinds=(KIND_DESK,))
+    return desk, issuer

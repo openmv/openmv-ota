@@ -8,6 +8,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Desk keys are trusted through a chain, not through the token that pushed them.** Every
+  project gets an **issuer key** at `project new`, certified once by root 0 (certificate kind
+  `ISSUER`); it certifies each desk key as it is made (kind `DESK`), and the entry carries both
+  certificates. The server pins each account to its project's roots (`PUT /admin/roots`,
+  `project keys roots push`: set once, replaced only under a statement a current root signs,
+  `--rotation-key`) and records a desk key (`PUT /admin/desk-keys/{id}`, now with `cert` +
+  `issuer_cert`) only through the chain root → issuer → desk to those roots, with the key's id
+  checked against its key. An admin token alone can no longer introduce a desk or register
+  cameras. Also `project keys issuer create|replace|show`, `project keys desk certify` (desks
+  from before the issuer), `project keys roots show`, `GET /admin/roots`; the issuer moves into
+  an external backend with the signing keys (`project keys backend provision`) and is copied by
+  `--keys-from`. A camera's parser rejects both new kinds, so no stub or firmware changes. The
+  HIL harness pins its bench server and certifies its desk on every run.
+
 - **The boot stub on the STM32H7 boards.** The OpenMV Cam H7 Plus and Pure Thermal and the
   Arduino Portenta H7, Giga and Nicla Vision get the same firmware-in-the-image update the N6
   has: the stub takes the 128 KiB sector the bootloader jumps to (`0x08040000`), the firmware

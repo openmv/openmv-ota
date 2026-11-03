@@ -53,11 +53,27 @@ class Api:
         return self._req("POST", "/api/v1/admin/releases", files=files, params=params)
 
     def put_desk_key(self, entry):
-        """Record one of the project's desk keys on the server (its public half, label, expiry
-        and whether it is revoked) -- what the server checks camera registrations against."""
+        """Record one of the project's desk keys on the server (its public half, label, expiry,
+        whether it is revoked, and its chain: the desk's certificate by the project's issuer and
+        the issuer's by a root) -- what the server checks camera registrations against. The
+        server takes the key only if the chain ends at the account's pinned roots."""
         return self._req("PUT", "/api/v1/admin/desk-keys/%d" % entry.key_id,
                          json={"label": entry.label, "pubkey": entry.pubkey,
-                               "expires": entry.expires, "revoked": entry.revoked})
+                               "expires": entry.expires, "revoked": entry.revoked,
+                               "cert": entry.cert, "issuer_cert": entry.issuer_cert})
+
+    def put_roots(self, roots, statement=None):
+        """Pin the account to the project's roots (``[{"root_id", "pubkey"}, ...]``). Set once;
+        replacing a different pinned set needs ``statement``, a current root's signature over the
+        new set (:func:`openmv_ota.ota.account_roots.sign_statement`)."""
+        body = {"roots": roots}
+        if statement is not None:
+            body["statement"] = statement
+        return self._req("PUT", "/api/v1/admin/roots", json=body)
+
+    def roots(self):
+        """The roots the account is pinned to (empty until pushed)."""
+        return self._req("GET", "/api/v1/admin/roots")["roots"]
 
     def keykeeper_chain(self) -> list:
         """The chain of keykeeper's public keys, as the server passes it on (unverified: the

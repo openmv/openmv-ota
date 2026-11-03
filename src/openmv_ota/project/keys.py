@@ -93,9 +93,10 @@ def set_backend(root: Path, key_id: int, record: dict) -> None:
 def provision_backend(root: Path, provisioner, *, n_factory: int, n_ota: int,
                       key_passphrase_file=None) -> int:
     """Generate a fresh key set **inside** an external backend and replace ``trusted_keys.json`` +
-    ``backends.json`` with it (no signing key's private PEM ever touches disk). Keeps the current
-    signing algorithm and the project's roots: the new keys are certified by root 0, so devices
-    that embed the roots trust them with no firmware change. Returns the new signing key id."""
+    ``backends.json`` with it (no signing key's private PEM ever touches disk), and mint the
+    project's issuer there too (``keys/issuer.json``). Keeps the current signing algorithm and the
+    project's roots: the new keys are certified by root 0, so devices that embed the roots trust
+    them with no firmware change. Returns the new signing key id."""
     from openmv_ota.ota.keys import load_private_key_pem, root_pem_name
     from openmv_ota.ota.signer import provision_external_key_set
 
@@ -115,6 +116,11 @@ def provision_backend(root: Path, provisioner, *, n_factory: int, n_ota: int,
     write_trusted_keys(paths.trusted_keys, trusted)
     write_backends(root, records)
     config_mod.set_signing_key_id(paths.config, signing_key_id)
+    # The issuer lives like a signing key, so it moves with them: a fresh one minted in the
+    # backend and certified by the same root. Desks already certified keep their chain.
+    from . import issuer as issuer_mod
+    pubkey, record = provisioner.provision(issuer_mod.ISSUER_LABEL_ID, issuer_mod.ROLE, alg)
+    issuer_mod.adopt_external(root, phrase, pubkey, record)
     return signing_key_id
 
 
@@ -125,7 +131,7 @@ def key_status(root: Path) -> KeyStatus:
     by_id = {k.key_id: k for k in trusted}
     signer = by_id[config.signing_key_id]
     present = (len([p for p in paths.private_keys_dir.glob("*.pem")
-                    if not p.name.startswith("root-")])      # roots are not signing keys
+                    if not p.name.startswith(("root-", "issuer-"))])  # neither signs images
                if paths.private_keys_dir.exists() else 0)
     return KeyStatus(
         alg_name=algorithm_for(signer.alg).name,

@@ -65,6 +65,9 @@ _LAZY = {
     "Certificate": "certificate",
     "KIND_OTA": "certificate",
     "KIND_FACTORY": "certificate",
+    "KIND_ISSUER": "certificate",
+    "KIND_DESK": "certificate",
+    "IMAGE_KINDS": "certificate",
 }
 
 
@@ -114,4 +117,7 @@ __all__ = [
     "Certificate",
     "KIND_OTA",
     "KIND_FACTORY",
+    "KIND_ISSUER",
+    "KIND_DESK",
+    "IMAGE_KINDS",
 ]

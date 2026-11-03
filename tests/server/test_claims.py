@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 from openmv_ota.ota import registration as reg
 from openmv_ota.ota.algorithms import ES256, algorithm_for
 from openmv_ota.ota.keys import generate_private_key, public_point_hex
-from openmv_ota.ota.signer import LocalSigner
 from openmv_ota.server import metastore as M
 from openmv_ota.server.app import create_app
 from openmv_ota.server.auth import hash_token
@@ -26,6 +25,7 @@ from openmv_ota.server.settings import ServerSettings
 from openmv_ota.server.storage import LocalArtifactStorage
 from openmv_ota.server.verify import Registration
 from tests.server import camera
+from tests.server.trust import Chain
 
 ALG = algorithm_for(ES256)
 BID = 7
@@ -63,13 +63,12 @@ def _server(tmp_path, *, rate=30):
     return TestClient(app), store
 
 
-def _desk(c, headers, key_id=1):
-    key = generate_private_key(ALG)
-    pub = public_point_hex(key.public_key())
-    expires = datetime(2099, 1, 1, tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    assert c.put("/api/v1/admin/desk-keys/%d" % key_id, headers=headers,
-                 json={"label": "bench", "pubkey": pub, "expires": expires}).status_code == 200
-    return LocalSigner(key, key_id, ES256, ALG)
+CHAIN = Chain()
+
+
+def _desk(c, headers):
+    """A certified desk key the account takes (its roots pinned on the way)."""
+    return CHAIN.push_desk(c, headers)
 
 
 def _publish(store):
