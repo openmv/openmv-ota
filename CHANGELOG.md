@@ -382,6 +382,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   right after `install: TLS up` on the `watchdog` leg. The installer also logs
   `install: collected`, `install: request sent` and `install: status line` at DEBUG, so the next
   such bite says which step it landed in.
+- **The STM32H7 stub reports the QUADSPI state it inherits.** Three lines per boot
+  (`qspi inherited cr|sr|ccr`, before its first peripheral reset) plus the address, length and
+  device registers, the flash option bytes and the AHB3 reset register in the failure dump, for
+  the Portenta/Giga controller wedge at a debug-core reset.
 
 ## [1.0.7] - 2026-10-07
 

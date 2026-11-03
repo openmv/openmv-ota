@@ -54,9 +54,39 @@ static bool inited = false;
 // stub is, whatever a reset left of the PLLs.
 static uint32_t inherited_qspisel;
 
+// The controller as the previous owner (the bootloader, or the firmware across a core reset)
+// handed it over, read before this driver's first peripheral reset: whether its clock was on
+// and, if so, CR / SR / CCR / AR / DLR / DCR. Logged every boot in three lines, so a boot that
+// wedges can be set beside the boots that did not.
+static bool inherited_clk;
+static uint32_t inherited_cr, inherited_sr, inherited_ccr, inherited_ar, inherited_dlr;
+static uint32_t inherited_dcr;
+
+static void snapshot_inherited(void) {
+    inherited_clk = (RCC->AHB3ENR & RCC_AHB3ENR_QSPIEN) != 0;
+    if (!inherited_clk) {
+        log_line("qspi inherited clk off");
+        return;
+    }
+    inherited_cr = QUADSPI->CR;
+    inherited_sr = QUADSPI->SR;
+    inherited_ccr = QUADSPI->CCR;
+    inherited_ar = QUADSPI->AR;
+    inherited_dlr = QUADSPI->DLR;
+    inherited_dcr = QUADSPI->DCR;
+    log_kv("qspi inherited cr", inherited_cr);
+    log_kv("qspi inherited sr", inherited_sr);
+    log_kv("qspi inherited ccr", inherited_ccr);
+}
+
 // Everything a failed reset should say about the clock tree and the controller, once.
 static void dump_state(void) {
     log_kv("qspi sel inherited", inherited_qspisel);
+    log_kv("qspi inherited ar", inherited_ar);
+    log_kv("qspi inherited dlr", inherited_dlr);
+    log_kv("qspi inherited dcr", inherited_dcr);
+    log_kv("flash optsr", FLASH->OPTSR_CUR);
+    log_kv("rcc ahb3rstr", RCC->AHB3RSTR);
     log_kv("rcc cr", RCC->CR);
     log_kv("rcc cfgr", RCC->CFGR);
     log_kv("rcc d1cfgr", RCC->D1CFGR);
@@ -215,6 +245,7 @@ int qspi_flash_init(void) {
         return 0;
     }
     inherited_qspisel = __HAL_RCC_GET_QSPI_SOURCE();
+    snapshot_inherited();
     if (controller_init() != 0) {
         return -1;
     }
