@@ -123,7 +123,11 @@ The project's OTA flag steers the build automatically:
 
 The build is **clean by default** (`make clean` first), so a stale tree can't
 turn into a confusing link-time failure; pass `--incremental` to skip the clean
-when the tree is known good. Building firmware needs the firmware toolchain
+when the tree is known good. Even then the tool cleans when its *own* inputs to
+the build changed since the last build of that board -- the board overlay, the
+frozen manifest, the modules it injects -- because `make` cannot see those (they
+live in a per-build temporary directory) and would otherwise keep objects compiled
+against the old configuration. Building firmware needs the firmware toolchain
 (`make` + the board's cross compiler).
 
 | Flag | Effect |
@@ -131,7 +135,7 @@ when the tree is known good. Building firmware needs the firmware toolchain
 | `-b, --board NAME` | Build only this board (repeatable; default: all boards). |
 | `-o, --output DIR` | Output directory (default: `<project>/build`). |
 | `-j, --jobs N` | Parallel make jobs (default: CPU count). |
-| `--incremental` | Skip the clean rebuild (only when the tree is known good). |
+| `--incremental` | Skip the clean rebuild (only when the tree is known good; the tool still cleans when its overlay/manifest inputs changed). |
 | `--key-passphrase-file FILE` | Passphrase that decrypts the project's payload keys (OTA projects; else the env var or a prompt). |
 | `-f, --firmware PATH` | Firmware checkout override. |
 | `--keep-build-dir` | Keep the generated wrapper-manifest dir (OTA builds) for inspection. |

@@ -193,6 +193,39 @@ def test_build_firmware_incremental_skips_clean(make_project, monkeypatch):
     assert "-j4" in fake.calls[0]
 
 
+def test_incremental_cleans_when_the_tools_own_inputs_changed(make_project, monkeypatch):
+    """`--incremental` skips the clean -- unless the overlay, the frozen manifest or the
+    injected modules differ from the last build of that target. make cannot see those
+    (they live in a per-build temp dir), so an incremental build after a board stopped
+    dropping a decoder kept objects compiled with the old imlib_config.h. The build
+    records a digest of its inputs; a differing digest forces the clean, a matching one
+    (or none at all, a tree from before the stamp) keeps the flag's word. `-j` is not an
+    input."""
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    root, repo, _app = make_project()
+    # The real firmware tree ignores build/; the fixture's does not, and a second build would
+    # otherwise find the first one's outputs as a dirty checkout. Exclude it outside the tree.
+    (repo / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text("build/\n")
+    fw.build_firmware(root, firmware=repo, incremental=True, jobs=2)
+    assert len(fake.calls) == 1, "no stamp yet: incremental means no clean"
+    stamp = repo / "build" / "OPENMV_N6" / fw._INPUTS_STAMP
+    recorded = stamp.read_text().strip()
+    assert len(recorded) == 64
+
+    fake.calls.clear()
+    fw.build_firmware(root, firmware=repo, incremental=True, jobs=4)
+    assert len(fake.calls) == 1, "same inputs, different -j: still no clean"
+    assert stamp.read_text().strip() == recorded
+
+    stamp.write_text("0" * 64 + "\n")                  # the last build had other inputs
+    fake.calls.clear()
+    fw.build_firmware(root, firmware=repo, incremental=True, jobs=4)
+    assert len(fake.calls) == 2 and "clean" in fake.calls[0], "changed inputs force the clean"
+    assert stamp.read_text().strip() == recorded, "the stamp is rewritten after the build"
+
+
 def test_build_firmware_ignores_openmv_bin(make_project, monkeypatch):
     # The bootloader-combined openmv.bin is deliberately not collected; only
     # firmware.bin is. firmware.bin present -> openmv.bin alongside is ignored.
