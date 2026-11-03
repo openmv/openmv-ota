@@ -385,7 +385,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The STM32H7 stub reports the QUADSPI state it inherits.** Three lines per boot
   (`qspi inherited cr|sr|ccr`, before its first peripheral reset) plus the address, length and
   device registers, the flash option bytes and the AHB3 reset register in the failure dump, for
-  the Portenta/Giga controller wedge at a debug-core reset.
+  the Portenta/Giga controller wedge at a debug-core reset. The stray-fault line at the jump
+  (every H7 Plus boot, step 5) now names the fault status and address registers too.
 
 ## [1.0.7] - 2026-10-07
 

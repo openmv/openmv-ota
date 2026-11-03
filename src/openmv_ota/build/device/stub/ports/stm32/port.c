@@ -302,6 +302,8 @@ int port_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size) {
 #define AXI_FLASH_SIZE          (0x200000U)
 
 static volatile uint32_t flash_faults = 0;
+static volatile uint32_t fault_cfsr = 0;        // the last fault's CFSR / BFAR, for the jump-step log:
+static volatile uint32_t fault_bfar = 0;        //   BFARVALID set = a precise fault with an address
 static volatile bool flash_reading = false;     // inside port_flash_read's copy: a fault is a torn word
 static volatile bool jumping = false;           // in port_jump: everything is verified, a stray fault
                                                 //   must not stop the boot (seen on the H7 Plus)
@@ -341,6 +343,8 @@ void stub_fault_skip(uint32_t *frame) {
     uint32_t pc = frame[6];
     uint16_t op = *(const uint16_t *) pc;
     frame[6] = pc + (((op & 0xF800U) >= 0xE800U) ? 4 : 2);
+    fault_cfsr = SCB->CFSR;
+    fault_bfar = SCB->BFAR;
     SCB->CFSR = SCB->CFSR;
     SCB->HFSR = SCB->HFSR;
     flash_faults++;
@@ -650,6 +654,8 @@ static void jump_step(uint32_t step) {
     if (flash_faults != seen) {
         seen = flash_faults;
         log_kv("stray fault at jump step", step);
+        log_kv("stray fault cfsr", fault_cfsr);     // IMPRECISERR 0x400 = a buffered write's error;
+        log_kv("stray fault bfar", fault_bfar);     //   PRECISERR 0x200 + BFARVALID 0x8000 = this address
     }
 }
 #else
