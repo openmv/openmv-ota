@@ -268,6 +268,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `build firmware` on the STM32H7 boards no longer fails the relink when the main window
+  is short by less than the second text region's alignment margin: it repacks the region
+  with the margin shrunk by the shortfall and links again (up to four attempts, the
+  linker deciding), and names the regions and bytes when the firmware truly does not fit.
 - **A camera with an armed watchdog reset right after an install's TLS handshake.** The
   OPENMV4P `watchdog` leg, three runs in a row: `install: TLS up`, then a boot from the watchdog
   before `install: fetched body`. The handshake fills the heap with mbedtls temporaries, and the
