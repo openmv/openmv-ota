@@ -217,13 +217,21 @@ static uint32_t read_id(void) {
 // The part is whatever the previous owner left it: the firmware's driver (1-line commands,
 // continuous read off) or the Arduino DFU bootloader's, which may have switched it to QPI,
 // where it ignores 1-line instructions altogether. A reset is the one thing a QPI part still
-// obeys, so send the pair on 4 lines first (a no-op to a part in SPI mode, which sees nothing
-// it recognises) and then on 1 line, and only then ask the part for its status.
+// obeys, so the pair goes out on 1 line and then on 4, and only then is the part asked for
+// its status.
+//
+// 1 line FIRST. With the 4-line pair first, the Portenta's controller stuck on that very
+// first instruction after a debug-core reset of the running firmware -- BUSY set and the
+// transfer never complete, every retry the same, no status or id to be had -- on one boot in
+// ten (2 of 20 on the bench, the fleet's "qspi reset timeout" legs), with the inherited
+// controller state identical to a clean boot's. The 1-line pair first: 0 of 60 such resets.
+// Why the controller minds which instruction comes first is not known; the order is what is
+// measured, and the 4-line pair still follows for a part left in QPI.
 //
 // Returns 0, or the step that failed: 1-4 the four reset instructions (the controller never
 // finished sending one), 5 the status poll (the part never reported idle, or never answered).
 static int chip_reset(void) {
-    static const uint32_t modes[] = { QSPI_INSTRUCTION_4_LINES, QSPI_INSTRUCTION_1_LINE };
+    static const uint32_t modes[] = { QSPI_INSTRUCTION_1_LINE, QSPI_INSTRUCTION_4_LINES };
     for (int i = 0; i < (int) (sizeof(modes) / sizeof(modes[0])); i++) {
         QSPI_CommandTypeDef c = command(CMD_RESET_ENABLE);
         c.InstructionMode = modes[i];

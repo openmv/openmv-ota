@@ -268,6 +268,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The STM32H7 stub resets the QSPI part on 1 line before 4.** The fleet's Portenta
+  booted without its slots ("qspi reset timeout") on about one debug-core reset in ten:
+  the controller stuck on the stub's very first instruction, the reset-enable sent on 4
+  lines, with the state the bootloader hands over identical to a clean boot's. The
+  1-line pair now goes first, the 4-line pair (for a part left in QPI) after it: 0 of 60
+  such resets on the bench against 2 of 20 before. The stub also logs the inherited
+  controller registers on every boot and the fault registers behind the jump's stray fault.
 - **The STM32H7 stub invalidates the data cache itself before enabling it.** The OpenMV Cam
   H7 Plus logged a stray bus fault at the jump on one boot in three -- after a debug-core
   reset of the running firmware, or on the boot that installs: a buffered write to an
