@@ -363,6 +363,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   same QSPI flash. `openmv_ota.wifi()` and recovery now stop the radio and start it again, up to
   three tries.
 
+### Fixed
+
+- **`build firmware --incremental` cleans when the tool's own inputs changed.** The board
+  overlay, the frozen manifest and the injected modules live in a per-build temporary
+  directory `make` never sees, so an incremental build after a board stopped dropping a
+  decoder (or gained a stub relink) kept objects compiled against the old `imlib_config.h`.
+  Each build now records a digest of those inputs under `build/<TARGET>/`; a differing digest
+  forces the clean, a matching one (or none, from a tree built before the stamp) keeps the
+  flag's word. `-j` is not an input.
+
 ## [1.0.7] - 2026-10-07
 
 ### Fixed

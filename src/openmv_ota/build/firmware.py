@@ -26,6 +26,7 @@ clean checkout could never build firmware without this step.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
@@ -166,6 +167,54 @@ def _select_boards(targets, boards: list[str] | None) -> list[str]:
     return sorted(names)
 
 
+_INPUTS_STAMP = ".openmv-ota-inputs"   # under build/<TARGET>/: a digest of what make cannot see
+
+
+def _inputs_digest(tmp: Path | None, build_args: list[str], extra: list[Path | None]) -> str:
+    """One hash over everything this tool feeds a build that ``make`` does not track: the
+    make variables it adds (minus ``-j``), every file under the wrapper dir (the frozen
+    manifest, the board overlay with its relinked origins and dropped defines) and the
+    modules it drops into the firmware tree. Paths under ``tmp`` are random per build, so
+    they hash as ``<tmp>``; the CONTENT is what matters."""
+    h = hashlib.sha256()
+    for a in sorted(build_args):
+        if a.startswith("-j"):
+            continue
+        if tmp is not None:
+            a = a.replace(tmp.as_posix(), "<tmp>")
+        h.update(a.encode())
+        h.update(b"\0")
+    if tmp is not None:
+        for f in sorted(x for x in tmp.rglob("*") if x.is_file()):
+            h.update(f.relative_to(tmp).as_posix().encode())
+            h.update(b"\0")
+            h.update(f.read_bytes())
+            h.update(b"\0")
+    for f in extra:
+        if f is not None:
+            h.update(f.read_bytes())
+            h.update(b"\0")
+    return h.hexdigest()
+
+
+def _stale_inputs(repo: Path, name: str, digest: str) -> bool:
+    """True when the last build of ``name`` recorded DIFFERENT inputs than this one. A tree
+    that make considers up to date is wrong when the overlay changed under it: an
+    ``--incremental`` build after a board stopped dropping a decoder (or gained a stub
+    relink) kept the objects compiled with the old ``imlib_config.h``. No stamp (a tree from
+    before this check) means nothing is known, and ``--incremental`` keeps its word."""
+    try:
+        return (repo / "build" / name / _INPUTS_STAMP).read_text().strip() != digest
+    except OSError:
+        return False
+
+
+def _record_inputs(repo: Path, name: str, digest: str) -> None:
+    bdir = repo / "build" / name
+    bdir.mkdir(parents=True, exist_ok=True)
+    (bdir / _INPUTS_STAMP).write_text(digest + "\n")
+
+
 def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
                keep_build_dir, payload_keys=None) -> FirmwareResult:
     ota = p.config.ota
@@ -185,10 +234,12 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
             speed = _mbedtls_speed_arg(p, repo, name, tmp)
             if speed is not None:
                 build_args.append(speed)
-        if not incremental:
+        digest = _inputs_digest(tmp, build_args, [cmod, kmod])
+        if not incremental or _stale_inputs(repo, name, digest):
             _run_make(repo, ["TARGET=%s" % name, "clean"])
         _ensure_mpy_cross(repo)
         _run_make(repo, build_args)
+        _record_inputs(repo, name, digest)
         layout = get_board(name).stub
         if ota and layout is not None and layout.text2_dest is not None:
             _relink_text2(repo, name, build_args, layout, p.sdk_home)
