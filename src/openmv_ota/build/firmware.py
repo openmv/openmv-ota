@@ -32,7 +32,7 @@ import re
 import shlex
 import shutil
 import subprocess
-import tempfile
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -253,8 +253,6 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
         for mod in (cmod, kmod):                   # restore the firmware tree
             if mod is not None:
                 mod.unlink(missing_ok=True)
-        if tmp is not None and not (ota and keep_build_dir):
-            shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _mbedtls_speed_arg(p, repo: Path, name: str, tmp: Path) -> str | None:
@@ -313,10 +311,17 @@ def _board_port(repo: Path, board: str) -> str | None:
     return m.group(1) if m else None
 def _write_wrapper_manifest(p, repo: Path, name: str,
                             payload_keys: dict[int, bytes]) -> Path:
-    """A temp dir holding the OTA ``boot.py``, its generated ``_ota_config.py``, and
-    a wrapper ``manifest.py`` that includes the board's own manifest and freezes both.
-    Returns the temp dir (the caller removes it)."""
-    tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-fw-"))
+    """A directory holding the OTA ``boot.py``, its generated ``_ota_config.py``, and a
+    wrapper ``manifest.py`` that includes the board's own manifest and freezes both.
+
+    It is ``build/openmv-ota-<board>/`` in the firmware tree, rewritten on every build, and
+    never a fresh temp dir: the objects' dependency files name the board headers in it, so
+    a path that changed between builds is a header make cannot find, and ``--incremental``
+    would stop on "No rule to make target". ``make clean`` removes only ``build/<board>/``,
+    which is what a clean build wants."""
+    tmp = repo / "build" / ("openmv-ota-" + name)
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
     # On a multi-core board only the MAIN core does OTA. The helper core has no mbedtls,
     # never verifies a signature and is never updated on its own (its partition is a plain
     # romfs the main core writes), so freezing boot.py, the installer and the rest into it
@@ -759,6 +764,9 @@ def _check_bootloader_room(name: str, boot: Path) -> None:
 
 TEXT2_SECTION = ".text2"
 TEXT2_MARGIN = 2048                 # alignment slack the packer leaves in the region
+TEXT2_RELINKS = 4                   # link attempts before the fit is declared impossible
+TEXT2_STEP = 64                     # extra slack given back per attempt: moving N bytes frees
+                                    # less than N in the main window (alignment padding)
 TEXT2_IMAGE = "firmware_text2.bin"  # beside firmware.bin -> <board>-firmware-text2.bin
 
 _MAP_INPUT = re.compile(r"^ (\.(?:text|rodata)(?:\.\S*)?)(?:\s+0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+)\s+(\S.*))?$")
@@ -793,6 +801,29 @@ def _run_cmd(repo: Path, argv: list[str], env: dict | None) -> None:
     except subprocess.CalledProcessError as e:
         raise BuildError("firmware relink failed (%s): exit %d" % (" ".join(argv[:3]), e.returncode),
                          exit_code=1) from None
+
+
+_LD_OVERFLOW = re.compile(r"region `([A-Za-z0-9_]+)' overflowed by (\d+) bytes")
+
+
+def _run_link(repo: Path, argv: list[str], env: dict | None) -> dict[str, int]:
+    """Run a link, echoing its output. Returns ``{}`` on success, or ``{region: bytes}`` for
+    every region ld reports as overflowed when that is why it failed; any other failure (or a
+    missing toolchain) is a :class:`BuildError` like :func:`_run_cmd`."""
+    try:
+        r = subprocess.run(argv, cwd=str(repo), env=env, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise BuildError("%s not found - the firmware's toolchain is required" % argv[0],
+                         exit_code=1) from None
+    sys.stdout.write(r.stdout)
+    sys.stderr.write(r.stderr)
+    if r.returncode == 0:
+        return {}
+    over = {m.group(1): int(m.group(2)) for m in _LD_OVERFLOW.finditer(r.stderr)}
+    if not over:
+        raise BuildError("firmware relink failed (%s): exit %d" % (" ".join(argv[:3]), r.returncode),
+                         exit_code=1)
+    return over
 
 
 def _link_command(repo: Path, name: str, build_args: list[str]) -> list[str]:
@@ -927,23 +958,41 @@ def _relink_text2(repo: Path, name: str, build_args: list[str], layout, sdk_home
     # choice below can only be checked against what it was made from.
     map_path.with_name(map_path.stem + "_measure" + map_path.suffix).write_text(map_text, encoding="utf-8")
     sizes = _map_text_objects(map_text)
-    chosen = _pack_text2(sizes, layout.text2_max - TEXT2_MARGIN,
-                         layout.text2_prefer, layout.text2_exclude)
-    moved = sum(sizes[o] for o in chosen)
-    print("%s: second text region plan: %d objects, %d of %d bytes: %s"
-          % (name, len(chosen), moved, layout.text2_max,
-             ", ".join("%s=%d" % (o.rsplit("/", 1)[-1], sizes[o]) for o in chosen)))
-    patched = lds_path.with_name(lds_path.stem + "_text2" + lds_path.suffix)
-    patched.write_text(_patch_linker_script(lds_path.read_text(encoding="utf-8"),
-                                            layout.text2_dest, layout.text2_max, chosen,
-                                            main_length=layout.firmware_max),
-                       encoding="utf-8")
     env = None
     gcc = Path(sdk_home) / "gcc" / "bin"
     if gcc.is_dir():                                    # the Makefile put the SDK on its own PATH
         env = dict(os.environ, PATH="%s%s%s" % (gcc, os.pathsep, os.environ.get("PATH", "")))
-    relink = [("-Wl,-T%s" % patched) if a.startswith("-Wl,-T") else a for a in cmd]
-    _run_cmd(repo, relink, env)
+    patched = lds_path.with_name(lds_path.stem + "_text2" + lds_path.suffix)
+    script = lds_path.read_text(encoding="utf-8")
+    # The packer leaves TEXT2_MARGIN of the region to alignment it cannot see in the map. When
+    # the main window still overflows by less than that margin, the firmware does fit: pack
+    # again with the margin shrunk by the shortfall (plus a step, since the bytes an object
+    # takes with it come back minus padding) and let the linker judge. Every attempt is a
+    # real link, so the second region can never silently overfill -- ld refuses it.
+    margin = TEXT2_MARGIN
+    for attempt in range(TEXT2_RELINKS):
+        chosen = _pack_text2(sizes, layout.text2_max - margin,
+                             layout.text2_prefer, layout.text2_exclude)
+        moved = sum(sizes[o] for o in chosen)
+        print("%s: second text region plan: %d objects, %d of %d bytes: %s"
+              % (name, len(chosen), moved, layout.text2_max,
+                 ", ".join("%s=%d" % (o.rsplit("/", 1)[-1], sizes[o]) for o in chosen)))
+        patched.write_text(_patch_linker_script(script, layout.text2_dest, layout.text2_max,
+                                                chosen, main_length=layout.firmware_max),
+                           encoding="utf-8")
+        relink = [("-Wl,-T%s" % patched) if a.startswith("-Wl,-T") else a for a in cmd]
+        over = _run_link(repo, relink, env)
+        if not over:
+            break
+        short = over.get("FLASH_TEXT", 0)
+        if set(over) != {"FLASH_TEXT"} or short + TEXT2_STEP >= margin or attempt == TEXT2_RELINKS - 1:
+            raise BuildError("%s: the firmware does not fit its window even with the second text "
+                             "region (%s); drop something from the board's build"
+                             % (name, ", ".join("%s over by %d bytes" % kv for kv in sorted(over.items()))),
+                             exit_code=1)
+        margin -= short + TEXT2_STEP
+        print("%s: FLASH_TEXT short by %d bytes -- repacking the second region with %d bytes of slack"
+              % (name, short, margin))
     objcopy = re.sub(r"gcc$", "objcopy", cmd[0])
     _run_cmd(repo, [objcopy, "-Obinary", "--remove-section=%s" % TEXT2_SECTION, str(elf),
                     str(elf.with_name("firmware.bin"))], env)

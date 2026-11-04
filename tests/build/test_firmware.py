@@ -184,6 +184,25 @@ def test_build_firmware_collects_bootloader(make_project, monkeypatch):
     assert "OPENMV_N6-firmware_pad.toc" in names
 
 
+def test_wrapper_dir_is_a_fixed_path_in_the_build_tree_left_for_the_next_build(make_project, monkeypatch):
+    """The objects' dependency files name the wrapper's board headers: a fresh temp dir per
+    build left the second `--incremental` build on "No rule to make target"."""
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    monkeypatch.setattr(fw, "_relink_text2", lambda *a: None)
+    root, repo, _app = make_project(ota=True)
+    (repo / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text("build/\n")
+    r = fw.build_firmware(root, firmware=repo)[0]
+    wrapper = repo / "build" / ("openmv-ota-" + r.board)
+    assert r.build_dir is None and (wrapper / "manifest.py").exists()        # kept without the flag
+    (wrapper / "stale").write_text("from last time")
+    r = fw.build_firmware(root, firmware=repo, incremental=True, keep_build_dir=True)[0]
+    assert r.build_dir == wrapper and (wrapper / "manifest.py").exists()
+    assert not (wrapper / "stale").exists()                                   # rewritten, same path
+    assert all("FROZEN_MANIFEST=%s" % (wrapper / "manifest.py").as_posix() in c for c in fake.calls[1:])
+
+
 def test_build_firmware_incremental_skips_clean(make_project, monkeypatch):
     fake = _fake_make(["bin/firmware.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)
@@ -427,7 +446,7 @@ def test_ota_config_carries_no_signing_keys(make_project, monkeypatch):
         assert bytes.fromhex(k.pubkey) not in ns["ROOT_KEYS"].values()
 
 
-def test_build_firmware_ota_cleans_wrapper(make_project, monkeypatch):
+def test_build_firmware_ota_wrapper_lives_under_the_firmware_build_dir(make_project, monkeypatch):
     captured = {}
     real_writer = fw._write_wrapper_manifest
 
@@ -439,8 +458,9 @@ def test_build_firmware_ota_cleans_wrapper(make_project, monkeypatch):
     monkeypatch.setattr(fw, "_write_wrapper_manifest", spy)
     monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
     root, repo, _app = make_project(ota=True)
-    fw.build_firmware(root, firmware=repo)  # no keep -> wrapper dir removed
-    assert not captured["dir"].exists()
+    fw.build_firmware(root, firmware=repo)
+    assert captured["dir"].parent == repo / "build"          # in the tree make's .d files point at
+    assert captured["dir"].exists()                          # and still there for --incremental
 
 
 def test_install_verify_module_drops_and_is_idempotent(tmp_path):
@@ -835,7 +855,7 @@ def test_h7_ota_build_overlays_the_board_dir_with_the_drops_off(make_project, mo
                    for line in seen["cfg"].splitlines())
     assert "board_config.mk" in seen["files"]              # the whole board dir, not one file
     assert src_cfg.read_text() == before                   # firmware source untouched
-    assert not Path(seen["overlay"]).exists()              # gone with the wrapper dir
+    assert Path(seen["overlay"]).parent.parent == repo / "build"   # the wrapper dir, in the build tree
 
 
 def test_a_board_that_drops_nothing_builds_from_its_own_board_dir(make_project, monkeypatch):
@@ -1107,6 +1127,7 @@ def test_relink_text2_relinks_with_the_patched_script_and_splits_the_image(tmp_p
             "a.o b.o -o %s -lm" % (bdir / "stm.lds", bdir / "firmware.map", bdir / "bin" / "firmware.elf"))
     monkeypatch.setattr(fw, "_make_output", lambda repo_, args: "GEN linker script\npython3 gen.py\n%s\nobjcopy ...\n" % link)
     ran = []
+    monkeypatch.setattr(fw, "_run_link", lambda repo_, argv, env: ran.append((argv, env)) and {})
     monkeypatch.setattr(fw, "_run_cmd", lambda repo_, argv, env: ran.append((argv, env)))
     sdk = tmp_path / "sdk"
     (sdk / "gcc" / "bin").mkdir(parents=True)
@@ -1126,6 +1147,78 @@ def test_relink_text2_relinks_with_the_patched_script_and_splits_the_image(tmp_p
                             str(bdir / "bin" / "firmware_text2.bin")]
     out = capsys.readouterr().out
     assert "OPENMV4P: second text region at 0x08020000 holds 5 objects" in out and "zbar.o" in out
+
+
+def _relink_fixture(tmp_path, monkeypatch, link_results):
+    """A fake OPENMV4P build whose relinks answer ``link_results`` in turn; returns
+    (repo, layout, links) where ``links`` collects every patched script's object list."""
+    repo = tmp_path / "fw"
+    bdir = repo / "build" / "OPENMV4P"
+    (bdir / "bin").mkdir(parents=True, exist_ok=True)
+    (bdir / "stm.lds").write_text(LDS)
+    (bdir / "firmware.map").write_text(MAP)
+    link = ("arm-none-eabi-gcc -Wl,-T%s -Wl,-Map=%s a.o -o %s"
+            % (bdir / "stm.lds", bdir / "firmware.map", bdir / "bin" / "firmware.elf"))
+    monkeypatch.setattr(fw, "_make_output", lambda repo_, args: link + "\n")
+    monkeypatch.setattr(fw, "_run_cmd", lambda repo_, argv, env: None)
+    results = list(link_results)
+    links = []
+
+    def run_link(repo_, argv, env):
+        links.append((bdir / "stm_text2.lds").read_text().count("/b/x.o("))
+        return results.pop(0)
+    monkeypatch.setattr(fw, "_run_link", run_link)
+    from openmv_ota.romfs.boards import StubLayout
+    return repo, StubLayout(0x08040000, 0x08060000, 0x19F000, 0x08020000, 0x20000), links
+
+
+def test_relink_text2_repacks_with_less_slack_when_the_main_window_is_short(tmp_path, monkeypatch, capsys):
+    """The 36-byte case: the packer's 2 KiB alignment margin is the only room left, so a
+    main window short by less than that margin gets a second plan with the margin shrunk by
+    the shortfall, and the linker decides."""
+    repo, layout, links = _relink_fixture(tmp_path, monkeypatch, [{"FLASH_TEXT": 36}, {}])
+    monkeypatch.setattr(fw, "_pack_text2",
+                        lambda sizes, budget, prefer=(), exclude=(): ["/b/x.o"] * (budget - 129000))
+    monkeypatch.setattr(fw, "_map_text_objects", lambda text: {"/b/x.o": 1})
+    fw._relink_text2(repo, "OPENMV4P", ["TARGET=OPENMV4P"], layout, tmp_path)
+    assert links == [24, 124]                # 129024 - 129000, then (129024 + 36 + 64) - 129000
+    out = capsys.readouterr().out
+    assert ("FLASH_TEXT short by 36 bytes -- repacking the second region with %d bytes of slack"
+            % (fw.TEXT2_MARGIN - 36 - fw.TEXT2_STEP)) in out
+    assert out.count("second text region plan") == 2 and "holds" in out
+
+
+def test_relink_text2_gives_up_when_the_firmware_truly_does_not_fit(tmp_path, monkeypatch):
+    # The second region itself overflowed: shrinking the margin cannot help.
+    repo, layout, _ = _relink_fixture(tmp_path, monkeypatch, [{"FLASH_TEXT": 10, "FLASH_TEXT2": 4}])
+    with pytest.raises(BuildError, match="does not fit its window even with the second text region "
+                                         r"\(FLASH_TEXT over by 10 bytes, FLASH_TEXT2 over by 4 bytes\)"):
+        fw._relink_text2(repo, "OPENMV4P", ["TARGET=OPENMV4P"], layout, tmp_path)
+    # Short by the whole margin (less the step) or more: nothing left to give.
+    repo, layout, _ = _relink_fixture(tmp_path, monkeypatch, [{"FLASH_TEXT": fw.TEXT2_MARGIN - fw.TEXT2_STEP}])
+    with pytest.raises(BuildError, match="FLASH_TEXT over by %d bytes" % (fw.TEXT2_MARGIN - fw.TEXT2_STEP)):
+        fw._relink_text2(repo, "OPENMV4P", ["TARGET=OPENMV4P"], layout, tmp_path)
+    # Still short after every allowed relink.
+    repo, layout, links = _relink_fixture(tmp_path, monkeypatch, [{"FLASH_TEXT": 8}] * fw.TEXT2_RELINKS)
+    with pytest.raises(BuildError, match="FLASH_TEXT over by 8 bytes"):
+        fw._relink_text2(repo, "OPENMV4P", ["TARGET=OPENMV4P"], layout, tmp_path)
+    assert len(links) == fw.TEXT2_RELINKS
+
+
+def test_run_link_reports_overflowed_regions_and_other_failures(tmp_path, capsys):
+    ld = tmp_path / "ld.sh"
+    ld.write_text("#!/bin/sh\necho linking\n"
+                  "echo \"ld: region \\`FLASH_TEXT' overflowed by 36 bytes\" >&2\n"
+                  "echo \"ld: region \\`FLASH_TEXT2' overflowed by 4 bytes\" >&2\nexit 1\n")
+    ld.chmod(0o755)
+    assert fw._run_link(tmp_path, [str(ld)], None) == {"FLASH_TEXT": 36, "FLASH_TEXT2": 4}
+    out, err = capsys.readouterr()
+    assert out == "linking\n" and "overflowed by 36 bytes" in err         # the link's output is echoed
+    assert fw._run_link(tmp_path, ["true"], None) == {}
+    with pytest.raises(BuildError, match="firmware relink failed"):
+        fw._run_link(tmp_path, ["false"], None)                          # a failure that is not a fit
+    with pytest.raises(BuildError, match="not found - the firmware's toolchain is required"):
+        fw._run_link(tmp_path, [str(tmp_path / "nope")], None)
 
 
 def test_relink_text2_refuses_a_build_it_does_not_recognise(tmp_path, monkeypatch):

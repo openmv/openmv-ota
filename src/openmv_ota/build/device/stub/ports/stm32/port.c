@@ -115,6 +115,17 @@ int port_init(void) {
     if (SCB->CCR & SCB_CCR_DC_Msk) {
         SCB_CleanInvalidateDCache();
     }
+    // Invalidate the data cache ourselves, before anything else runs with it off. CMSIS's
+    // SCB_EnableDCache invalidates too, but on the H7 Plus that was not enough: one boot in
+    // three -- after a debug-core reset of the running firmware, or the boot that installs --
+    // the jump's final clean wrote a line back to an address nothing in the stub ever wrote
+    // (ABFSR: AXIM slave error, no address; SDRAM range once), an IMPRECISERR the stub skips.
+    // With this invalidate first: 0 faults in 19 boots (5 installs) against 6 of 8 installs
+    // before. The cache RAM keeps whatever it held, and a line that is wrongly valid and dirty
+    // is a write to a random address the first time anything cleans.
+    SCB_InvalidateDCache();
+    __DSB();
+    __ISB();
 
     SystemCoreClockUpdate();
     HAL_Init();
@@ -302,6 +313,9 @@ int port_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size) {
 #define AXI_FLASH_SIZE          (0x200000U)
 
 static volatile uint32_t flash_faults = 0;
+static volatile uint32_t fault_cfsr = 0;        // the last fault's CFSR / BFAR, for the jump-step log:
+static volatile uint32_t fault_bfar = 0;        //   BFARVALID set = a precise fault with an address
+static volatile uint32_t fault_abfsr = 0;       // M7 auxiliary BFSR: which bus (ITCM/DTCM/AHBP/AXIM/EPPB) and type
 static volatile bool flash_reading = false;     // inside port_flash_read's copy: a fault is a torn word
 static volatile bool jumping = false;           // in port_jump: everything is verified, a stray fault
                                                 //   must not stop the boot (seen on the H7 Plus)
@@ -341,6 +355,10 @@ void stub_fault_skip(uint32_t *frame) {
     uint32_t pc = frame[6];
     uint16_t op = *(const uint16_t *) pc;
     frame[6] = pc + (((op & 0xF800U) >= 0xE800U) ? 4 : 2);
+    fault_cfsr = SCB->CFSR;
+    fault_bfar = SCB->BFAR;
+    fault_abfsr = SCB->ABFSR;
+    SCB->ABFSR = SCB->ABFSR;
     SCB->CFSR = SCB->CFSR;
     SCB->HFSR = SCB->HFSR;
     flash_faults++;
@@ -647,9 +665,17 @@ static void jump_step(uint32_t step) {
     static uint32_t seen = 0;
     __DSB();
     __ISB();
+    for (int i = 0; i < 16; i++) {          // an error the DSB just surfaced is taken as an
+        __NOP();                            // exception here, not after the compare below
+    }
+    __DSB();
+    __ISB();
     if (flash_faults != seen) {
         seen = flash_faults;
         log_kv("stray fault at jump step", step);
+        log_kv("stray fault cfsr", fault_cfsr);     // IMPRECISERR 0x400 = a buffered write's error;
+        log_kv("stray fault bfar", fault_bfar);     //   PRECISERR 0x200 + BFARVALID 0x8000 = this address
+        log_kv("stray fault abfsr", fault_abfsr);   //   bit0 ITCM, 1 DTCM, 2 AHBP, 3 AXIM, 4 EPPB; [9:8] AXIM type
     }
 }
 #else
@@ -687,13 +713,14 @@ void port_jump(uint32_t addr) {
     NVIC_DisableIRQ(SysTick_IRQn);
     NVIC_ClearPendingIRQ(SysTick_IRQn);
     SysTick->CTRL &= ~SysTick_CTRL_ENABLE_Msk;
+    jump_step(4);
 
     port_led(false);
-    jump_step(4);
+    jump_step(5);
 
     // As the bootloader leaves things: caches off, the memory map live.
     SCB_CleanDCache();
-    jump_step(5);
+    jump_step(6);
     SCB_DisableDCache();
     SCB_DisableICache();
     __DSB();

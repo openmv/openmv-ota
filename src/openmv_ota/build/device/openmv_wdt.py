@@ -40,7 +40,7 @@ Only as a LAST RESORT, for a single op you truly can't subdivide, wrap it::
     with openmv_wdt.relax():
         do_unsplittable_thing()
 
-``relax()`` runs a ``machine.Timer`` whose ISR feeds the watchdog on a timer -- but that feeds
+``relax()`` lets the module's ``machine.Timer`` ISR feed the watchdog on a timer -- but that feeds
 **regardless of whether your code is making progress**, so for its duration the watchdog is
 effectively DISABLED (it can only catch a total CPU/interrupt death, not a stuck loop). Keep its
 use rare and its scope minimal; prefer subdividing + progress-based feeding instead.
@@ -53,7 +53,10 @@ now measured on two boards.
 On every OpenMV port ``machine.Timer`` is the virtual/soft timer (id ``-1`` -- the only
 id it accepts), and ``hard=True`` runs its callback in the SysTick/PendSV interrupt
 handler, so it can fire while the CPU is busy in a long C call -- **but only while
-interrupts are enabled**.
+interrupts are enabled**. The module makes that timer ONCE, in ``start()`` before the
+watchdog is armed, and never tears it down: entering ``relax()`` then allocates nothing, so
+no automatic garbage collection can land in the unfed gap between two regions (which is how
+the H7 Plus bit its 100 ms WWDG right after a TLS handshake).
 
 **It CANNOT feed through a flash erase or program.** This file used to claim the opposite,
 and that single wrong sentence cost a long hunt. On mimxrt, ``ports/mimxrt/flash.c`` wraps
@@ -175,11 +178,12 @@ except ImportError:
 
 _wdt = None
 _feed = None           # pre-bound _wdt.feed, so the hard-IRQ callback allocates nothing
-_timer = None
+_ticker = None         # THE one hard-IRQ soft timer: made once (start() / the first stall_guard),
+#                        never torn down. Its ISR feeds while a relax() region has budget and polices
+#                        a stall_guard() while one is armed; otherwise it ticks and does nothing.
 _depth = 0             # relax() nesting depth; the ISR feed stops only when it returns to 0
 _budget = 0            # ISR feeds REMAINING (ticks). Counts down in _tick; at 0 the feeding stops
 #                        and the watchdog is allowed to bite. See RELAX_MAX_MS.
-_stall_timer = None    # stall_guard()'s hard-IRQ timer
 _stall_budget = 0      # ticks of NO PROGRESS remaining before stall_guard() resets the board
 _stall_reload = 0      # what feed() reloads _stall_budget to (0 = no guard armed)
 _stall_depth = 0       # stall_guard() nesting depth; the guard is torn down only at 0
@@ -198,65 +202,80 @@ def feed():
 
 
 def _tick(t):  # pragma: no cover (device)  # hil-residual-fn: watchdog-enabled ISR callback; only wired when a watchdog is started (ENABLED=True, opt-in) -- now exercised on HW by the watchdog HIL scenario (a passing run proves the armed path ran), but marker-less (no log line), so it stays a residual
-    # Feed only while the region still has budget. Small-int arithmetic on a module global:
+    # The ISR behind both relax() and stall_guard(). Small-int arithmetic on module globals:
     # no allocation, so this stays legal in a hard-IRQ callback (which runs under gc_lock).
-    global _budget
+    global _budget, _stall_budget
+    # relax(): feed only while the region still has budget.
     if _budget > 0:
         _budget -= 1
         _feed()   # pre-bound method -- no attribute lookup, safe in a hard-IRQ callback
     # else: BUDGET SPENT -- stop feeding on purpose and let the watchdog bite. A region that has
     # run this long is not slow, it is stuck; a reset is the only way back (see RELAX_MAX_MS).
+    # stall_guard(): count the ticks of no progress, reset at zero. _stall_reload == 0 means no
+    # guard is armed, and then the budget is never ticked (belt-and-braces against a guard that
+    # exited with its budget at 0 reading as a stall).
+    if _stall_reload:
+        if _stall_budget > 0:
+            _stall_budget -= 1
+        else:
+            _reset()   # pre-bound machine.reset -- the ONLY exit from a C call that never returns
+
+
+def _ticker_start():  # pragma: no cover (device)  # hil-residual-fn: allocates the one soft timer; device-only (the host has no machine.Timer)
+    """Make the module's one soft timer, if it does not exist yet. ALLOCATES (the Timer object):
+    so it is called from start() BEFORE the watchdog is armed, and from the first stall_guard() --
+    never from inside a relax() region. relax() used to make a Timer on every entry and tear it down
+    on exit, which put an allocation (and the automatic collect it can trigger, 65-100 ms on an H7,
+    more on a big SDRAM heap) inside the one unfed gap between two regions. Measured on the H7 Plus
+    `watchdog` leg: the WWDG bit right after `install: TLS up` -- the handshake's relax() had just
+    torn its timer down, and _collect_fed()'s relax() had to allocate a new one on a heap full of
+    handshake garbage. One timer for the module's life costs a 50 Hz no-op ISR and nothing else."""
+    global _ticker, _reset
+    if _ticker is None:
+        _reset = _machine.reset   # pre-bound so the ISR allocates nothing
+        _ticker = _machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_tick)
 
 
 class _Relax:
-    """Context manager that feeds the watchdog from a hardware-timer ISR for the duration
+    """Context manager that feeds the watchdog from the module's timer ISR for the duration
     of a long blocking op, then stops -- so the watchdog goes back to needing the main
-    loop afterward. A no-op when the watchdog is off."""
+    loop afterward. A no-op when the watchdog is off. ALLOCATES NOTHING on entry or exit: the
+    timer already exists (start() made it before arming), and the budget is a small int."""
 
     def __init__(self, max_ms=None):
         self._ticks = int((RELAX_MAX_MS if max_ms is None else max_ms) * FEED_HZ / 1000)
 
     def __enter__(self):
-        global _timer, _depth, _budget
+        global _depth, _budget
         _depth += 1
         # Nesting keeps the LONGER budget: an inner region must not shorten the outer one's
         # allowance and reset a board that was still legitimately working.
         if self._ticks > _budget:
             _budget = self._ticks
-        if _wdt is not None and _timer is None:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (ENABLED=False on the bench -> body skipped)
-            # FEED FIRST. Setting the ISR feed up is itself unfed: `import machine` and the Timer
-            # allocation below both allocate, and an allocation can trigger a collect -- measured
-            # at 221 ms on an RT1060 with the heap exhausted, ~44% of that port's 500 ms window.
-            # Until the timer exists nothing else is feeding either: relax() is used from
-            # SYNCHRONOUS code, so the app's own feed loop is not running. Entering on a partial
-            # window is how the RT1060 died here -- its `erase relax armed` witness never printed
-            # while the step normally takes 7 ms.
-            # ...and feed BETWEEN the two, because there are TWO allocating steps here, not one.
-            # The import can trigger a collect and so can the Timer construction; a collect is
-            # measured at up to 243 ms on an RT1060 with a full heap, so two of them back to back
-            # is ~486 ms against a 500 ms window -- which is why feeding only once at the top was
-            # not enough. The RT1060 kept dying right here (`erase loop entered` printed,
-            # `erase relax armed` never did, reset_cause=3), just far less often than before.
-            _wdt.feed()  # hil-residual: watchdog-enabled pre-setup feed (opt-in; marker-less)
-            _timer = _machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_tick)  # hil-residual: watchdog-enabled ISR-feed timer (opt-in); machine is imported at module load, so this no longer allocates an import here
+        if _wdt is not None:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (ENABLED=False on the bench -> body skipped)
+            # Feed on the way in, so the region starts on a full window; the ISR takes it from
+            # here. If the ticker is somehow missing (start() always makes it), make it now --
+            # after the feed, because that allocation is the one thing here that can collect.
+            _wdt.feed()  # hil-residual: watchdog-enabled entry feed (opt-in; marker-less)
+            if _ticker is None:  # hil-residual: defensive; start() makes the ticker before arming
+                _ticker_start()  # hil-residual: see above
         return self
 
     def __exit__(self, *args):
-        global _timer, _depth, _budget
-        # COUNT THE NESTING. __enter__ starts the timer only when there isn't one, but this used to
-        # stop it unconditionally -- so an INNER relax() exiting would kill the OUTER region's feed
-        # and leave it running unfed to its end, silently. Nothing nests today; this is the same
-        # class of defect as feeding after the op instead of before, and it costs one integer.
+        global _depth, _budget
+        # COUNT THE NESTING. An INNER relax() exiting must not end the OUTER region's feed and
+        # leave it running unfed to its end, silently. Nothing nests today; it costs one integer.
         _depth -= 1
         if _depth < 0:                       # unbalanced use: never leave it wedged below zero
             _depth = 0
         if _depth == 0:
-            _budget = 0                      # region over -- the ISR must not outlive it
-        if _timer is not None and _depth == 0:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (no timer started on the bench -> body skipped)
-            _timer.deinit()  # hil-residual: watchdog-enabled timer teardown (opt-in)
-            _timer = None  # hil-residual: watchdog-enabled timer clear (opt-in)
-            _wdt.feed()  # hil-residual: watchdog-enabled final feed (opt-in)
+            _budget = 0                      # region over -- the ISR must not feed past it
+            if _wdt is not None:  # pragma: no cover (device)  # hil-residual: watchdog-off guard (ENABLED=False on the bench -> body skipped)
+                _wdt.feed()  # hil-residual: the caller gets a full window to resume its own feeding
         return False
+
+
+_relaxers = {}         # max_ms -> _Relax, so relax() does not allocate a context object per call
 
 
 def relax(max_ms=None):
@@ -270,22 +289,10 @@ def relax(max_ms=None):
     and the watchdog is allowed to do its job. Pass a smaller ``max_ms`` for a region
     you know is short; keep it comfortably above the op's real worst case, because
     overrunning the budget resets the board."""
-    return _Relax(max_ms)
-
-
-def _stall_tick(t):  # pragma: no cover (device)  # hil-residual-fn: stall_guard ISR; fires only while a guard is armed (install path), and its only observable effect is the reset it triggers
-    # NO PROGRESS accounting. feed() reloads the budget from the main thread; this drains it.
-    # Small-int arithmetic on a module global -- no allocation, legal in a hard-IRQ callback.
-    global _stall_budget
-    if not _stall_reload:
-        return     # NO GUARD ARMED. Belt-and-braces: if this timer ever outlived its region (a
-        #            deinit that did not take), an unarmed budget of 0 would otherwise read as
-        #            "stalled" and reset a perfectly healthy board, forever. Refuse to act unless
-        #            a region actually armed us.
-    if _stall_budget > 0:
-        _stall_budget -= 1
-    else:
-        _reset()   # pre-bound machine.reset -- the ONLY exit from a C call that never returns
+    r = _relaxers.get(max_ms)
+    if r is None:                        # first use of this budget: the one allocation it ever costs
+        r = _relaxers[max_ms] = _Relax(max_ms)
+    return r
 
 
 class _StallGuard:
@@ -295,7 +302,7 @@ class _StallGuard:
         self._ticks = int(timeout_ms * FEED_HZ / 1000)
 
     def __enter__(self):
-        global _stall_timer, _stall_budget, _stall_reload, _reset, _stall_depth
+        global _stall_budget, _stall_reload, _stall_depth
         # COUNT THE NESTING, for the same reason relax() has to: an inner region exiting must not
         # tear down the outer one's guard and leave the rest of it unpoliced. run() guards the
         # check-in and install() guards itself, so these DO nest the moment an install is offered.
@@ -303,24 +310,18 @@ class _StallGuard:
         if self._ticks > _stall_budget:
             _stall_budget = self._ticks       # nesting keeps the LONGER allowance
             _stall_reload = self._ticks
-        if _stall_timer is None:  # pragma: no cover (device)  # hil-residual: device-only arm (host has no machine.Timer)
-            _reset = _machine.reset  # hil-residual: pre-bound so the ISR allocates nothing
-            _stall_reload = self._ticks  # hil-residual: what feed() reloads to
-            _stall_budget = self._ticks  # hil-residual: start with a full allowance
-            _stall_timer = _machine.Timer(TIMER_ID, freq=FEED_HZ, hard=True, callback=_stall_tick)  # hil-residual: hard IRQ so it fires while the main thread is parked in C
+        if _ticker is None:  # pragma: no cover (device)  # hil-residual: device-only arm (host has no machine.Timer)
+            _ticker_start()  # hil-residual: a guard without a watchdog is the one caller that may have to make the timer
         return self
 
     def __exit__(self, *args):
-        global _stall_timer, _stall_reload, _stall_budget, _stall_depth
+        global _stall_reload, _stall_budget, _stall_depth
         _stall_depth -= 1
         if _stall_depth < 0:                  # unbalanced use: never wedge below zero
             _stall_depth = 0
         if _stall_depth:                      # an OUTER region is still running -- keep policing it
             return False
-        if _stall_timer is not None:  # pragma: no cover (device)  # hil-residual: device-only teardown
-            _stall_timer.deinit()  # hil-residual: the guard must not outlive its region
-            _stall_timer = None  # hil-residual: bare clear
-        _stall_reload = 0
+        _stall_reload = 0                     # disarmed: the ISR keeps ticking but never resets
         _stall_budget = 0
         return False
 
@@ -380,6 +381,7 @@ def _start(timeout_ms=None):  # pragma: no cover (device)  # hil-residual-fn: st
         timeout_ms = TIMEOUT_MS
     if _wdt is None:
         machine = _machine
+        _ticker_start()      # the feed ISR exists BEFORE anything is armed: no relax() ever allocates
         if WDT_ID is not None:                        # explicit override
             if WDT_ID in (0, "IWDG"):                 # ...which must not smuggle in the IWDG on stm32
                 _reject_stm32_iwdg(WDT_ID, "WDT_ID=%r" % (WDT_ID,))

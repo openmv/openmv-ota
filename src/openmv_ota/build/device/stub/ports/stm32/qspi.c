@@ -54,9 +54,39 @@ static bool inited = false;
 // stub is, whatever a reset left of the PLLs.
 static uint32_t inherited_qspisel;
 
+// The controller as the previous owner (the bootloader, or the firmware across a core reset)
+// handed it over, read before this driver's first peripheral reset: whether its clock was on
+// and, if so, CR / SR / CCR / AR / DLR / DCR. Logged every boot in three lines, so a boot that
+// wedges can be set beside the boots that did not.
+static bool inherited_clk;
+static uint32_t inherited_cr, inherited_sr, inherited_ccr, inherited_ar, inherited_dlr;
+static uint32_t inherited_dcr;
+
+static void snapshot_inherited(void) {
+    inherited_clk = (RCC->AHB3ENR & RCC_AHB3ENR_QSPIEN) != 0;
+    if (!inherited_clk) {
+        log_line("qspi inherited clk off");
+        return;
+    }
+    inherited_cr = QUADSPI->CR;
+    inherited_sr = QUADSPI->SR;
+    inherited_ccr = QUADSPI->CCR;
+    inherited_ar = QUADSPI->AR;
+    inherited_dlr = QUADSPI->DLR;
+    inherited_dcr = QUADSPI->DCR;
+    log_kv("qspi inherited cr", inherited_cr);
+    log_kv("qspi inherited sr", inherited_sr);
+    log_kv("qspi inherited ccr", inherited_ccr);
+}
+
 // Everything a failed reset should say about the clock tree and the controller, once.
 static void dump_state(void) {
     log_kv("qspi sel inherited", inherited_qspisel);
+    log_kv("qspi inherited ar", inherited_ar);
+    log_kv("qspi inherited dlr", inherited_dlr);
+    log_kv("qspi inherited dcr", inherited_dcr);
+    log_kv("flash optsr", FLASH->OPTSR_CUR);
+    log_kv("rcc ahb3rstr", RCC->AHB3RSTR);
     log_kv("rcc cr", RCC->CR);
     log_kv("rcc cfgr", RCC->CFGR);
     log_kv("rcc d1cfgr", RCC->D1CFGR);
@@ -187,13 +217,21 @@ static uint32_t read_id(void) {
 // The part is whatever the previous owner left it: the firmware's driver (1-line commands,
 // continuous read off) or the Arduino DFU bootloader's, which may have switched it to QPI,
 // where it ignores 1-line instructions altogether. A reset is the one thing a QPI part still
-// obeys, so send the pair on 4 lines first (a no-op to a part in SPI mode, which sees nothing
-// it recognises) and then on 1 line, and only then ask the part for its status.
+// obeys, so the pair goes out on 1 line and then on 4, and only then is the part asked for
+// its status.
+//
+// 1 line FIRST. With the 4-line pair first, the Portenta's controller stuck on that very
+// first instruction after a debug-core reset of the running firmware -- BUSY set and the
+// transfer never complete, every retry the same, no status or id to be had -- on one boot in
+// ten (2 of 20 on the bench, the fleet's "qspi reset timeout" legs), with the inherited
+// controller state identical to a clean boot's. The 1-line pair first: 0 of 60 such resets.
+// Why the controller minds which instruction comes first is not known; the order is what is
+// measured, and the 4-line pair still follows for a part left in QPI.
 //
 // Returns 0, or the step that failed: 1-4 the four reset instructions (the controller never
 // finished sending one), 5 the status poll (the part never reported idle, or never answered).
 static int chip_reset(void) {
-    static const uint32_t modes[] = { QSPI_INSTRUCTION_4_LINES, QSPI_INSTRUCTION_1_LINE };
+    static const uint32_t modes[] = { QSPI_INSTRUCTION_1_LINE, QSPI_INSTRUCTION_4_LINES };
     for (int i = 0; i < (int) (sizeof(modes) / sizeof(modes[0])); i++) {
         QSPI_CommandTypeDef c = command(CMD_RESET_ENABLE);
         c.InstructionMode = modes[i];
@@ -215,6 +253,7 @@ int qspi_flash_init(void) {
         return 0;
     }
     inherited_qspisel = __HAL_RCC_GET_QSPI_SOURCE();
+    snapshot_inherited();
     if (controller_init() != 0) {
         return -1;
     }

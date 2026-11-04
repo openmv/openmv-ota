@@ -268,6 +268,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The STM32H7 stub resets the QSPI part on 1 line before 4.** The fleet's Portenta
+  booted without its slots ("qspi reset timeout") on about one debug-core reset in ten:
+  the controller stuck on the stub's very first instruction, the reset-enable sent on 4
+  lines, with the state the bootloader hands over identical to a clean boot's. The
+  1-line pair now goes first, the 4-line pair (for a part left in QPI) after it: 0 of 60
+  such resets on the bench against 2 of 20 before. The stub also logs the inherited
+  controller registers on every boot and the fault registers behind the jump's stray fault.
+- **The STM32H7 stub invalidates the data cache itself before enabling it.** The OpenMV Cam
+  H7 Plus logged a stray bus fault at the jump on one boot in three -- after a debug-core
+  reset of the running firmware, or on the boot that installs: a buffered write to an
+  address nothing in the stub writes, refused by the slave (the M7's ABFSR is now in the
+  log). An explicit invalidate before CMSIS's enable, which also invalidates and was not
+  enough, ends it: 0 faults in 23 bench boots against 6 of 8 install boots before.
+- `build firmware --incremental` works across invocations. The wrapper directory (frozen
+  manifest, board overlay, mbedtls config) was a fresh temp dir each build, so the objects'
+  dependency files named headers that no longer existed and the second build stopped on
+  "No rule to make target". It is now `build/openmv-ota-<board>/` in the firmware tree,
+  rewritten every build and left in place; `--keep-build-dir` reports its path.
+- `build firmware` on the STM32H7 boards no longer fails the relink when the main window
+  is short by less than the second text region's alignment margin: it repacks the region
+  with the margin shrunk by the shortfall and links again (up to four attempts, the
+  linker deciding), and names the regions and bytes when the firmware truly does not fit.
 - **A camera with an armed watchdog reset right after an install's TLS handshake.** The
   OPENMV4P `watchdog` leg, three runs in a row: `install: TLS up`, then a boot from the watchdog
   before `install: fetched body`. The handshake fills the heap with mbedtls temporaries, and the
@@ -372,6 +394,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Each build now records a digest of those inputs under `build/<TARGET>/`; a differing digest
   forces the clean, a matching one (or none, from a tree built before the stamp) keeps the
   flag's word. `-j` is not an input.
+- **A relaxed watchdog region no longer allocates on entry.** `openmv_wdt` makes its one
+  hard soft-timer when the watchdog is armed (`start()`, or the first `stall_guard()`) and keeps
+  it for the life of the app; `relax()` and `stall_guard()` only adjust the ISR's budget on the
+  way in and out. The old design made a `machine.Timer` on every `relax()` entry and tore it
+  down on exit, which put an allocation -- and the automatic garbage collection it can trigger,
+  65-100 ms on an H7 -- in the one gap nothing was feeding: between the TLS handshake's region
+  and the collect that follows it. That is where the OpenMV Cam H7 Plus bit its 100 ms WWDG
+  right after `install: TLS up` on the `watchdog` leg. The installer also logs
+  `install: collected`, `install: request sent` and `install: status line` at DEBUG, so the next
+  such bite says which step it landed in.
+- **The STM32H7 stub reports the QUADSPI state it inherits.** Three lines per boot
+  (`qspi inherited cr|sr|ccr`, before its first peripheral reset) plus the address, length and
+  device registers, the flash option bytes and the AHB3 reset register in the failure dump, for
+  the Portenta/Giga controller wedge at a debug-core reset. The stray-fault line at the jump
+  (every H7 Plus boot, step 5) now names the fault status and address registers too.
 
 ## [1.0.7] - 2026-10-07
 
