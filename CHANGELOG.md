@@ -268,6 +268,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The STM32H7 stub invalidates the data cache itself before enabling it.** The OpenMV Cam
+  H7 Plus logged a stray bus fault at the jump on one boot in three -- after a debug-core
+  reset of the running firmware, or on the boot that installs: a buffered write to an
+  address nothing in the stub writes, refused by the slave (the M7's ABFSR is now in the
+  log). An explicit invalidate before CMSIS's enable, which also invalidates and was not
+  enough, ends it: 0 faults in 23 bench boots against 6 of 8 install boots before.
 - `build firmware --incremental` works across invocations. The wrapper directory (frozen
   manifest, board overlay, mbedtls config) was a fresh temp dir each build, so the objects'
   dependency files named headers that no longer existed and the second build stopped on
