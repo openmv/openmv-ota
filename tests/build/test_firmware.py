@@ -184,6 +184,25 @@ def test_build_firmware_collects_bootloader(make_project, monkeypatch):
     assert "OPENMV_N6-firmware_pad.toc" in names
 
 
+def test_wrapper_dir_is_a_fixed_path_in_the_build_tree_left_for_the_next_build(make_project, monkeypatch):
+    """The objects' dependency files name the wrapper's board headers: a fresh temp dir per
+    build left the second `--incremental` build on "No rule to make target"."""
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    monkeypatch.setattr(fw, "_relink_text2", lambda *a: None)
+    root, repo, _app = make_project(ota=True)
+    (repo / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text("build/\n")
+    r = fw.build_firmware(root, firmware=repo)[0]
+    wrapper = repo / "build" / ("openmv-ota-" + r.board)
+    assert r.build_dir is None and (wrapper / "manifest.py").exists()        # kept without the flag
+    (wrapper / "stale").write_text("from last time")
+    r = fw.build_firmware(root, firmware=repo, incremental=True, keep_build_dir=True)[0]
+    assert r.build_dir == wrapper and (wrapper / "manifest.py").exists()
+    assert not (wrapper / "stale").exists()                                   # rewritten, same path
+    assert all("FROZEN_MANIFEST=%s" % (wrapper / "manifest.py").as_posix() in c for c in fake.calls[1:])
+
+
 def test_build_firmware_incremental_skips_clean(make_project, monkeypatch):
     fake = _fake_make(["bin/firmware.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)
@@ -427,7 +446,7 @@ def test_ota_config_carries_no_signing_keys(make_project, monkeypatch):
         assert bytes.fromhex(k.pubkey) not in ns["ROOT_KEYS"].values()
 
 
-def test_build_firmware_ota_cleans_wrapper(make_project, monkeypatch):
+def test_build_firmware_ota_wrapper_lives_under_the_firmware_build_dir(make_project, monkeypatch):
     captured = {}
     real_writer = fw._write_wrapper_manifest
 
@@ -439,8 +458,9 @@ def test_build_firmware_ota_cleans_wrapper(make_project, monkeypatch):
     monkeypatch.setattr(fw, "_write_wrapper_manifest", spy)
     monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
     root, repo, _app = make_project(ota=True)
-    fw.build_firmware(root, firmware=repo)  # no keep -> wrapper dir removed
-    assert not captured["dir"].exists()
+    fw.build_firmware(root, firmware=repo)
+    assert captured["dir"].parent == repo / "build"          # in the tree make's .d files point at
+    assert captured["dir"].exists()                          # and still there for --incremental
 
 
 def test_install_verify_module_drops_and_is_idempotent(tmp_path):
@@ -835,7 +855,7 @@ def test_h7_ota_build_overlays_the_board_dir_with_the_drops_off(make_project, mo
                    for line in seen["cfg"].splitlines())
     assert "board_config.mk" in seen["files"]              # the whole board dir, not one file
     assert src_cfg.read_text() == before                   # firmware source untouched
-    assert not Path(seen["overlay"]).exists()              # gone with the wrapper dir
+    assert Path(seen["overlay"]).parent.parent == repo / "build"   # the wrapper dir, in the build tree
 
 
 def test_a_board_that_drops_nothing_builds_from_its_own_board_dir(make_project, monkeypatch):

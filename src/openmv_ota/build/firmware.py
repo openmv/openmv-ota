@@ -33,7 +33,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -254,8 +253,6 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
         for mod in (cmod, kmod):                   # restore the firmware tree
             if mod is not None:
                 mod.unlink(missing_ok=True)
-        if tmp is not None and not (ota and keep_build_dir):
-            shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _mbedtls_speed_arg(p, repo: Path, name: str, tmp: Path) -> str | None:
@@ -314,10 +311,17 @@ def _board_port(repo: Path, board: str) -> str | None:
     return m.group(1) if m else None
 def _write_wrapper_manifest(p, repo: Path, name: str,
                             payload_keys: dict[int, bytes]) -> Path:
-    """A temp dir holding the OTA ``boot.py``, its generated ``_ota_config.py``, and
-    a wrapper ``manifest.py`` that includes the board's own manifest and freezes both.
-    Returns the temp dir (the caller removes it)."""
-    tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-fw-"))
+    """A directory holding the OTA ``boot.py``, its generated ``_ota_config.py``, and a
+    wrapper ``manifest.py`` that includes the board's own manifest and freezes both.
+
+    It is ``build/openmv-ota-<board>/`` in the firmware tree, rewritten on every build, and
+    never a fresh temp dir: the objects' dependency files name the board headers in it, so
+    a path that changed between builds is a header make cannot find, and ``--incremental``
+    would stop on "No rule to make target". ``make clean`` removes only ``build/<board>/``,
+    which is what a clean build wants."""
+    tmp = repo / "build" / ("openmv-ota-" + name)
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
     # On a multi-core board only the MAIN core does OTA. The helper core has no mbedtls,
     # never verifies a signature and is never updated on its own (its partition is a plain
     # romfs the main core writes), so freezing boot.py, the installer and the rest into it

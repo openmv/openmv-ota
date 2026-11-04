@@ -268,6 +268,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `build firmware --incremental` works across invocations. The wrapper directory (frozen
+  manifest, board overlay, mbedtls config) was a fresh temp dir each build, so the objects'
+  dependency files named headers that no longer existed and the second build stopped on
+  "No rule to make target". It is now `build/openmv-ota-<board>/` in the firmware tree,
+  rewritten every build and left in place; `--keep-build-dir` reports its path.
 - `build firmware` on the STM32H7 boards no longer fails the relink when the main window
   is short by less than the second text region's alignment margin: it repacks the region
   with the margin shrunk by the shortfall and links again (up to four attempts, the

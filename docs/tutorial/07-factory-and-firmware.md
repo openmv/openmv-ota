@@ -96,7 +96,7 @@ The project's OTA flag steers the build automatically:
 
 - **Non-OTA project:** just builds the firmware.
 - **OTA project:** additionally freezes the OTA **`boot.py`** into the image —
-  without touching the firmware tree. A temporary *wrapper manifest* `include`s
+  without touching the firmware tree. A generated *wrapper manifest* `include`s
   the board's own manifest, adds the boot script, and is passed as
   `make FROZEN_MANIFEST=<wrapper>`. The frozen `boot.py` runs after the board's
   stock `_boot.py` and does the slot selection, signature verification, and
@@ -138,7 +138,7 @@ against the old configuration. Building firmware needs the firmware toolchain
 | `--incremental` | Skip the clean rebuild (only when the tree is known good; the tool still cleans when its overlay/manifest inputs changed). |
 | `--key-passphrase-file FILE` | Passphrase that decrypts the project's payload keys (OTA projects; else the env var or a prompt). |
 | `-f, --firmware PATH` | Firmware checkout override. |
-| `--keep-build-dir` | Keep the generated wrapper-manifest dir (OTA builds) for inspection. |
+| `--keep-build-dir` | Print the path of the generated wrapper dir (OTA builds): `build/openmv-ota-<board>/` in the firmware tree, left in place after every build. |
 
 ---
 
