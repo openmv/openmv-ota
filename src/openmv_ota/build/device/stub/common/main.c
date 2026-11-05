@@ -172,7 +172,15 @@ int main(void) {
         }
         log_kv("installing slot", s->index);
         if (install_slot(s, reason) == 0) {
-            jump(reason);
+            // The install read back every block it programmed, in programming mode. What
+            // the firmware will run is the area through the memory map (and the cipher,
+            // where there is one): hash that against the record before trusting it.
+            record_read(&record);
+            if (record_matches(&record, s) && record_area_ok(&record)) {
+                log_line("installed area verified");
+                jump(reason);
+            }
+            log_line("installed area does not verify");
         }
         log_line("install failed");
         // Anything the install touched is unrecorded now; try the next slot.

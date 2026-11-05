@@ -28,7 +28,7 @@ def test_a_stub_board_expects_the_stubs_boot_and_trial_lines(stub_boards):
     assert {"stub.version", "stub.slot_ok", "stub.fast_path", "stub.boot_normal"} <= expect
     # ... then the install arms a trial and the stub pays for it, installs and boots it
     assert {"stub.slot_trial", "stub.attempt", "stub.install", "stub.record_written",
-            "stub.boot_trial"} <= expect
+            "stub.install_verified", "stub.boot_trial"} <= expect
     assert "stub.failed" in forbid and "stub.failed" not in expect
 
 

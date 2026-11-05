@@ -521,6 +521,7 @@ COVERAGE = {
     "stub: firmware area verified": "stub.fast_path",         # record + firmware hashes match: no install
     "stub: installing slot": "stub.install",                  # a slot's components being installed
     "stub: record written": "stub.record_written",            # the install record landed last
+    "stub: installed area verified": "stub.install_verified",  # ...and the area hashes to it through the memory map
     "stub: boot normal": "stub.boot_normal",                  # jumping: the confirmed slot
     "stub: boot trial": "stub.boot_trial",                    # jumping: a trial, attempt burned
     "stub: boot reverted": "stub.boot_reverted",              # jumping: the other slot failed its trial
@@ -532,6 +533,7 @@ COVERAGE = {
     "stub: attempt mark failed": "stub.failed",
     "stub: memory map restore failed": "stub.failed",
     "stub: record write failed": "stub.failed",
+    "stub: installed area does not verify": "stub.failed",
     "stub: nothing to boot": "stub.failed",
     "stub: no slot": "stub.failed",
     "boot: slot read": "boot.read",                           # the XIP slot-read closure ran
@@ -855,7 +857,7 @@ def _stub_marks(key, spec):
     marks = {"stub.version", "stub.slot_ok", "stub.fast_path", "stub.boot_normal"}
     if "install.armed" in spec["expect"]:
         marks |= {"stub.slot_trial", "stub.attempt", "stub.install", "stub.record_written",
-                  "stub.boot_trial"}
+                  "stub.install_verified", "stub.boot_trial"}
     if key == "rollback":
         marks |= {"stub.slot_rejected", "stub.boot_reverted"}
     return marks
