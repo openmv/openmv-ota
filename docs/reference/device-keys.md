@@ -40,6 +40,9 @@ keys.sign(digest)                 # DER ECDSA over a 32-byte SHA-256 digest
 keys.random(32)                   # bytes from the hardware RNG
 keys.ecdh_public_key()            # 65 bytes: the exchange key
 keys.ecdh(peer)                   # 32 bytes: the ECDH secret with a peer's public key
+
+blob = se.seal(data, aad=b"records")    # bytes only this camera can open (see "Sealing data")
+data = se.unseal(blob, aad=b"records")  # ValueError if altered, or not this camera's
 ```
 
 `se.open()` only reads. On a camera that was never provisioned it raises `NotProvisioned`, and
@@ -365,6 +368,49 @@ it on another N6.
   derive another key and could not unseal the record.
 - A record that can't be unsealed is an error, like a damaged one.
 
+## Sealing data for this camera
+
+`se.seal(data, aad=b"")` returns bytes that only this camera can turn back into `data`, with
+`se.unseal(blob, aad=b"")`, and that fail to open -- `ValueError`, never wrong data -- if a
+single byte was changed. It is for anything an application must keep on the camera but not
+readable off it: a record on `/flash`, which is host-mountable by design (any PC that plugs in
+can read and edit it), a token, a setting. Seal it instead of encrypting it under something
+guessable, like the camera's serial number.
+
+- **The key is the camera's.** It is derived from the exchange key, so a blob is as well kept
+  as that key: inside the chip on a board with a secure element (the SE050's and ATECC608's
+  ECDH never shows the key), sealed under the N6's hardware key, and in the key area --
+  readable until lockdown -- on the other STM32 boards. No key is stored for this; the camera
+  derives the same one every boot, from the keys it already has.
+- **`aad` is the purpose.** `b"records"`, `b"wifi"`: it goes into the derived keys, so a blob
+  sealed for one purpose does not open under another. A camera with one purpose can leave it
+  empty.
+- **The format is the lockbox's** (`cryptolib` has no GCM): one version byte, a 16-byte IV
+  from the hardware RNG, AES-256-CBC over the padded data, and an HMAC-SHA256 tag over all of
+  it. The tag is checked before anything is decrypted. A blob is the data rounded up to 16
+  bytes, plus 49.
+- **It needs keys and AES.** A camera with no keys raises `ValueError` (`NotProvisioned` if it
+  was never provisioned); a firmware with no `cryptolib` -- no TLS, so no AES: the classic
+  boards -- raises `ImportError`.
+- **Nothing in the trailer or the romfs is affected.** Sealing is an application-level tool.
+  Getting sealed data *off* the camera is the application's job too: unseal it and send it over
+  TLS, or wrap it for a recipient with `keys.ecdh`.
+
+```python
+import json
+from openmv_ota import se
+
+record = json.dumps({"reading": 1234}).encode()
+with open("/flash/record.sealed", "wb") as f:
+    f.write(se.seal(record, aad=b"records"))
+
+with open("/flash/record.sealed", "rb") as f:
+    record = json.loads(se.unseal(f.read(), aad=b"records"))   # ValueError if edited from a PC
+```
+
+`examples/secure_element/seal_record.py` runs that on a camera and shows a tampered copy being
+refused.
+
 ## What each kind protects against
 
 | Threat | Hard (SE050, ATECC608) | Soft, plain (STM32) | Soft, sealed (N6) |
@@ -373,6 +419,7 @@ it on another N6.
 | Copying the keys to another camera | not possible | possible until lockdown | the sealed keys open on this chip only |
 | Code running on the camera using the keys | possible | possible | possible |
 | Code running on the camera reading the keys | not possible | possible | possible |
+| Opening data the camera sealed, on another camera or a PC | not possible | possible until lockdown | not possible |
 
 Code on the camera is trusted: anything running there can ask for a signature. Hiding keys
 from it is not a goal of this design; keeping them in the camera and out of reach of anyone

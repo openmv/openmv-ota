@@ -5,7 +5,7 @@ RAM BUDGET: this module runs inside your application, so its memory is your memo
 nothing itself; ``openmv_se`` states its own budget."""
 
 try:
-    from openmv_se import open, provision  # noqa: F401
+    from openmv_se import open, provision, seal, unseal  # noqa: F401
 except ImportError:                        # a board with no keys freezes no openmv_se
     def open():
         """None: this board has no keys."""
@@ -14,3 +14,11 @@ except ImportError:                        # a board with no keys freezes no ope
     def provision():
         """None: this board has no keys."""
         return None
+
+    def seal(data, aad=b""):
+        """Raises: this board has no keys to seal with."""
+        raise ValueError("this camera has no keys to seal with")
+
+    def unseal(blob, aad=b""):
+        """Raises: this board has no keys to open a sealed blob with."""
+        raise ValueError("this camera has no keys to seal with")

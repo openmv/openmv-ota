@@ -58,7 +58,12 @@ packs it to `/rom/lib/openmv_ota/`. It exposes:
   file path — and install it. Does **not** return
   on success — it reboots into the new image's trial.
 
-Both report their progress, **logged at every 10% step** (`install: 40% (…)`,
+- **`se.seal(data, aad=b"")` / `se.unseal(blob, aad=b"")`** — bytes only this camera can open,
+  and that fail to open if altered: for a record on `/flash` (host-mountable, so readable from any
+  PC), a token, a setting. Keyed from the camera's own keys, so nothing to store or to guess. See
+  [Sealing data for this camera](../reference/device-keys.md#sealing-data-for-this-camera).
+
+Both `install()` and `sync()` report their progress, **logged at every 10% step** (`install: 40% (…)`,
 `sync coprocessor: 70% (…)`), so an enabled logger shows movement through the long flash
 write without a line per 4 KiB chunk.
 

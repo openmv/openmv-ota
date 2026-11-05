@@ -1,6 +1,6 @@
 # Secure element demos
 
-Three short scripts that use a camera's keys through `openmv_ota.se`, the same drivers the
+Four short scripts that use a camera's keys through `openmv_ota.se`, the same drivers the
 camera signs its check-ins with. [Device keys](../../docs/reference/device-keys.md) says where
 each board keeps them.
 
@@ -9,6 +9,7 @@ each board keeps them.
 | `read_keys.py` | the camera | Prints what holds the keys, the identity key, the exchange key, and the chip maker's certificate for the identity key where there is one (the SE050's, from NXP, as PEM). |
 | `sign_challenge.py` | the camera | Signs a challenge with the identity key and prints the host command that checks the signature. |
 | `verify_challenge.py` | the host | Checks that signature: prints `OK` (exit 0) or `FAILED` (exit 1). |
+| `seal_record.py` | the camera | Seals a record so only this camera can open it, opens it again, and shows a tampered copy being refused -- what to do instead of encrypting under the serial number. |
 
 The keys are made once, at a desk, by `openmv-ota flash factory`; these scripts only use them.
 A camera that was never flashed that way has no keys yet, and the scripts say so.
@@ -27,6 +28,7 @@ from this directory:
 ```
 mpremote run read_keys.py
 mpremote run sign_challenge.py
+mpremote run seal_record.py
 ```
 
 `sign_challenge.py` signs the hex string `CHALLENGE` at its top: put your verifier's nonce

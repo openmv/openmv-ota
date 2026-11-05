@@ -644,14 +644,20 @@ def test_the_romfs_name_is_the_frozen_package(monkeypatch):
     frozen = types.ModuleType("openmv_se")
     frozen.open = lambda: "keys"
     frozen.provision = lambda: ("keys", False)
+    frozen.seal = lambda data, aad=b"": b"sealed:" + data + aad
+    frozen.unseal = lambda blob, aad=b"": blob[7:]
     monkeypatch.setitem(sys.modules, "openmv_se", frozen)
     monkeypatch.delitem(sys.modules, path, raising=False)
     shim = importlib.import_module(path)
     assert shim.open() == "keys" and shim.provision() == ("keys", False)
+    assert shim.seal(b"d", b"a") == b"sealed:da" and shim.unseal(b"sealed:da") == b"da"
 
     monkeypatch.setitem(sys.modules, "openmv_se", None)          # import openmv_se -> ImportError
     shim = importlib.reload(shim)
     assert shim.open() is None and shim.provision() is None
+    for call in (lambda: shim.seal(b"d"), lambda: shim.unseal(b"x" * 65)):
+        with pytest.raises(ValueError, match="no keys"):
+            call()
 
 
 # --- the ATECC608 ----------------------------------------------------------------------------
@@ -1404,3 +1410,156 @@ def test_open_and_provision_take_a_board_s_own_keys_with_no_bus(monkeypatch):
     monkeypatch.delitem(sys.modules, "openmv_ota.build.device.openmv_se.board")
     monkeypatch.delattr(se_pkg, "board")
     assert se_pkg.provision() is None                     # a board with no keys at all
+
+
+# --- sealing data for this camera -------------------------------------------------------------
+
+from openmv_ota.build.device import openmv_se as _pkg  # noqa: E402
+from openmv_ota.build.device.openmv_se import soft as _soft  # noqa: E402
+
+
+class _HostAes:
+    """``cryptolib.aes(key, 2, iv)`` -- CBC, both directions -- on the host."""
+
+    def __init__(self, key, mode, iv):
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        assert mode == 2 and len(key) == 32 and len(iv) == 16
+        self._c = Cipher(algorithms.AES(bytes(key)), modes.CBC(bytes(iv)))
+
+    def encrypt(self, data):
+        e = self._c.encryptor()
+        return e.update(bytes(data)) + e.finalize()
+
+    def decrypt(self, data):
+        d = self._c.decryptor()
+        return d.update(bytes(data)) + d.finalize()
+
+
+@pytest.fixture
+def sealer(area, monkeypatch):
+    """A provisioned soft camera's keys, the package's seal secret cleared, and ``cryptolib``
+    answered by the host's AES: ``(keys, ecdsa)`` -- ``ecdsa.calls`` counts the ECDH work."""
+    keys, _ = _soft.SecureElement.provision()
+    monkeypatch.setattr(_pkg, "_secret", None)
+    monkeypatch.setitem(sys.modules, "cryptolib", types.SimpleNamespace(aes=_HostAes))
+    return keys, _soft.ecdsa_verify
+
+
+def _host_seal_twin(keys, data, aad, iv):
+    """The construction, written independently on the host (cryptography + hmac): the secret is
+    the exchange key's ECDH with itself, the keys HKDF of it, the blob CBC + HMAC."""
+    import hmac as _hmac_mod
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    d = ec.derive_private_key(int.from_bytes(keys._kx, "big"), ec.SECP256R1())
+    secret = d.exchange(ec.ECDH(), d.public_key())
+    okm = HKDF(hashes.SHA256(), 64, None, b"omv-seal-v1\x00" + aad).derive(secret)
+    n = 16 - len(data) % 16
+    e = Cipher(algorithms.AES(okm[:32]), modes.CBC(iv)).encryptor()
+    body = b"\x01" + iv + e.update(data + bytes([n]) * n) + e.finalize()
+    return body + _hmac_mod.new(okm[32:], body, "sha256").digest()
+
+
+def test_seal_round_trips_and_the_blob_is_version_iv_ciphertext_tag(sealer):
+    keys, _ = sealer
+    for data in (b"", b"x", b"a" * 15, b"b" * 16, b"meter reading 1234" * 7):
+        blob = _pkg.seal(data, aad=b"records", keys=keys)
+        assert blob[0] == 1 and len(blob) == 49 + (len(data) // 16 + 1) * 16
+        assert _pkg.unseal(blob, aad=b"records", keys=keys) == data
+        assert not data or bytes(data) not in blob           # nothing of it in the clear
+    a, b = (_pkg.seal(b"same", keys=keys) for _ in range(2))
+    assert a[1:17] != b[1:17] and a != b                     # a fresh IV every time
+    assert _pkg.unseal(a, keys=keys) == _pkg.unseal(b, keys=keys) == b"same"
+
+
+def test_seal_matches_an_independent_host_implementation(sealer, monkeypatch):
+    keys, _ = sealer
+    iv = bytes(range(16))
+    monkeypatch.setattr(_pkg, "os", types.SimpleNamespace(urandom=lambda n: iv), raising=False)
+    import os as _os
+    monkeypatch.setattr(_os, "urandom", lambda n: iv)
+    blob = _pkg.seal(b"hello camera", aad=b"records", keys=keys)
+    assert blob == _host_seal_twin(keys, b"hello camera", b"records", iv)
+    assert _pkg.unseal(_host_seal_twin(keys, b"from the twin", b"", iv), keys=keys) == b"from the twin"
+
+
+def test_seal_binds_the_purpose_and_refuses_every_single_byte_change(sealer):
+    keys, _ = sealer
+    blob = _pkg.seal(b"secret", aad=b"records", keys=keys)
+    with pytest.raises(ValueError, match="isn't this camera's, or was altered"):
+        _pkg.unseal(blob, aad=b"wifi", keys=keys)
+    for i in range(1, len(blob)):                            # every byte after the version
+        bad = bytearray(blob)
+        bad[i] ^= 0x01
+        with pytest.raises(ValueError, match="altered"):
+            _pkg.unseal(bad, aad=b"records", keys=keys)
+    for bad in (blob[:-1], blob[:48], b"", bytes([2]) + blob[1:]):
+        with pytest.raises(ValueError, match="not a sealed blob"):
+            _pkg.unseal(bad, aad=b"records", keys=keys)
+    with pytest.raises(ValueError, match="altered"):          # a whole block appended
+        _pkg.unseal(blob + b"\x00" * 16, aad=b"records", keys=keys)
+
+
+def test_seal_opens_on_this_camera_only(area, monkeypatch):
+    monkeypatch.setitem(sys.modules, "cryptolib", types.SimpleNamespace(aes=_HostAes))
+    mine, _ = _soft.SecureElement.provision()
+    monkeypatch.setattr(_pkg, "_secret", None)
+    blob = _pkg.seal(b"mine", keys=mine)
+    other = _soft.SecureElement.__new__(_soft.SecureElement)   # another camera's exchange key
+    other._kx = _soft._new_key()
+    other._pub = other._kx_pub = None
+    monkeypatch.setattr(_pkg, "_secret", None)
+    with pytest.raises(ValueError, match="isn't this camera's"):
+        _pkg.unseal(blob, keys=other)
+
+
+def test_seal_derives_its_secret_once_from_the_exchange_key(sealer):
+    keys, ecdsa = sealer
+    before = len([c for c in ecdsa.calls if c[0] == "ecdh"])
+    for _ in range(3):
+        _pkg.unseal(_pkg.seal(b"x", aad=b"a", keys=keys), aad=b"a", keys=keys)
+    assert len([c for c in ecdsa.calls if c[0] == "ecdh"]) == before + 1
+    assert len(_pkg._secret) == 32
+
+
+def test_seal_opens_the_camera_s_keys_itself_and_says_when_there_are_none(sealer, monkeypatch):
+    keys, _ = sealer
+    monkeypatch.setattr(_pkg, "open", lambda: keys)
+    blob = _pkg.seal(b"opened for me")
+    assert _pkg.unseal(blob) == b"opened for me"
+    monkeypatch.setattr(_pkg, "_secret", None)
+    monkeypatch.setattr(_pkg, "open", lambda: None)          # a board with no keys
+    with pytest.raises(ValueError, match="no keys to seal with"):
+        _pkg.seal(b"x")
+    with pytest.raises(ValueError, match="no keys to seal with"):
+        _pkg.unseal(blob)
+
+
+def test_seal_without_cryptolib_is_an_import_error(sealer, monkeypatch):
+    keys, _ = sealer
+    monkeypatch.setitem(sys.modules, "cryptolib", None)      # the classic boards: no TLS, no AES
+    with pytest.raises(ImportError):
+        _pkg.seal(b"x", keys=keys)
+    blob = _pkg.seal(b"x", keys=keys, aes=_HostAes)
+    with pytest.raises(ImportError):
+        _pkg.unseal(blob, keys=keys)
+
+
+def test_unseal_refuses_bad_padding_even_under_a_valid_tag(sealer):
+    """Only a bug could produce it (the tag covers the padding), but a wrong padding byte must
+    still never leak as data."""
+    keys, _ = sealer
+    k_enc, k_mac = _pkg._seal_keys(b"", keys)
+    for pad in (b"\x00" * 16, b"\x11" * 16, b"\x02" + b"\x03"):
+        plain = (b"data" + pad)[-16:] if len(pad) == 16 else b"a" * 14 + pad
+        body = b"\x01" + bytes(16) + _HostAes(k_enc, 2, bytes(16)).encrypt(plain)
+        blob = body + _pkg._hmac(k_mac, body)
+        with pytest.raises(ValueError, match="altered"):
+            _pkg.unseal(blob, keys=keys)
+
+
+def test_trust_shares_the_package_s_hmac_and_hkdf():
+    from openmv_ota.build.device.openmv_se import trust
+    assert trust._hmac is _pkg._hmac and trust._hkdf64 is _pkg._hkdf64
