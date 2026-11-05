@@ -103,7 +103,9 @@ int main(int argc, char **argv) {
 
 
 def _aes(key, block):
-    return Cipher(algorithms.AES(key), modes.ECB()).encryptor().update(block)
+    """One AES block on the host: counter mode over 16 zero bytes, with ``block`` as the
+    counter, is the block cipher's output for it."""
+    return Cipher(algorithms.AES(key), modes.CTR(block)).encryptor().update(bytes(16))
 
 
 def keystream(key, tweak, addr, n):
