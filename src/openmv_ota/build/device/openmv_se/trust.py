@@ -7,6 +7,7 @@ server answers with update offers, and can't install a release encrypted for eac
 
 RAM BUDGET: nothing until called; the keys are opened once and kept (``openmv_se.open``).
 """
+from . import _hkdf64, _hmac      # the package's HMAC-SHA256 and HKDF; seal shares them
 
 # --- signed check-ins ----------------------------------------------------------------------
 # Every check-in (the app's, and recovery's) carries the camera's signature, so the server knows
@@ -61,19 +62,6 @@ LOCKBOX_INFO = b"omv-lockbox-v1"
 LOCKBOX_SIZE = 145
 
 
-def _hmac(key, msg):
-    """HMAC-SHA256 (``key`` at most 64 bytes, which is all this module uses)."""
-    import hashlib
-    key = key + bytes(64 - len(key))
-    inner = hashlib.sha256(bytes(b ^ 0x36 for b in key) + msg).digest()
-    return hashlib.sha256(bytes(b ^ 0x5C for b in key) + inner).digest()
-
-
-def _hkdf64(secret, info):
-    """64 bytes of HKDF-SHA256 with no salt (RFC 5869: a salt of 32 zero bytes)."""
-    prk = _hmac(bytes(32), secret)
-    t1 = _hmac(prk, info + b"\x01")
-    return t1 + _hmac(prk, t1 + info + b"\x02")
 
 
 def open_lockbox(lockbox, keys=None, aes=None):

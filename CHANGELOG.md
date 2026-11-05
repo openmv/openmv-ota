@@ -8,6 +8,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`se.seal()` / `se.unseal()`: data only this camera can open.** An application that keeps
+  something secret on the camera -- a record on `/flash`, which any PC can mount, a token, a
+  setting -- seals it instead of encrypting it under its serial number. The key is derived from
+  the camera's exchange key (inside the chip on a board with a secure element, sealed under the
+  N6's hardware key), so nothing is stored or provisioned; `aad` names the purpose, and an
+  altered blob raises `ValueError` before anything is decrypted. The lockbox's construction
+  (AES-256-CBC + HMAC-SHA256, 49 bytes plus padding). `examples/secure_element/seal_record.py`;
+  the HIL bench app seals and opens a record on every wifi/lan board each cycle.
+
 - **Desk keys are trusted through a chain, not through the token that pushed them.** Every
   project gets an **issuer key** at `project new`, certified once by root 0 (certificate kind
   `ISSUER`); it certifies each desk key as it is made (kind `DESK`), and the entry carries both

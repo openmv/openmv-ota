@@ -11,6 +11,8 @@ that never leave the camera, so a signature from one proves which camera is talk
         keys.random(32)               # bytes from the hardware RNG
         keys.ecdh_public_key()        # 65 bytes: the exchange key's public half
         keys.ecdh(peer)               # 32 bytes: its ECDH secret with a peer's public key
+    blob = se.seal(data, aad=b"records")   # bytes only this camera can open (see below)
+    data = se.unseal(blob, aad=b"records") # ...and that fail to open if altered
 
 Two keys, one job each: the identity key signs (who the camera is); the exchange key only does
 ECDH (so a server can wrap something only this camera can open). They are made once, at a desk:
@@ -28,8 +30,17 @@ only the board's module and writes its wiring into ``board.py`` here (bus, addre
 a board with neither freezes none of this package. The romfs's ``openmv_ota.se`` is this, by
 another name.
 
+**Sealing data** (:func:`seal`, :func:`unseal`) is what the keys offer an application beyond
+identity: a record, a token or a setting that must be kept on the camera but not readable off
+it -- on ``/flash``, which any PC can mount -- is sealed to this camera instead of being keyed on
+something guessable like its serial number. The seal key is derived from the exchange key, so it
+is as well kept as that key is: inside the chip on a board with a secure element, sealed under
+the N6's hardware key, and in the key area (readable until lockdown) on the other STM32 boards.
+
 RAM BUDGET: this module runs inside your application, so its memory is your memory. Nothing is
-allocated until :func:`open`; a module's buffers are a few hundred bytes.
+allocated until :func:`open`; a module's buffers are a few hundred bytes. Sealing holds the
+caller's data and its blob (the data rounded up to 16 bytes, plus 49) whole, both the caller's
+to size; the derived secret is 32 bytes, kept once.
 """
 
 
@@ -103,3 +114,97 @@ def provision():
     except ImportError:
         return None
     return board.SecureElement.provision(*wiring)
+
+
+# --- sealing data for this camera -----------------------------------------------------------
+# The lockbox's construction (``trust.open_lockbox``; cryptolib has no GCM), keyed from the
+# camera's own exchange key instead of a peer's:
+#
+#     secret        = ECDH(exchange key, its own public half)   -- where the key lives, once
+#     k_enc || k_mac = HKDF-SHA256(secret, SEAL_INFO || aad)     -- 32 + 32 bytes
+#     blob          = SEAL_VERSION || iv (16) || AES-256-CBC(k_enc, iv, pad(data)) || tag (32)
+#     tag           = HMAC-SHA256(k_mac, everything before it)
+#
+# ``aad`` is the purpose (``b"records"``): it goes into the keys, so a blob sealed for one purpose
+# does not open under another. The padding is PKCS#7 and is checked only after the tag, so a
+# wrong blob is refused before anything is decrypted. ``SEAL_VERSION`` is the format: a later
+# construction is a new version, never a reinterpretation of this one.
+SEAL_INFO = b"omv-seal-v1\x00"
+SEAL_VERSION = 1
+_SEAL_OVERHEAD = 1 + 16 + 32                   # version, iv, tag -- plus 1..16 bytes of padding
+_secret = None                                 # the exchange key's self-ECDH, derived once
+
+
+def _hmac(key, msg):
+    """HMAC-SHA256 (``key`` at most 64 bytes, which is all this package uses)."""
+    import hashlib
+    key = key + bytes(64 - len(key))
+    inner = hashlib.sha256(bytes(b ^ 0x36 for b in key) + msg).digest()
+    return hashlib.sha256(bytes(b ^ 0x5C for b in key) + inner).digest()
+
+
+def _hkdf64(secret, info):
+    """64 bytes of HKDF-SHA256 with no salt (RFC 5869: a salt of 32 zero bytes)."""
+    prk = _hmac(bytes(32), secret)
+    t1 = _hmac(prk, info + b"\x01")
+    return t1 + _hmac(prk, t1 + info + b"\x02")
+
+
+def _seal_keys(aad, keys):
+    """``(k_enc, k_mac)`` for ``aad``, from the camera's seal secret -- the exchange key's ECDH
+    with its own public half, computed where the key lives (the chip, or mbedtls over the key
+    area) the first time and kept. ValueError on a camera with no keys."""
+    global _secret
+    if _secret is None:
+        if keys is None:
+            keys = open()
+        if keys is None:
+            raise ValueError("this camera has no keys to seal with")
+        _secret = bytes(keys.ecdh(keys.ecdh_public_key()))
+    okm = _hkdf64(_secret, SEAL_INFO + bytes(aad))
+    return okm[:32], okm[32:]
+
+
+def seal(data, aad=b"", keys=None, aes=None):
+    """``data`` sealed for this camera: bytes that only it can open (:func:`unseal`) and that
+    fail to open if altered -- for a record on ``/flash`` (host-mountable, so readable and
+    editable from a PC), a token, a setting. ``aad`` names the purpose (``b"records"``); a blob
+    sealed under one purpose does not open under another. The blob is ``len(data)`` rounded up
+    to a multiple of 16, plus 49 bytes.
+
+    Raises ValueError on a camera with no keys (``NotProvisioned`` on one never provisioned), and
+    ImportError on a firmware with no ``cryptolib`` -- no TLS, so no AES: the classic boards.
+    ``keys``/``aes`` are injectable for tests (``aes`` defaults to ``cryptolib.aes``)."""
+    k_enc, k_mac = _seal_keys(aad, keys)
+    if aes is None:
+        from cryptolib import aes
+    import os
+    data = bytes(data)
+    n = 16 - len(data) % 16
+    head = bytes([SEAL_VERSION]) + os.urandom(16)
+    body = head + aes(k_enc, 2, head[1:]).encrypt(data + bytes([n]) * n)
+    return body + _hmac(k_mac, body)
+
+
+def unseal(blob, aad=b"", keys=None, aes=None):
+    """The data :func:`seal` sealed -- if ``blob`` is this camera's, was sealed under this
+    ``aad``, and is unaltered. ValueError otherwise, and never wrong data: the tag is checked
+    before anything is decrypted. ``keys``/``aes`` as :func:`seal`."""
+    blob = bytes(blob)
+    if (len(blob) < _SEAL_OVERHEAD + 16 or (len(blob) - _SEAL_OVERHEAD) % 16
+            or blob[0] != SEAL_VERSION):
+        raise ValueError("not a sealed blob")
+    k_enc, k_mac = _seal_keys(aad, keys)
+    body, tag = blob[:-32], blob[-32:]
+    diff = 0
+    for a, b in zip(_hmac(k_mac, body), tag):
+        diff |= a ^ b
+    if diff:
+        raise ValueError("the blob isn't this camera's, or was altered")
+    if aes is None:
+        from cryptolib import aes
+    plain = aes(k_enc, 2, body[1:17]).decrypt(body[17:])
+    n = plain[-1]
+    if not 1 <= n <= 16 or plain[-n:] != bytes([n]) * n:
+        raise ValueError("the blob isn't this camera's, or was altered")
+    return plain[:-n]

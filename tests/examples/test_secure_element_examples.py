@@ -22,7 +22,7 @@ from cryptography.x509.oid import NameOID
 import openmv_ota
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "secure_element"
-CAMERA_SCRIPTS = ["read_keys.py", "sign_challenge.py"]
+CAMERA_SCRIPTS = ["read_keys.py", "sign_challenge.py", "seal_record.py"]
 VERIFY = EXAMPLES / "verify_challenge.py"
 CONTEXT = b"omv-demo-challenge-v1\n"
 
@@ -61,6 +61,10 @@ class SoftKeys:
     def ecdh_public_key(self):
         return _point(self.exchange)
 
+    def ecdh(self, peer):
+        point = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), bytes(peer))
+        return self.exchange.exchange(ec.ECDH(), point)
+
     def certificate(self):
         return self.cert
 
@@ -78,6 +82,23 @@ class Se050Keys(SoftKeys):
     __module__ = "openmv_se.se050"
 
 
+class _HostAes:
+    """``cryptolib.aes(key, 2, iv)`` -- CBC, both directions -- on the host."""
+
+    def __init__(self, key, mode, iv):
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        assert mode == 2
+        self._c = Cipher(algorithms.AES(bytes(key)), modes.CBC(bytes(iv)))
+
+    def encrypt(self, data):
+        e = self._c.encryptor()
+        return e.update(bytes(data)) + e.finalize()
+
+    def decrypt(self, data):
+        d = self._c.decryptor()
+        return d.update(bytes(data)) + d.finalize()
+
+
 class NotProvisioned(OSError):
     """Named like every driver's own."""
 
@@ -90,6 +111,8 @@ def camera(monkeypatch, capsys):
     se = types.ModuleType("openmv_ota.se")
     monkeypatch.setattr(openmv_ota, "se", se, raising=False)
     monkeypatch.setitem(sys.modules, "openmv_ota.se", se)
+    from openmv_ota.build.device import openmv_se as pkg
+    monkeypatch.setattr(pkg, "_secret", None)
 
     def run(script, opened, edit=None):
         def open_():
@@ -98,6 +121,9 @@ def camera(monkeypatch, capsys):
             return opened
 
         se.open = open_
+        # seal/unseal as the frozen package does them, over these keys and the host's AES
+        se.seal = lambda data, aad=b"": pkg.seal(data, aad, keys=open_(), aes=_HostAes)
+        se.unseal = lambda blob, aad=b"": pkg.unseal(blob, aad, keys=open_(), aes=_HostAes)
         path = EXAMPLES / script
         src = path.read_text(encoding="utf-8")
         if edit is not None:
@@ -174,6 +200,16 @@ def test_the_challenge_set_at_the_top_is_the_one_signed(camera, capsys):
     args = _host_command(out)
     assert args[args.index("--challenge") + 1] == "c0ffee00"
     assert verify_challenge.main(args) == 0
+
+
+# --- seal_record.py --------------------------------------------------------------------------
+
+def test_seal_record_seals_opens_and_refuses_a_tampered_copy(camera):
+    out = camera("seal_record.py", SoftKeys())
+    assert "record        32 bytes -> sealed 97 bytes" in out      # 32 -> 48 padded, + 49
+    assert "opened        {'reading': 1234, 'unit': 'kWh'}" in out
+    assert "other aad     refused: the blob isn't this camera's, or was altered" in out
+    assert "edited copy   refused: the blob isn't this camera's, or was altered" in out
 
 
 # --- no keys -------------------------------------------------------------------------------

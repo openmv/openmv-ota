@@ -559,6 +559,7 @@ COVERAGE = {
     "app: wdt STOP feeding": "wdt.stop",                  # bite test: the app deliberately stopped feeding
     "app: wdt BIT": "wdt.bit",                            # bite test: WWDG reset (reset_cause==3), then recovered
     "app: woke from a watchdog reset": "app.wdt_reset",   # ANY app boot after a watchdog reset
+    "app: sealed data round-trip ok": "app.seal",         # se.seal/unseal worked with this board's keys
     "run: recovering transport": "run.recover",           # run() escalated a failure streak to recover=
     "run: transport recovered": "run.recovered",          # ...and the hook returned (under an armed WDT)
     "run: poll wait": "run.poll_tail",                   # run() loop tail reached (post-checkin)
@@ -596,7 +597,7 @@ SCENARIOS = {
     "delta": {
         "desc": "happy path: delta install -> trial -> confirm -> promote",
         "publish": "delta", "app": "confirm", "end": "promoted",
-        "expect": ["boot.mount", "boot.ready", "log.configured", "run.clock", "run.checkin_http",
+        "expect": ["boot.mount", "boot.ready", "app.seal", "log.configured", "run.clock", "run.checkin_http",
                    "run.body_read", "run.body_chunk", "run.checkin_clen", "run.checkin_parsed",
                    "run.checkin_closed",
                    "run.checkin", "run.status", "run.boot_result", "run.identity",
@@ -1468,6 +1469,16 @@ def bench_main_py(board, net, app="confirm"):
         # Reading it over mpremote meant a Ctrl-C, and a Ctrl-C kills this app (KeyboardInterrupt is
         # a BaseException) -- the board can simply say who it is instead.
         "    _blog.info('app: device_id %s' % openmv_ota.identity().get('device_id'))\n"
+        # Seal and open a record with this board's keys: the one device-side use of the keys the
+        # harness can witness without a server -- a soft key area, an SE050 or the Giga's ATECC608,
+        # and the N6's sealed record -- on every wifi/lan board, every cycle.
+        "    try:\n"
+        "        from openmv_ota import se as _se\n"
+        "        _blob = _se.seal(b'bench record', aad=b'hil')\n"
+        "        assert _se.unseal(_blob, aad=b'hil') == b'bench record'\n"
+        "        _blog.info('app: sealed data round-trip ok')\n"
+        "    except Exception as _e:\n"
+        "        _blog.error('app: seal FAILED %r' % (_e,))\n"
         "    openmv_ota.sync()  # apply bundled coprocessor resources early (no-op if none)\n"
         "    await _bring_up()\n"
         "    _blog.info('app: network up, starting run()')\n"
