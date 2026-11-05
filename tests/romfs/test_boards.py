@@ -263,3 +263,26 @@ def test_update_capability_needs_a_main_partition_with_a_known_erase_block(monke
     monkeypatch.setattr(B, "get_board", lambda name: table[name])
     assert B.update_capability("X") is None and B.update_capability("Y") is None
     assert B.update_capability("OPENMV_N6").firmware
+
+
+def test_only_the_n6_stub_keeps_the_firmware_area_encrypted():
+    """``stub.encrypted`` is what the tool and the fleet harness read; the stub's own switch is
+    ``STUB_CRYPT_START`` in the board's stub_config.h. The two must say the same thing."""
+    from openmv_ota.build import stub as stub_mod
+    from openmv_ota.romfs import boards as B
+    encrypted = {name for name, b in B.load_boards().items() if b.stub and b.stub.encrypted}
+    assert encrypted == {"OPENMV_N6"}
+    for name, b in B.load_boards().items():
+        cfg = stub_mod.STUB_DIR / "boards" / name / "stub_config.h"
+        if b.stub is None or not cfg.is_file():
+            continue
+        assert ("#define STUB_CRYPT_START" in cfg.read_text()) == b.stub.encrypted, name
+
+
+def test_a_stub_encrypted_flag_is_validated():
+    from openmv_ota.romfs import boards as B
+    raw = {"origin": "0x70080000", "firmware_dest": "0x70090000", "firmware_max": "0x1000"}
+    assert B._stub("X", raw).encrypted is False
+    assert B._stub("X", dict(raw, encrypted=True)).encrypted is True
+    with pytest.raises(ValueError, match="stub encrypted must be true or false"):
+        B._stub("X", dict(raw, encrypted="yes"))

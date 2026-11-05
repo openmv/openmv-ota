@@ -249,11 +249,48 @@ void port_led_blink(uint32_t interval_ms) {
 
 int port_flash_read(uint32_t addr, uint8_t *buf, uint32_t size) {
     if (!prog_mode) {
-        memcpy(buf, (const void *) addr, size);
+        memcpy(buf, (const void *) addr, size);     // through the cipher engine, where it is on
         return 0;
+    }
+    int ret = spi_flash_read(addr - STUB_XIP_BASE, buf, size);
+    #ifdef STUB_CRYPT_START
+    if (ret == 0) {
+        mce_xor(addr, buf, size);                   // indirect mode reads what is stored
+    }
+    #endif
+    return ret;
+}
+
+#ifdef STUB_CRYPT_START
+static uint8_t crypt_chunk[4096] STUB_BUFFER_SMALL;
+
+int port_crypt_init(void) {
+    return mce_init();
+}
+
+int port_crypt_select(const uint8_t *tweak) {
+    int ret = mce_select(tweak);
+    // The area just changed under the caches, and under the controller's read-ahead: a
+    // read somewhere else makes the next one in the area start afresh.
+    SCB_CleanInvalidateDCache();
+    SCB_InvalidateICache();
+    if (!prog_mode) {
+        (void) *(volatile const uint32_t *) STUB_FLASH_ORIGIN;
+    }
+    return ret;
+}
+
+void port_crypt_lock(void) {
+    mce_lock();
+}
+
+int port_flash_read_stored(uint32_t addr, uint8_t *buf, uint32_t size) {
+    if (!prog_mode) {
+        return -1;
     }
     return spi_flash_read(addr - STUB_XIP_BASE, buf, size);
 }
+#endif
 
 int port_flash_prog_begin(void) {
     if (prog_mode) {
@@ -302,6 +339,23 @@ int port_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size) {
     if (!prog_mode || (addr % 16) != 0 || (size % 16) != 0) {
         return -1;
     }
+    #ifdef STUB_CRYPT_START
+    if (mce_covers(addr, size)) {
+        // What is stored there is ciphertext: encrypt a copy, a chunk at a time.
+        while (size) {
+            uint32_t n = (size < sizeof(crypt_chunk)) ? size : sizeof(crypt_chunk);
+            memcpy(crypt_chunk, buf, n);
+            mce_xor(addr, crypt_chunk, n);
+            if (spi_flash_write(addr - STUB_XIP_BASE, crypt_chunk, n) != 0) {
+                return -1;
+            }
+            addr += n;
+            buf += n;
+            size -= n;
+        }
+        return 0;
+    }
+    #endif
     return spi_flash_write(addr - STUB_XIP_BASE, buf, size);
 }
 
@@ -717,6 +771,8 @@ void port_jump(uint32_t addr) {
 
     port_led(false);
     jump_step(5);
+
+    port_crypt_lock();                      // the firmware area's cipher is the stub's to set
 
     // As the bootloader leaves things: caches off, the memory map live.
     SCB_CleanDCache();

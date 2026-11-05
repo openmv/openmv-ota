@@ -69,7 +69,8 @@ static void log_slot(const slot_t *s) {
 // the install window with the Thumb bit. How the plain bootloader boots today.
 static bool vectors_plausible(void) {
     uint8_t v[8];
-    if (port_flash_read(STUB_FIRMWARE_ADDR, v, sizeof(v)) != 0) {
+    // No record says what the area holds, so no cipher: firmware flashed there in the clear.
+    if (port_crypt_select(NULL) != 0 || port_flash_read(STUB_FIRMWARE_ADDR, v, sizeof(v)) != 0) {
         return false;
     }
     uint32_t sp = (uint32_t) v[0] | ((uint32_t) v[1] << 8) | ((uint32_t) v[2] << 16) | ((uint32_t) v[3] << 24);
@@ -128,6 +129,15 @@ int main(void) {
         log_slot(&slots[i]);
     }
 
+    // A port that keeps the firmware area encrypted needs the chip's key before it reads
+    // or writes a byte there. A chip that has none to give is not one to run on.
+    if (port_crypt_init() != 0) {
+        log_line("no hardware key");
+        while (1) {
+            port_led_blink(LED_STOP_MS);
+        }
+    }
+
     record_read(&record);
     if (record.valid) {
         log_kv("record slot", record.hdr.slot);
@@ -166,7 +176,9 @@ int main(void) {
             log_line("firmware area verified");
             jump(reason);
         }
-        if (recorded) {
+        if (recorded && record_area_in_clear(&record)) {
+            log_line("firmware area in the clear: encrypting it");
+        } else if (recorded) {
             log_line("firmware area does not match the record");
             reason = REASON_REINSTALLED;    // the record is right but the bytes are not
         }

@@ -522,6 +522,7 @@ COVERAGE = {
     "stub: installing slot": "stub.install",                  # a slot's components being installed
     "stub: record written": "stub.record_written",            # the install record landed last
     "stub: installed area verified": "stub.install_verified",  # ...and the area hashes to it through the memory map
+    "stub: flash cipher on": "stub.crypt",                    # the firmware area is ciphertext at rest, and the chip took the key
     "stub: boot normal": "stub.boot_normal",                  # jumping: the confirmed slot
     "stub: boot trial": "stub.boot_trial",                    # jumping: a trial, attempt burned
     "stub: boot reverted": "stub.boot_reverted",              # jumping: the other slot failed its trial
@@ -534,6 +535,7 @@ COVERAGE = {
     "stub: memory map restore failed": "stub.failed",
     "stub: record write failed": "stub.failed",
     "stub: installed area does not verify": "stub.failed",
+    "stub: area scrub failed": "stub.failed",
     "stub: nothing to boot": "stub.failed",
     "stub: no slot": "stub.failed",
     "boot: slot read": "boot.read",                           # the XIP slot-read closure ran
@@ -842,6 +844,17 @@ def _has_stub(board):
         return False
 
 
+def _stub_encrypts(board):
+    """True when this board's stub keeps the firmware area encrypted (boards.json
+    ``stub.encrypted``): its UART then says so on every boot that reads or writes the area."""
+    try:
+        from openmv_ota.romfs.boards import get_board
+        stub = get_board(board).stub
+        return bool(stub and stub.encrypted)
+    except Exception:
+        return False
+
+
 def _stub_marks(key, spec):
     """What the boot stub logs inside a scenario's scored window on a board that has one.
 
@@ -945,6 +958,8 @@ def scenario_markers(board, key):
         expect |= _stub_marks(key, s)
         if key != "no_slot":
             forbid.add("stub.failed")
+            if _stub_encrypts(board):
+                expect.add("stub.crypt")
     return expect, forbid
 
 

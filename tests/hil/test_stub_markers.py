@@ -104,3 +104,14 @@ def test_enable_stub_uart_refuses_a_module_without_the_defaults(tmp_path, stub_b
     (dev / "openmv_log.py").write_text("ENABLED = True\nUART = 7\n")     # someone edited it
     with pytest.raises(RuntimeError, match="could not set ENABLED/UART"):
         ota_cycle._enable_stub_uart(str(tmp_path), "OPENMV4P")
+
+
+def test_a_board_whose_stub_encrypts_expects_its_cipher_line(stub_boards, monkeypatch):
+    """The N6's stub keeps the firmware area ciphertext at rest and says so each time it sets
+    the cipher up; a board whose stub does not must not be asked for the line."""
+    assert ota_cycle._stub_encrypts("OPENMV_N6") and not ota_cycle._stub_encrypts("OPENMV4P")
+    assert not ota_cycle._stub_encrypts("NO_SUCH_BOARD")
+    for key in ("delta", "bad_sig", "rollback"):
+        assert "stub.crypt" in ota_cycle.scenario_markers("OPENMV_N6", key)[0]
+        assert "stub.crypt" not in ota_cycle.scenario_markers("OPENMV4P", key)[0]
+    assert "stub.crypt" not in ota_cycle.scenario_markers("OPENMV_N6", "no_slot")[0]
