@@ -216,8 +216,16 @@ uint32_t port_ticks_ms(void) {
     return HAL_GetTick();
 }
 
+// Let the debug UART finish what it holds before the core sleeps. The STM32N6 gates a
+// peripheral's clock while the core is in Sleep unless told otherwise, so a WFI with a
+// character still in the transmitter freezes it mid-frame and lets it out a tick at a time:
+// the end of one log line and the start of the next arrived as garbage on every flash
+// controller init ("stub: xspi kclk 0x0bebc200" then 7 junk bytes where "\r\nstub:" belonged).
+static void uart_drain(void);
+
 void port_delay_ms(uint32_t ms) {
     uint32_t start = HAL_GetTick();
+    uart_drain();
     while ((HAL_GetTick() - start) < ms) {
         __WFI();
     }
@@ -667,6 +675,18 @@ void port_uart_putc(char c) {
         }
     }
     uart_inst->TDR = (uint8_t) c;
+}
+
+static void uart_drain(void) {
+    if (uart_inst == NULL) {
+        return;
+    }
+    uint32_t start = HAL_GetTick();
+    while (!(uart_inst->ISR & USART_ISR_TC)) {
+        if ((HAL_GetTick() - start) > 5) {
+            return;                             // a stuck transmitter does not hold the boot up
+        }
+    }
 }
 
 // ---- Watchdog ----------------------------------------------------------------
