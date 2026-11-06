@@ -154,3 +154,40 @@ def test_the_ae3_runs_rollback_for_its_stubs_revert_path():
     assert ae3[:2] == ["delta", "rollback"] and "watchdog" in ae3
     assert {"stub.slot_rejected", "stub.boot_reverted"} <= \
         ota_cycle.scenario_markers("OPENMV_AE3", "rollback")[0]
+
+
+def test_fw_corrupt_expects_the_stubs_repair_and_runs_where_the_harness_can_damage(monkeypatch):
+    expect, forbid = ota_cycle.scenario_markers("OPENMV_N6", "fw_corrupt")
+    assert {"stub.area_bad", "stub.install", "stub.record_written", "stub.install_verified",
+            "stub.boot_reinstalled", "stub.fast_path", "stub.boot_normal", "boot.ready"} <= expect
+    assert "stub.failed" in forbid and "install.start" in forbid
+    n6 = ota_cycle.regression_scenarios("OPENMV_N6", ota_cycle.BOARDS["OPENMV_N6"]["network"])
+    assert n6[-1] == "fw_corrupt"
+    for board in ota_cycle.BOARDS:
+        if board not in ota_cycle.FW_CORRUPT_BOARDS:
+            for net in ("lan", "wifi", "file"):
+                assert "fw_corrupt" not in ota_cycle.regression_scenarios(board, net), board
+
+
+def test_the_damage_is_the_stub_as_it_is_then_garbage_over_the_first_firmware_block(bench, monkeypatch):
+    wrote = {}
+
+    def sh(argv, **k):
+        bench["ran"].append(argv)
+        with open(argv[-1], "rb") as f:
+            wrote["image"] = f.read()
+        return 0, ""
+
+    monkeypatch.setattr(ota_cycle, "sh", sh)
+    ota_cycle.corrupt_firmware_area(BOARD)
+    (argv,) = bench["ran"]
+    assert argv[:7] == ["DFU", "-w", "-d", ",37c5:9206", "-a", "1", "--reset"] and argv[-2] == "-D"
+    image = wrote["image"]
+    assert image[:len(STUB)] == STUB and set(image[len(STUB):START]) == {0xFF}
+    assert len(image) == START + 64 * 1024 and image[START:] != FW[:64 * 1024]
+    assert bench["exec"] == ["import machine; machine.bootloader()"]
+    # no route into DFU: the scenario stops there rather than scoring an undamaged board
+    monkeypatch.setattr(ota_cycle, "sh", lambda argv, **k: (74, "no device"))
+    monkeypatch.setattr(ota_cycle, "dfu_reset_catch", lambda *a, **k: (1, "still none"))
+    with pytest.raises(RuntimeError, match="could not damage the firmware area"):
+        ota_cycle.corrupt_firmware_area(BOARD)

@@ -527,6 +527,8 @@ COVERAGE = {
     "stub: boot normal": "stub.boot_normal",                  # jumping: the confirmed slot
     "stub: boot trial": "stub.boot_trial",                    # jumping: a trial, attempt burned
     "stub: boot reverted": "stub.boot_reverted",              # jumping: the other slot failed its trial
+    "stub: firmware area does not match the record": "stub.area_bad",   # the record is right, the bytes are not
+    "stub: boot reinstalled": "stub.boot_reinstalled",        # jumping: the firmware area was installed again
     # Every way the stub gives up on a slot or a boot. Forbidden in every stub-board scenario
     # but no_slot, where giving up on both slots is the point.
     "stub: install failed": "stub.failed",
@@ -852,6 +854,22 @@ def _has_stub(board):
         return False
 
 
+# THE FIRMWARE AREA DAMAGED UNDER A GOOD RECORD. The stub hashes the installed firmware on every
+# boot and installs it again from the slot when it does not match its record -- the one repair
+# a camera makes to its own firmware, and a path no update exercises (the line-by-line reading
+# of the stub's UART showed it had never run on the fleet). The harness overwrites the first
+# block of the installed firmware through the bootloader, leaving the record alone; the boot
+# that follows has to say so, install the slot's copy again and come up, and the record then
+# reads "reinstalled". No update is offered. Boards the harness can damage this way:
+FW_CORRUPT_BOARDS = ("OPENMV_N6",)           # a DFU download to the FIRMWARE alt; widen per backend
+SCENARIOS["fw_corrupt"] = dict(
+    publish="none", app="confirm", end="golden", corrupt_firmware=True,
+    desc="firmware area damaged under a good record: the stub installs it again from the slot",
+    expect=["log.configured", "boot.ready", "run.checkin"],
+    forbid=["install.start", "install.armed", "confirm.promoted"],
+)
+
+
 # THE STUB'S COVERAGE IS READ OFF ITS UART, LINE BY LINE (hil_coverage.stub_line_coverage): the
 # stub logs at every decision, so every log call in its C is a point and a trace's raw UART
 # says which were reached. These are the lines NO scenario can reach on a healthy board, each
@@ -929,6 +947,9 @@ def _stub_marks(key, spec):
                   "stub.install_verified", "stub.boot_trial"}
     if key == "rollback":
         marks |= {"stub.slot_rejected", "stub.boot_reverted"}
+    if spec.get("corrupt_firmware"):
+        marks |= {"stub.area_bad", "stub.install", "stub.record_written",
+                  "stub.install_verified", "stub.boot_reinstalled"}
     return marks
 
 
@@ -1095,6 +1116,8 @@ def regression_scenarios(board, network):
         scs += ["watchdog", "watchdog_recover"]       # ...and survives run() rebuilding the network
     if board == "OPENMV_N6":
         scs.append("watchdog_bite")
+    if board in FW_CORRUPT_BOARDS:                     # last: its app is the plain confirm one,
+        scs.append("fw_corrupt")                       # and it takes the REPL to reach DFU
     return scs
 
 
@@ -1686,6 +1709,38 @@ def build_golden(board):
         extra = ["--allow-dev-key", "--no-account"] if step == "factory-romfs" else []
         subprocess.run([ota("openmv-ota"), "build", step, CFG["project"], "-b", board] + extra,
                        env=penv, check=True, timeout=900)
+
+
+def corrupt_firmware_area(board):
+    """Damage the installed firmware from outside, leaving its install record alone: garbage
+    over the first block of the firmware area, written through the bootloader. A DFU download
+    starts at the partition's start, so the stub's own sector is rewritten as it is; the
+    bootloader erases only what it writes, and the record lives in the partition's last block.
+    The reset that ends the download boots the stub onto a record that names what is installed
+    and an area that no longer hashes to it."""
+    from openmv_ota.flash.targets import flash_config
+    from openmv_ota.romfs.boards import get_board
+    cfg, layout = flash_config(board), get_board(board).stub
+    with open(os.path.join(CFG["project"], "build", "%s-stub.bin" % board), "rb") as f:
+        stub = f.read()
+    start = layout.firmware_dest - layout.origin
+    d = tempfile.mkdtemp(prefix="fw-corrupt-")
+    path = os.path.join(d, "stub-and-garbage.bin")
+    with open(path, "wb") as f:
+        f.write(stub + b"\xff" * (start - len(stub)) + os.urandom(64 * 1024))
+    argv = [CFG["dfu"], "-w", "-d", "," + cfg.usb, "-a", str(cfg.alt_of("firmware")),
+            "--reset", "-D", path]
+    log("corrupt: garbage over the first block of %s's firmware area, through the bootloader" % board)
+    try:
+        device_exec("import machine; machine.bootloader()", timeout=20, check=False)
+        rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False, quiet=True)
+        if rc != 0:
+            log("corrupt: the CDC route failed (rc=%d) -- through the bootloader's DFU window" % rc)
+            rc, out = dfu_reset_catch(board, argv, timeout=NOCDC_FLASH_TIMEOUT)
+        if rc != 0:
+            raise RuntimeError("could not damage the firmware area (rc=%d): %s" % (rc, (out or "")[-300:]))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def check_at_rest(board):
@@ -3970,6 +4025,11 @@ def main():
                     "(prepare writes it; a recovery erase DEFERS that write), and that nothing else "
                     "holds the port." % (CFG["uart"], BOARDS[args.board]["cov_uart"]))
             cap.reset(time.time())               # scored window starts HERE (see the early start above)
+            if spec.get("corrupt_firmware"):
+                # Inside the window: the boot the damage causes is what this scenario scores.
+                # Let it finish before run_cycle's own reset, which would cut the repair short.
+                phase("corrupt_firmware", lambda: corrupt_firmware_area(args.board))
+                _await_boot(args.board)
             # "install" phase = the whole autonomous OTA (check-in -> download -> write -> trial ->
             # confirm/promote or fallback). Timing it makes install SPEED a tracked metric too.
             result = phase("install", lambda: run_cycle(
