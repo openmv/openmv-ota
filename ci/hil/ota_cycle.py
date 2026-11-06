@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1042,8 +1043,12 @@ def regression_scenarios(board, network):
     # too: the coprocessor-MRAM write is the AE3's third board-specific path, and the one whose
     # failure costs a power cycle -- so it is proven on every PR (HIL_COPROC=0 opts out). coproc
     # dirties the partition first; otherwise sync() stream-compares, matches, and skips.
+    # `rollback` rides along for the STUB's sake: the line-by-line reading of the stub's UART
+    # (hil_coverage) showed the AE3 was the one stub board that had never rejected a slot or
+    # reverted to the other one -- and its revert is the AE3's own, two components back into
+    # two MRAM partitions. That is a port path, not board-agnostic device logic.
     if board == "OPENMV_AE3":
-        return ["delta", "watchdog", "watchdog_recover"] + (
+        return ["delta", "rollback", "watchdog", "watchdog_recover"] + (
             ["coproc", "coproc_skip"] if COPROC_ENABLED else [])
     # The Portenta runs a REDUCED suite too, for the AE3's reason: only the paths PROVEN on it.
     # Measured on the bench, running its full set for the first time -- delta, full, bad_sig and
@@ -1681,6 +1686,61 @@ def build_golden(board):
         extra = ["--allow-dev-key", "--no-account"] if step == "factory-romfs" else []
         subprocess.run([ota("openmv-ota"), "build", step, CFG["project"], "-b", board] + extra,
                        env=penv, check=True, timeout=900)
+
+
+def check_at_rest(board):
+    """ENCRYPTION AT REST, CHECKED FROM OUTSIDE THE CHIP: read the board's FIRMWARE partition
+    back through its bootloader and require ciphertext. ``(ok, report)``.
+
+    A board whose stub keeps the firmware area encrypted deciphers it as it runs, so nothing
+    the running camera says can show what its flash chip holds. The bootloader can: it runs
+    before the stub, with the cipher engine off, so a DFU upload of the partition returns the
+    stored bytes. They are judged against the build (at_rest.judge): the stub's sector is the
+    stub, no firmware block is stored as built, the stored firmware has the entropy of
+    ciphertext, and nothing else is left in the area.
+
+    Run after a scenario is scored: entering DFU over the CDC stops the app, and the upload
+    leaves DFU with a reset. With the CDC gone it catches the bootloader's DFU window."""
+    import at_rest
+    from openmv_ota.flash.targets import flash_config
+    from openmv_ota.romfs.boards import firmware_image_name, get_board
+    cfg, layout = flash_config(board), get_board(board).stub
+    build = os.path.join(CFG["project"], "build")
+    with open(os.path.join(build, "%s-stub.bin" % board), "rb") as f:
+        stub = f.read()
+    with open(os.path.join(build, firmware_image_name(board)), "rb") as f:
+        firmware = f.read()
+    d = tempfile.mkdtemp(prefix="at-rest-")
+    path = os.path.join(d, "firmware-partition.bin")       # dfu-util refuses an existing file
+    argv = [CFG["dfu"], "-w", "-d", "," + cfg.usb, "-a", str(cfg.alt_of("firmware")),
+            "--reset", "-U", path]
+    log("at rest: reading %s's firmware partition back through the bootloader" % board)
+    try:
+        device_exec("import machine; machine.bootloader()", timeout=20, check=False)
+        rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False, quiet=True)
+        if rc != 0 or not os.path.exists(path):
+            log("at rest: the CDC route failed (rc=%d) -- through the bootloader's DFU window" % rc)
+            if os.path.exists(path):
+                os.unlink(path)
+            rc, out = dfu_reset_catch(board, argv, timeout=NOCDC_FLASH_TIMEOUT)
+        if rc != 0 or not os.path.exists(path):
+            return False, {"problems": ["the read-back did not happen (rc=%d): %s"
+                                        % (rc, (out or "")[-200:])]}
+        with open(path, "rb") as f:
+            dump = f.read()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    start = layout.firmware_dest - layout.origin
+    problems, numbers = at_rest.judge(dump, stub, firmware, start, start + layout.firmware_max)
+    report = dict(numbers, problems=problems)
+    if numbers:
+        log("at rest: stub %s; %d of %d firmware blocks stored as built, %d build samples "
+            "found, %.3f bits/byte, %d bytes not blank after it"
+            % ("as built" if numbers["stub_ok"] else "NOT this build's", numbers["same"],
+               numbers["blocks"], numbers["found"], numbers["entropy"], numbers["stale"]))
+    for why in problems:
+        log("at rest: NOT ENCRYPTED -- " + why)
+    return not problems, report
 
 
 def flash_golden(board, bad_romfs=False):
@@ -3933,6 +3993,16 @@ def main():
         # THE CONSUMER, NOT JUST THE WRITE: after a green coproc run, boot the helper core and make
         # it read back this run's nonce from the partition sync() just wrote. Scored window is over,
         # so taking the REPL here costs nothing.
+        # A QUICK LOOK AT THE FLASH CHIP ITSELF, on a board that encrypts: after the happy-path
+        # update -- by now the stub has stored the factory flash's plaintext download and then
+        # installed the update -- read the firmware back through the bootloader and require
+        # ciphertext (check_at_rest). The scored window is over, so taking the REPL costs nothing.
+        if trace["passed"] and args.scenario == "delta" and _stub_encrypts(args.board):
+            ok, report = phase("at_rest", lambda: check_at_rest(args.board))
+            trace["at_rest"] = report
+            if not ok:
+                trace["passed"] = False
+                log("FAIL: the firmware is not ciphertext in the flash chip")
         if trace["passed"] and spec.get("he_boot"):
             ok, why = phase("he_boot", lambda: coproc_he_boot_check(args.board, _COPROC_NONCE))
             trace["he_boot"] = why
