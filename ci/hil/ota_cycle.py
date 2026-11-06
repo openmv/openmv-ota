@@ -1486,9 +1486,22 @@ def bench_main_py(board, net, app="confirm"):
         # Reading it over mpremote meant a Ctrl-C, and a Ctrl-C kills this app (KeyboardInterrupt is
         # a BaseException) -- the board can simply say who it is instead.
         "    _blog.info('app: device_id %s' % openmv_ota.identity().get('device_id'))\n"
+        "    openmv_ota.sync()  # apply bundled coprocessor resources early (no-op if none)\n"
+        "    await _bring_up()\n"
         # Seal and open a record with this board's keys: the one device-side use of the keys the
         # harness can witness without a server -- a soft key area, an SE050 or the Giga's ATECC608,
         # and the N6's sealed record -- on every wifi/lan board, every cycle.
+        # AFTER the network is up, and before run() (which may arm a 100 ms watchdog an SE050's
+        # ~180 ms ECDH would trip). Sealing BEFORE the bring-up started the Nicla's radio ~0.4 s
+        # later, 4.6 s after reset -- right where the USB host attaches the /flash drive and
+        # reads it. The radio's firmware is DMA'd out of that same QSPI chip's memory map, and
+        # the host's access takes the chip out of memory-mapped mode under the transfer: the
+        # whole MCU hangs (UART silent after `sync: nothing bundled`, USB dead, the core past
+        # halting). Fleet: 4 of 50 Nicla scenarios, none in the 140 before the seal went in.
+        # Bench, 80 pin-reset boots each: 6 hangs with the seal first, 0 with micropython#19752
+        # in the firmware (carried in ci/hil/patches/micropython/ until openmv's fork has it).
+        # The seal stays behind the bring-up all the same: it is where every signed check-in
+        # already uses the keys, and the fleet should not lean on one window staying shut.
         "    try:\n"
         "        from openmv_ota import se as _se\n"
         "        _blob = _se.seal(b'bench record', aad=b'hil')\n"
@@ -1496,8 +1509,6 @@ def bench_main_py(board, net, app="confirm"):
         "        _blog.info('app: sealed data round-trip ok')\n"
         "    except Exception as _e:\n"
         "        _blog.error('app: seal FAILED %r' % (_e,))\n"
-        "    openmv_ota.sync()  # apply bundled coprocessor resources early (no-op if none)\n"
-        "    await _bring_up()\n"
         "    _blog.info('app: network up, starting run()')\n"
         + start_run +
         trial_policy + "\n\n"
