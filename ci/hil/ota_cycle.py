@@ -531,9 +531,11 @@ COVERAGE = {
     "stub: boot reinstalled": "stub.boot_reinstalled",        # jumping: the firmware area was installed again
     # Every way the stub gives up on a slot or a boot. Forbidden in every stub-board scenario
     # but no_slot, where giving up on both slots is the point.
-    "stub: install failed": "stub.failed",
     "stub: component install failed": "stub.failed",
-    "stub: blob hash mismatch": "stub.failed",
+    # Two of them a scenario CAN reach (blob_corrupt), so they are markers of their own:
+    # forbidden everywhere else, expected there.
+    "stub: blob hash mismatch": "stub.blob_bad",              # a slot's firmware blob does not hash: never decoded
+    "stub: install failed": "stub.install_failed",            # that slot is given up on, the next one tried
     "stub: attempt mark failed": "stub.failed",
     "stub: memory map restore failed": "stub.failed",
     "stub: record write failed": "stub.failed",
@@ -862,6 +864,18 @@ def _has_stub(board):
 # that follows has to say so, install the slot's copy again and come up, and the record then
 # reads "reinstalled". No update is offered. Boards the harness can damage this way:
 FW_CORRUPT_BOARDS = ("OPENMV_N6",)           # a DFU download to the FIRMWARE alt; widen per backend
+# ...AND THE SLOT'S OWN COPY DAMAGED TOO. A slot's trailer is signed and names its firmware blob
+# by hash; the blob's bytes are checked only when the stub is about to install them -- the gate
+# that keeps anything unverified from the decompressor. Here the booted slot's blob is damaged
+# (a block of it rewritten through the bootloader) AND the firmware area is, so the repair has to
+# refuse that slot's copy, give the slot up, and install the other slot's.
+SCENARIOS["blob_corrupt"] = dict(
+    publish="none", app="confirm", end="golden", corrupt_firmware=True, corrupt_blob=True,
+    desc="firmware area AND the booted slot's firmware blob damaged: the stub refuses the blob "
+         "and installs the other slot's",
+    expect=["log.configured", "boot.ready", "run.checkin"],
+    forbid=["install.start", "install.armed", "confirm.promoted"],
+)
 SCENARIOS["fw_corrupt"] = dict(
     publish="none", app="confirm", end="golden", corrupt_firmware=True,
     desc="firmware area damaged under a good record: the stub installs it again from the slot",
@@ -948,8 +962,11 @@ def _stub_marks(key, spec):
     if key == "rollback":
         marks |= {"stub.slot_rejected", "stub.boot_reverted"}
     if spec.get("corrupt_firmware"):
-        marks |= {"stub.area_bad", "stub.install", "stub.record_written",
-                  "stub.install_verified", "stub.boot_reinstalled"}
+        marks |= {"stub.area_bad", "stub.install", "stub.record_written", "stub.install_verified"}
+        # Repaired from the same slot it reads "reinstalled"; from the other slot, after this
+        # one's blob was refused, it is that slot's ordinary install.
+        marks |= ({"stub.blob_bad", "stub.install_failed"} if spec.get("corrupt_blob")
+                  else {"stub.boot_reinstalled"})
     return marks
 
 
@@ -1035,6 +1052,7 @@ def scenario_markers(board, key):
         expect |= _stub_marks(key, s)
         if key != "no_slot":
             forbid.add("stub.failed")
+            forbid |= {"stub.blob_bad", "stub.install_failed"} - expect
             if _stub_encrypts(board):
                 expect.add("stub.crypt")
     return expect, forbid
@@ -1116,8 +1134,8 @@ def regression_scenarios(board, network):
         scs += ["watchdog", "watchdog_recover"]       # ...and survives run() rebuilding the network
     if board == "OPENMV_N6":
         scs.append("watchdog_bite")
-    if board in FW_CORRUPT_BOARDS:                     # last: its app is the plain confirm one,
-        scs.append("fw_corrupt")                       # and it takes the REPL to reach DFU
+    if board in FW_CORRUPT_BOARDS:                     # last: their app is the plain confirm one,
+        scs += ["fw_corrupt", "blob_corrupt"]          # and they take the REPL to reach DFU
     return scs
 
 
@@ -1711,13 +1729,37 @@ def build_golden(board):
                        env=penv, check=True, timeout=900)
 
 
-def corrupt_firmware_area(board):
+def _damaged_slot_prefix(board):
+    """The start of the factory ROMFS image, up to and including the first block of slot A's
+    firmware blob, with 16 bytes of that blob flipped: what a DFU download to the ROMFS alt
+    rewrites slot A's beginning with. The trailer still verifies -- it names the blob by hash
+    -- and the blob no longer hashes to it. (bytes, blob offset)"""
+    from openmv_ota.flash.targets import flash_config
+    from openmv_ota.ota.trailer import parse_trailer
+    cfg = flash_config(board)
+    path = os.path.join(CFG["project"], "build",
+                        "%s-%s" % (board, cfg.filename("romfs", "factory-romfs.img")))
+    with open(path, "rb") as f:
+        image = bytearray(f.read())
+    slot = len(image) // 2                           # the same image in both slots
+    blob = parse_trailer(bytes(image[slot - 4096:slot])).components[0]
+    at = blob.offset + min(4096, blob.size // 2)
+    for i in range(at, at + 16):
+        image[i] ^= 0xFF
+    end = -(-(at + 16) // 65536) * 65536
+    return bytes(image[:end]), blob.offset
+
+
+def corrupt_firmware_area(board, blob=False):
     """Damage the installed firmware from outside, leaving its install record alone: garbage
     over the first block of the firmware area, written through the bootloader. A DFU download
     starts at the partition's start, so the stub's own sector is rewritten as it is; the
     bootloader erases only what it writes, and the record lives in the partition's last block.
     The reset that ends the download boots the stub onto a record that names what is installed
-    and an area that no longer hashes to it."""
+    and an area that no longer hashes to it.
+
+    ``blob``: first damage slot A's firmware blob in the same DFU session (see
+    _damaged_slot_prefix), so the copy the stub would repair from is no good either."""
     from openmv_ota.flash.targets import flash_config
     from openmv_ota.romfs.boards import get_board
     cfg, layout = flash_config(board), get_board(board).stub
@@ -1725,20 +1767,30 @@ def corrupt_firmware_area(board):
         stub = f.read()
     start = layout.firmware_dest - layout.origin
     d = tempfile.mkdtemp(prefix="fw-corrupt-")
+    steps = []                                       # (alt, file): the last one leaves DFU
+    if blob:
+        prefix, off = _damaged_slot_prefix(board)
+        path = os.path.join(d, "slot-with-a-bad-blob.bin")
+        with open(path, "wb") as f:
+            f.write(prefix)
+        steps.append((cfg.alt_of("romfs"), path))
+        log("corrupt: 16 bytes of slot A's firmware blob (at 0x%x) flipped, through the bootloader" % off)
     path = os.path.join(d, "stub-and-garbage.bin")
     with open(path, "wb") as f:
         f.write(stub + b"\xff" * (start - len(stub)) + os.urandom(64 * 1024))
-    argv = [CFG["dfu"], "-w", "-d", "," + cfg.usb, "-a", str(cfg.alt_of("firmware")),
-            "--reset", "-D", path]
+    steps.append((cfg.alt_of("firmware"), path))
     log("corrupt: garbage over the first block of %s's firmware area, through the bootloader" % board)
     try:
         device_exec("import machine; machine.bootloader()", timeout=20, check=False)
-        rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False, quiet=True)
-        if rc != 0:
-            log("corrupt: the CDC route failed (rc=%d) -- through the bootloader's DFU window" % rc)
-            rc, out = dfu_reset_catch(board, argv, timeout=NOCDC_FLASH_TIMEOUT)
-        if rc != 0:
-            raise RuntimeError("could not damage the firmware area (rc=%d): %s" % (rc, (out or "")[-300:]))
+        for i, (alt, path) in enumerate(steps):
+            argv = [CFG["dfu"], "-w", "-d", "," + cfg.usb, "-a", str(alt)]
+            argv += (["--reset"] if i == len(steps) - 1 else []) + ["-D", path]
+            rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False, quiet=True)
+            if rc != 0 and i == 0:
+                log("corrupt: the CDC route failed (rc=%d) -- through the bootloader's DFU window" % rc)
+                rc, out = dfu_reset_catch(board, argv, timeout=NOCDC_FLASH_TIMEOUT)
+            if rc != 0:
+                raise RuntimeError("could not damage the board (rc=%d): %s" % (rc, (out or "")[-300:]))
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -4028,7 +4080,8 @@ def main():
             if spec.get("corrupt_firmware"):
                 # Inside the window: the boot the damage causes is what this scenario scores.
                 # Let it finish before run_cycle's own reset, which would cut the repair short.
-                phase("corrupt_firmware", lambda: corrupt_firmware_area(args.board))
+                phase("corrupt_firmware", lambda: corrupt_firmware_area(
+                    args.board, blob=spec.get("corrupt_blob", False)))
                 _await_boot(args.board)
             # "install" phase = the whole autonomous OTA (check-in -> download -> write -> trial ->
             # confirm/promote or fallback). Timing it makes install SPEED a tracked metric too.

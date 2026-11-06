@@ -162,11 +162,12 @@ def test_fw_corrupt_expects_the_stubs_repair_and_runs_where_the_harness_can_dama
             "stub.boot_reinstalled", "stub.fast_path", "stub.boot_normal", "boot.ready"} <= expect
     assert "stub.failed" in forbid and "install.start" in forbid
     n6 = ota_cycle.regression_scenarios("OPENMV_N6", ota_cycle.BOARDS["OPENMV_N6"]["network"])
-    assert n6[-1] == "fw_corrupt"
+    assert n6[-2:] == ["fw_corrupt", "blob_corrupt"]
     for board in ota_cycle.BOARDS:
         if board not in ota_cycle.FW_CORRUPT_BOARDS:
             for net in ("lan", "wifi", "file"):
-                assert "fw_corrupt" not in ota_cycle.regression_scenarios(board, net), board
+                assert not {"fw_corrupt", "blob_corrupt"} & set(
+                    ota_cycle.regression_scenarios(board, net)), board
 
 
 def test_the_damage_is_the_stub_as_it_is_then_garbage_over_the_first_firmware_block(bench, monkeypatch):
@@ -189,5 +190,51 @@ def test_the_damage_is_the_stub_as_it_is_then_garbage_over_the_first_firmware_bl
     # no route into DFU: the scenario stops there rather than scoring an undamaged board
     monkeypatch.setattr(ota_cycle, "sh", lambda argv, **k: (74, "no device"))
     monkeypatch.setattr(ota_cycle, "dfu_reset_catch", lambda *a, **k: (1, "still none"))
-    with pytest.raises(RuntimeError, match="could not damage the firmware area"):
+    with pytest.raises(RuntimeError, match="could not damage the board"):
         ota_cycle.corrupt_firmware_area(BOARD)
+
+
+def test_blob_corrupt_expects_the_blob_refused_and_the_other_slot_installed():
+    expect, forbid = ota_cycle.scenario_markers("OPENMV_N6", "blob_corrupt")
+    assert {"stub.area_bad", "stub.blob_bad", "stub.install_failed", "stub.install",
+            "stub.record_written", "stub.install_verified", "stub.boot_normal"} <= expect
+    assert "stub.boot_reinstalled" not in expect           # the other slot's is an ordinary install
+    assert "stub.failed" in forbid and not {"stub.blob_bad", "stub.install_failed"} & forbid
+    # ...and everywhere else those two lines stay forbidden
+    for name in ("delta", "rollback", "fw_corrupt", "bad_sig"):
+        assert {"stub.blob_bad", "stub.install_failed"} <= ota_cycle.scenario_markers("OPENMV_N6", name)[1]
+    assert "stub.blob_bad" not in ota_cycle.scenario_markers("OPENMV_N6", "no_slot")[1]
+
+
+def test_the_blob_damage_rewrites_slot_a_up_to_one_flipped_block_of_its_blob(bench, monkeypatch, tmp_path):
+    import openmv_ota.ota.trailer as trailer_mod
+    from types import SimpleNamespace
+    slot = 4 * 1024 * 1024
+    image = bytes(random.Random(3).choices(range(256), k=2 * slot))
+    (tmp_path / "build" / ("%s-factory-romfs.img" % BOARD)).write_bytes(image)
+    seen = {}
+
+    def parse(data):
+        seen["trailer"] = data
+        return SimpleNamespace(components=[SimpleNamespace(offset=0x130000, size=900000)])
+
+    monkeypatch.setattr(trailer_mod, "parse_trailer", parse)
+    prefix, off = ota_cycle._damaged_slot_prefix(BOARD)
+    assert seen["trailer"] == image[slot - 4096:slot] and off == 0x130000
+    at = 0x130000 + 4096
+    assert len(prefix) == 0x140000 and len(prefix) % 65536 == 0      # whole blocks, past the flip
+    assert prefix[:at] == image[:at] and prefix[at + 16:] == image[at + 16:len(prefix)]
+    assert bytes(b ^ 0xFF for b in prefix[at:at + 16]) == image[at:at + 16]
+
+    wrote = []
+
+    def sh(argv, **k):
+        with open(argv[-1], "rb") as f:
+            wrote.append((argv, len(f.read())))
+        return 0, ""
+
+    monkeypatch.setattr(ota_cycle, "sh", sh)
+    ota_cycle.corrupt_firmware_area(BOARD, blob=True)
+    (a_argv, a_len), (b_argv, b_len) = wrote
+    assert a_argv[a_argv.index("-a") + 1] == "3" and "--reset" not in a_argv and a_len == 0x140000
+    assert b_argv[b_argv.index("-a") + 1] == "1" and "--reset" in b_argv and b_len == START + 65536
