@@ -1468,7 +1468,8 @@ def test_seal_round_trips_and_the_blob_is_version_iv_ciphertext_tag(sealer):
         blob = _pkg.seal(data, aad=b"records", keys=keys)
         assert blob[0] == 1 and len(blob) == 49 + (len(data) // 16 + 1) * 16
         assert _pkg.unseal(blob, aad=b"records", keys=keys) == data
-        assert not data or bytes(data) not in blob           # nothing of it in the clear
+        # nothing of it in the clear (a byte or two turns up in 80 random bytes by chance)
+        assert len(data) < 8 or bytes(data) not in blob
     a, b = (_pkg.seal(b"same", keys=keys) for _ in range(2))
     assert a[1:17] != b[1:17] and a != b                     # a fresh IV every time
     assert _pkg.unseal(a, keys=keys) == _pkg.unseal(b, keys=keys) == b"same"
