@@ -238,3 +238,38 @@ def test_the_blob_damage_rewrites_slot_a_up_to_one_flipped_block_of_its_blob(ben
     (a_argv, a_len), (b_argv, b_len) = wrote
     assert a_argv[a_argv.index("-a") + 1] == "3" and "--reset" not in a_argv and a_len == 0x140000
     assert b_argv[b_argv.index("-a") + 1] == "1" and "--reset" in b_argv and b_len == START + 65536
+
+
+def test_no_slot_on_a_board_that_encrypts_expects_the_stubs_last_resort(monkeypatch):
+    n6 = ota_cycle.regression_scenarios("OPENMV_N6", ota_cycle.BOARDS["OPENMV_N6"]["network"])
+    assert "no_slot" in n6 and n6.index("no_slot") < n6.index("watchdog")   # before an armed app
+    expect, forbid = ota_cycle.scenario_markers("OPENMV_N6", "no_slot")
+    assert {"stub.version", "stub.slot_rejected", "stub.no_slot_boot", "boot.no_slot"} <= expect
+    assert "stub.failed" not in forbid
+    # a stub that does not encrypt is not asked for the line, and nowhere else may it appear
+    monkeypatch.setattr(ota_cycle, "_has_stub", lambda b: b in ("OPENMV_N6", "OPENMV_RT1060"))
+    assert "stub.no_slot_boot" not in ota_cycle.scenario_markers("OPENMV_RT1060", "no_slot")[0]
+    assert "stub.no_slot_boot" in ota_cycle.scenario_markers("OPENMV_N6", "delta")[1]
+
+
+def test_the_dfu_brick_erases_both_slots_ends_then_flashes_the_firmware(bench, monkeypatch):
+    ran = []
+    monkeypatch.setattr(ota_cycle, "_has_stub", lambda b: b == BOARD)
+    monkeypatch.setattr(ota_cycle, "device_exec",
+                        lambda code, **k: bench["exec"].append(code) or (0, "ERASED 0 0 0\nERASED 1 0 0\n"))
+    monkeypatch.setattr(ota_cycle, "sh", lambda argv, **k: ran.append(argv) or (0, ""))
+    monkeypatch.setattr(ota_cycle, "_log_cli_tail", lambda *a, **k: None)
+    ota_cycle._brick_slots_dfu(BOARD)
+    assert "rom_ioctl(3, 0, s * n, 4096)" in bench["exec"][0]
+    assert "(s + 1) * n - 4096" in bench["exec"][0]
+    (argv,) = ran
+    assert argv[1:3] == ["flash", "firmware"] and argv[argv.index("-b") + 1] == BOARD
+    compile(ota_cycle._ERASE_TRAILERS, "erase", "exec")
+    # the erase did not happen: nothing is flashed over a board whose slots still verify
+    monkeypatch.setattr(ota_cycle, "device_exec", lambda code, **k: (1, "Traceback"))
+    with pytest.raises(RuntimeError, match="could not erase the slots' trailers"):
+        ota_cycle._brick_slots_dfu(BOARD)
+    assert len(ran) == 1
+    with pytest.raises(RuntimeError, match="not implemented for OPENMV_AE3"):
+        monkeypatch.setattr(ota_cycle, "_has_stub", lambda b: False)
+        ota_cycle._brick_slots_dfu("OPENMV_AE3")

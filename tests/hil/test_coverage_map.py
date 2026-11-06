@@ -121,9 +121,12 @@ def test_regression_scenarios_are_valid_and_board_gated():
             # HIL_COPROC=0 opts out).
             assert any(s.startswith("coproc") for s in scs) == \
                 (board == "OPENMV_AE3" and net == primary and ota_cycle.COPROC_ENABLED)
-            # no_slot only on block-device boards (blhost slot-erase)
+            # no_slot only where the harness can brick both slots: the block-device boards (a
+            # blhost slot-erase) and a DFU board whose stub encrypts (trailers erased from the
+            # REPL, then the firmware downloaded in the clear)
             if "no_slot" in scs:
-                assert ota_cycle.BOARDS[board]["flash"] == "blhost_imx"
+                assert (ota_cycle.BOARDS[board]["flash"] == "blhost_imx"
+                        or ota_cycle._stub_encrypts(board))
             # a secondary interface just proves the network path
             if net != primary:
                 assert scs == ["delta"]

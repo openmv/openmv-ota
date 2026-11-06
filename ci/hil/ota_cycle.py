@@ -542,7 +542,11 @@ COVERAGE = {
     "stub: installed area does not verify": "stub.failed",
     "stub: area scrub failed": "stub.failed",
     "stub: nothing to boot": "stub.failed",
-    "stub: no slot": "stub.failed",
+    # No slot verifies and no record vouches for the area, but firmware is there: a camera
+    # provisioned over USB whose slots were wiped. Expected in no_slot on a board whose stub
+    # encrypts (the USB download is in the clear, so its record cannot vouch for it), forbidden
+    # everywhere else.
+    "stub: no slot: booting the installed firmware": "stub.no_slot_boot",
     "stub: blob read failed": "stub.failed",
     "stub: flash cipher setup failed": "stub.failed",
     "stub: no hardware key": "stub.failed",
@@ -954,7 +958,7 @@ def _stub_marks(key, spec):
     attempts, so the stub rejects the slot (trial-failed) and boots the other one reverted,
     installing it again on the way. no_slot bricks both slots: both rejected, nothing more."""
     if key == "no_slot":
-        return {"stub.version", "stub.slot_rejected"}
+        return {"stub.version", "stub.slot_rejected"}        # (+ stub.no_slot_boot, see scenario_markers)
     marks = {"stub.version", "stub.slot_ok", "stub.fast_path", "stub.boot_normal"}
     if "install.armed" in spec["expect"]:
         marks |= {"stub.slot_trial", "stub.attempt", "stub.install", "stub.record_written",
@@ -1052,9 +1056,11 @@ def scenario_markers(board, key):
         expect |= _stub_marks(key, s)
         if key != "no_slot":
             forbid.add("stub.failed")
-            forbid |= {"stub.blob_bad", "stub.install_failed"} - expect
+            forbid |= {"stub.blob_bad", "stub.install_failed", "stub.no_slot_boot"} - expect
             if _stub_encrypts(board):
                 expect.add("stub.crypt")
+        elif _stub_encrypts(board):
+            expect.add("stub.no_slot_boot")
     return expect, forbid
 
 
@@ -1123,7 +1129,11 @@ def regression_scenarios(board, network):
     # taking the REPL stops the feed -- the board bites, reboots, re-arms, and the seed never lands.
     # After `watchdog` that was merely racy; after `watchdog_recover` it failed every time (RT1060).
     # `reinstall` leaves the plain confirm app, which a REPL touch cannot hurt.
-    if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
+    # ...and on a board whose stub encrypts: both slots' trailers erased from the REPL, then the
+    # firmware downloaded over USB (see _flash_dfu_cli). That is the one way to the stub's last
+    # resort -- no slot, no record that vouches, firmware in the clear -- and to boot.py's
+    # no-slot path on this board.
+    if BOARDS[board]["flash"] == "blhost_imx" or _stub_encrypts(board):
         scs.append("no_slot")
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
     # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install
@@ -1877,6 +1887,45 @@ def _log_cli_tail(rc, out, lines=25):
         log("  [cli] " + ln[:240])
 
 
+# Erase the first and the trailer block of both romfs slots, from the device: the partition is
+# one buffer (rom_ioctl 2), each half a slot, its trailer the slot's last 4 KiB (ioctl 3 erases
+# a range, 5 ends the write). Without its trailer a slot does not verify; without its first
+# block the firmware finds no filesystem to mount at start-up either, which is the state the
+# scenario's boot.no_prior_mount stands for. Seconds, where blanking the partition over DFU
+# is minutes.
+_ERASE_TRAILERS = (
+    "import vfs\n"
+    "n = len(vfs.rom_ioctl(2, 0)) // 2\n"
+    "for s in (0, 1):\n"
+    "    a = vfs.rom_ioctl(3, 0, s * n, 4096)\n"
+    "    b = vfs.rom_ioctl(3, 0, (s + 1) * n - 4096, 4096)\n"
+    "    print('ERASED', s, a, b)\n"
+    "vfs.rom_ioctl(5, 0)\n"
+)
+
+
+def _brick_slots_dfu(board):
+    """The no_slot brick on a DFU board with a boot stub: no slot left that verifies, and the
+    firmware written over USB. Both trailers are erased from the REPL; `flash firmware` then
+    downloads the stub and the firmware as built. On a board whose stub encrypts, that download
+    is in the clear, so the install record cannot vouch for the area and the stub is down to
+    its last resort: firmware that at least looks like firmware, booted with the cipher off."""
+    if not _has_stub(board):
+        raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
+    rc, out = device_exec(_ERASE_TRAILERS, timeout=60, check=False)
+    if (out or "").count("ERASED") != 2:
+        raise RuntimeError("could not erase the slots' trailers (rc=%d): %s" % (rc, (out or "")[-300:]))
+    argv = [ota("openmv-ota"), "flash", "firmware", CFG["project"], "-b", board,
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
+    log("brick: both slots' trailers erased; flash firmware -> %s (openmv-ota, DFU -w)" % board)
+    rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False)
+    _log_cli_tail(rc, out)
+    if rc != 0:
+        rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=NOCDC_FLASH_TIMEOUT)
+    if rc != 0:
+        raise RuntimeError("flash firmware failed on both routes rc=%d: %s" % (rc, (out or "")[-400:]))
+
+
 def _flash_dfu_cli(board, bad_romfs=False):
     """Golden flash for the DFU boards (N6, AE3) via the openmv-ota CLI's `flash factory` -- the SAME
     tooling users ship with (and the recipe the OpenMV IDE uses). It enters DFU with
@@ -1895,7 +1944,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
     global _FLASH_MARK
     _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
     if bad_romfs:
-        raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
+        return _brick_slots_dfu(board)
     _ensure_cdc(board, allow_erase=True)   # pre-flash: safe to erase; the flash below reprovisions
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote"),
