@@ -70,6 +70,10 @@ class StubLayout:
     # Where the install record lives when it is not the sector after the firmware window
     # (the AE3 keeps it at the end of the HE partition, the last of its install windows).
     record: int | None = None
+    # The stub keeps the firmware area ciphertext at rest, deciphered by the chip as it reads
+    # (the N6's memory cipher engine, keyed from the chip's own hardware key): what the tool
+    # flashes there in the clear is installed again, encrypted, on the first boot.
+    encrypted: bool = False
 
     @property
     def stub_max(self) -> int:
@@ -129,7 +133,11 @@ def _stub(name: str, raw) -> StubLayout | None:
         if record % 4096 or record < origin or any(w <= record < w + n for w, n in windows):
             raise ValueError("boards.json: %s stub record must be a sector outside the stub and "
                              "the install windows" % name)
-    return StubLayout(origin, dest, size, t2_dest, t2_max, prefer, exclude, cp_dest, cp_max, record)
+    encrypted = raw.get("encrypted", False)
+    if not isinstance(encrypted, bool):
+        raise ValueError("boards.json: %s stub encrypted must be true or false" % name)
+    return StubLayout(origin, dest, size, t2_dest, t2_max, prefer, exclude, cp_dest, cp_max, record,
+                      encrypted)
 
 
 def firmware_image_name(name: str) -> str:

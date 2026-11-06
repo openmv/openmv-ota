@@ -70,6 +70,32 @@ void record_read(record_t *r) {
     r->valid = true;
 }
 
+// The tweak the firmware area is ciphered under, on a port that keeps it encrypted: 80
+// bits of a hash over what is installed -- each component's destination, size and
+// installed hash, exactly as the record lists them. Derived, not stored, so the record's
+// format is what it was; and derived from the content, so two different installs never
+// share a keystream (the same firmware installed twice is the same ciphertext, which
+// tells nobody anything), a cut-off install resumes where it stopped, and an area an
+// older stub installed in the clear simply stops matching its record and is installed
+// again.
+static const uint8_t crypt_label[16] = { 'o', 'm', 'v', '-', 'f', 'w', '-', 'c', 'r', 'y', 'p', 't', '-', 'v', '1', 0 };
+
+static int crypt_select(const record_entry_t *entries, uint32_t count) {
+    CRYAL_SHA256_CTX ctx;
+    uint8_t hash[32];
+    sha256_init(&ctx);
+    sha256_update(&ctx, crypt_label, sizeof(crypt_label));
+    sha256_update(&ctx, (const uint8_t *) entries, count * sizeof(record_entry_t));
+    sha256_final(&ctx, hash);
+    if (port_crypt_select(hash) != 0) {         // its first PORT_CRYPT_TWEAK_SIZE bytes
+        return -1;
+    }
+    #ifdef STUB_CRYPT_START
+    log_line("flash cipher on");
+    #endif
+    return 0;
+}
+
 // The record names this slot's components exactly (destination, size, installed hash).
 bool record_matches(const record_t *r, const slot_t *s) {
     if (!r->valid || !s->ok || r->hdr.slot != s->index || r->hdr.comp_count != s->hdr->comp_count) {
@@ -86,8 +112,9 @@ bool record_matches(const record_t *r, const slot_t *s) {
     return true;
 }
 
-// The firmware area holds what the record says was installed.
-bool record_area_ok(const record_t *r) {
+// The firmware area hashes to what the record says was installed: as the firmware will
+// read it (under the cipher, on a port that has one), or as it is stored.
+static bool area_hashes(const record_t *r, bool stored) {
     if (!r->valid) {
         return false;
     }
@@ -99,11 +126,31 @@ bool record_area_ok(const record_t *r) {
             stub_sector_overlaps(e->dest, e->installed_size)) {
             return false;
         }
+        if (i == 0 && (stored ? port_crypt_select(NULL) : crypt_select(r->entries, r->hdr.comp_count)) != 0) {
+            return false;
+        }
         if (!sha256_flash(e->dest, e->installed_size, hash) || memcmp(hash, e->installed_sha256, 32) != 0) {
             return false;
         }
     }
     return true;
+}
+
+// The firmware area holds what the record says was installed.
+bool record_area_ok(const record_t *r) {
+    return area_hashes(r, false);
+}
+
+// On a port that keeps the area encrypted: it holds what the record names, but in the
+// clear. That is firmware downloaded over USB (the bootloader writes what it is given),
+// not a damaged area; the install that follows stores it encrypted.
+bool record_area_in_clear(const record_t *r) {
+    #ifdef STUB_CRYPT_START
+    return area_hashes(r, true);
+    #else
+    (void) r;
+    return false;
+    #endif
 }
 
 // Does flash at addr already hold these n bytes?
@@ -263,6 +310,52 @@ static int write_record(const slot_t *s, uint32_t reason) {
     return flash_equals(STUB_RECORD_ADDR, record_block, n) ? 0 : -1;
 }
 
+
+#ifdef STUB_CRYPT_START
+_Static_assert((STUB_CRYPT_START % STUB_FLASH_BLOCK) == 0, "the encrypted area starts on an erase block");
+
+// An encrypted area holds nothing but this install. Whatever else is in it -- the tail of
+// a longer firmware an earlier install left, or of one downloaded over USB in the clear --
+// is erased: every whole block no component touches that is not blank already. The area's
+// last block is the record's, erased before the first component went in.
+static int scrub_area(const slot_t *s) {
+    uint32_t erased = 0;
+    for (uint32_t addr = STUB_CRYPT_START; addr + STUB_FLASH_BLOCK <= STUB_CRYPT_END; addr += STUB_FLASH_BLOCK) {
+        bool used = false;
+        for (uint32_t i = 0; i < s->hdr->comp_count; i++) {
+            const component_t *c = &s->comps[i];
+            if (c->dest < addr + STUB_FLASH_BLOCK && addr < c->dest + c->installed_size) {
+                used = true;
+            }
+        }
+        if (used) {
+            continue;
+        }
+        bool blank = true;
+        for (uint32_t off = 0; blank && off < STUB_FLASH_BLOCK; off += IN_CHUNK) {
+            if (port_flash_read_stored(addr + off, cmp_chunk, IN_CHUNK) != 0) {
+                return -1;
+            }
+            for (uint32_t i = 0; i < IN_CHUNK; i++) {
+                if (cmp_chunk[i] != 0xFF) {
+                    blank = false;
+                    break;
+                }
+            }
+        }
+        if (!blank) {
+            port_led_blink(50);
+            if (port_flash_erase(addr) != 0) {
+                return -1;
+            }
+            erased++;
+        }
+    }
+    log_kv("stale blocks erased", erased);
+    return 0;
+}
+#endif
+
 int install_slot(const slot_t *s, uint32_t reason) {
     // Gate the decoder: every blob's compressed hash first, through the memory map.
     for (uint32_t i = 0; i < s->hdr->comp_count; i++) {
@@ -270,6 +363,18 @@ int install_slot(const slot_t *s, uint32_t reason) {
             log_line("blob hash mismatch");
             return -1;
         }
+    }
+    // The area as this install will leave it: what is already there under the same tweak
+    // is kept, anything else is rewritten.
+    static record_entry_t entries[TRAILER_MAX_COMPONENTS] STUB_BUFFER_SMALL;
+    for (uint32_t i = 0; i < s->hdr->comp_count; i++) {
+        entries[i].dest = s->comps[i].dest;
+        entries[i].installed_size = s->comps[i].installed_size;
+        memcpy(entries[i].installed_sha256, s->comps[i].installed_sha256, 32);
+    }
+    if (crypt_select(entries, s->hdr->comp_count) != 0) {
+        log_line("flash cipher setup failed");
+        return -1;
     }
     if (port_flash_prog_begin() != 0) {
         return -1;
@@ -286,6 +391,12 @@ int install_slot(const slot_t *s, uint32_t reason) {
             goto done;
         }
     }
+    #ifdef STUB_CRYPT_START
+    if (scrub_area(s) != 0) {
+        log_line("area scrub failed");
+        goto done;
+    }
+    #endif
     ret = write_record(s, reason);
     if (ret == 0) {
         log_line("record written");

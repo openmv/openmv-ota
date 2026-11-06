@@ -267,7 +267,9 @@ Last 4 KiB of the firmware area, written after all components are installed.
    verifies; else stop, blink, log over the debug UART (recovery needs USB).
 3. If the install record does not match the target's components: verify each
    blob's hash, erase the destinations, decompress into them (sector by sector,
-   skipping sectors that already match), write the install record.
+   skipping sectors that already match), write the install record. Then hash the
+   installed components as the firmware will read them, through the memory map;
+   an area that does not hash is not jumped into, and the next slot is tried.
 4. If the chosen slot's trailer has `wdt_en` set, arm that watchdog.
 5. Reset peripherals/clocks to reset state, set VTOR, jump.
 
@@ -291,6 +293,12 @@ External flash, XIP at 0x70000000. Partitions fixed by our bootloader
 
 The stub reuses the bootloader's XSPI flash driver (16-byte write unit on the
 octal-DTR part; memory-mapped reads only outside programming).
+
+The install window is ciphertext at rest: the stub derives a key from the chip's
+hardware key, has the memory cipher engine in front of the flash decipher the
+window, and encrypts what it installs
+([flash-encryption.md](flash-encryption.md)). `boards.json` marks such a board
+with `"encrypted": true` in its `stub` entry.
 
 Provisioning over USB: `build firmware` emits the stub beside the firmware, and
 `flash firmware` / `flash factory` download `stub ‖ 0xFF ‖ firmware` as one image

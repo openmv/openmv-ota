@@ -1,9 +1,10 @@
 # Code protection: encrypted off-chip flash — survey and design questions
 
-**Status: N6 phase settled (2026-11-04).** The survey below covers every OTA board; the
-"Decisions" section records what the owner settled for the first phase (the N6 only) and
-"Verified on the N6" what was checked against RM0486 and on the bench. Rows for the other
-boards still carry *(verify)* marks: they are groundwork for later phases, not design.
+**Status: N6 phase settled (2026-11-04); the N6 firmware area built (2026-11-05).** The
+survey below covers every OTA board; the "Decisions" section records what the owner settled
+for the first phase (the N6 only), "Verified on the N6" what was checked against RM0486 and
+on the bench, and "The N6 firmware area, as built" the first piece that exists. Rows for the
+other boards still carry *(verify)* marks: they are groundwork for later phases, not design.
 
 ## Context
 
@@ -58,12 +59,10 @@ The engine decrypts what the core *reads* from a region. Everything we *write* i
 region must therefore already be ciphertext under the engine's key and counter scheme:
 
 - **Stub installing firmware** (N6, RT1062): the stub decompresses the signed blob and
-  writes the firmware. Today it writes plaintext. With an engine, it must encrypt each block
-  as it programs it. On the N6 the stub holds the derived key in software anyway (it has to
-  load it into the MCE), so it can run AES-CTR with the MCE's address-derived counter and
-  program ciphertext through the normal indirect-mode path -- or write plaintext through the
-  memory-mapped window and let the stream-mode engine encrypt it (16-byte bursts); which is
-  faster is a bench measurement. The RT1062 BEE is read-only, so the stub does AES-CTR
+  writes the firmware, so it must encrypt each block as it programs it. On the N6 the stub
+  holds the derived key in software anyway (it has to load it into the MCE), so it runs the
+  MCE's stream cipher itself and programs ciphertext through the normal indirect-mode path,
+  where the engine is not involved. The RT1062 BEE is read-only, so the stub does AES-CTR
   itself with the key it reads from OCOTP before HAB closes that off *(verify which fuse
   words stay readable to software after the device is closed)*.
 - **Installer writing a ROMFS slot** (all boards): `installer.py` streams the downloaded
@@ -159,15 +158,111 @@ one call per 4 KiB chunk, or a C helper.
   address, ciphered regions may not overlap. Stream, block and fast block modes all cipher
   reads and writes; stream has the XSPI prefetch optimisation and no integrity. Keys are
   AES-128/256 or Noekeon in write-only registers that read back as zero, lockable until MCE
-  reset (`MKLOCK`, `KEYLOCK`, `GLOCK`), erased on tamper. Stream counter: `NR1 || NR0 ||
-  16 zero bits || VERSION[15:0] || 0000 || ADDR[31:4]`, so a writer produces matching
-  ciphertext with plain AES-CTR and an IV built from the nonce, the version and the
-  destination address. The XSPI must be in memory-mapped mode; DMA writes through it go in
-  16-byte bursts.
+  reset (`MKLOCK`, `KEYLOCK`, `GLOCK`), erased on tamper. The XSPI must be in memory-mapped
+  mode; DMA writes through it go in 16-byte bursts. The stream counter's fields are in the
+  manual; their byte order, and everything else a writer needs to match the engine, came off
+  the bench.
 - **OTP.** Words 0-127 bitwise, 128-255 word-once, 256-375 secret and word-once; customer
   ranges 40-55, 59-95, 173-255 and 260-363. Nothing in OTP is reversible. The RM0486
   chapters were read from an unofficial HTML mirror: spot-check word numbers against the PDF
   before any fuse is ever touched.
+
+## Measured on the N6 (bench, OPENMV_N6, 2026-11-04)
+
+Register pokes from MicroPython on a fleet board, over a 64 KiB scratch block in the ROMFS
+slot that was not running (written raw through the ROMFS ioctls, read back through the memory
+map with the data cache invalidated by address). Each line is something the design now rests
+on; the stub's host tests hold the cipher to these vectors.
+
+- **The derived key is stable.** A value derived under the DHUK came out identical before and
+  after a hard reset, with the hide-protection level at 1 both times.
+- **The stream cipher, exactly.** For the 16-byte block at AXI address `addr`:
+
+      counter   = CCNR1 || CCNR0 || 0x0000 || VERSION || (addr >> 4 & 0x0FFFFFFF)   every field big-endian
+      keystream = the bytes of AES-128(key, counter), reversed
+      key       = BE(CCKEYR3) || BE(CCKEYR2) || BE(CCKEYR1) || BE(CCKEYR0)
+
+  Flash holding zeros read back as that keystream on every block checked (the first three of
+  the region and one 4 KiB in), reproduced with the host's AES. `addr` is the full
+  address (0x70xxxxxx), not an offset into the region.
+- **Writing `CCCFGR.MODE` zeroes the context's key.** Silently: the region still ciphers, with
+  the keystream of an all-zero key, and `KEYCRC` reads 0. Set the mode first, then the nonce
+  and the key, and check `KEYCRC` before enabling the context: it reads the value ST's
+  `HAL_MCE_KeyCRCComputation` gives (0x95 for key words 00010203 04050607 08090a0b 0c0d0e0f).
+  The HAL's own `HAL_MCE_ConfigAESContext` writes the key before the mode.
+- **`CCKEYR0..3` must be written in that order.** In reverse the key stays invalid and the
+  region reads as stored (bypass).
+- **`SADDR`/`EADDR` read back without the top nibble** (0x00800000 for 0x70800000); the region
+  matches the full address regardless.
+- **Decryption costs nothing measurable.** 64 KiB through the memory map: 1.07 ms with the
+  region on, 1.07 ms with it off, cold cache both times.
+- **A deep sleep resets the engine.** After `machine.deepsleep()` the MCE2 clock was off and
+  every register zero. The OpenMV firmware links the port's resume-from-retained-RAM code in
+  flash (`iram_bootloader_reset` at 0x7011ff7c in firmware.map), where it cannot run before
+  the flash is mapped. A firmware that did resume from RAM would have to enter the stub, which
+  is plaintext, before its own reset handler, which is not.
+
+## The N6 firmware area, as built (2026-11-05)
+
+The firmware the stub installs is ciphertext at rest. The app's ROMFS slots are not yet, and
+each slot still carries the same firmware as a compressed component in the clear: on its own
+this piece hides nothing from someone who reads the whole chip. It is the key, the engine
+set-up and the install path, proven on hardware, that the slots then use.
+
+- **What is encrypted.** The stub's install window, 0x70090000-0x703FF000: MCE2 region 1 with
+  context 1, AES-128 stream. The stub (0x70080000) and the install record (0x703FF000) stay
+  in the clear: the bootloader has to run the one, and the stub has to read the other before
+  it knows the tweak.
+- **The key.** 16 bytes: the fixed label `omv-flash-key-v1`, AES-256-ECB encrypted in the SAES
+  under the DHUK. The stub derives it on every boot before it reads the record, and stores it
+  nowhere. If `HVALID` is clear the stub stops (`no hardware key`, blinking as it does when
+  nothing boots), because the SAES would silently use a fixed key instead.
+- **The tweak.** 80 bits, loaded as `CCNR1`, `CCNR0` and `VERSION`: the first 10 bytes of
+  SHA-256 over the label `omv-fw-crypt-v1\0` and the install record's component entries
+  (destination, size, installed hash). It is derived, not stored, so the record's format is
+  unchanged. Two different installs never share a keystream; the same firmware installed twice
+  gives the same ciphertext; an install cut off by a reset picks up where it stopped.
+- **A boot with nothing to install.** The stub reads the record, programs the engine with its
+  tweak, hashes the area through the memory map and, when it matches, locks the engine
+  (`KEYLOCK`, `CCLOCK`, `GLOCK`) and jumps. Read from the running firmware: `CR` 0x00000011,
+  `REGCR1` 0x00004201, `SADDR1` 0x00090000, `EADDR1` 0x003FEFFF; writes to an unused region
+  and context were ignored.
+- **An install.** Programming goes through the flash controller's indirect mode, where the
+  engine is not in the path, so the stub applies the same keystream in software
+  (`mce_stream.c`, held to the bench vectors by the host tests): to compare what a block
+  already holds and to write what it should. Then it erases every whole block of the window
+  that no component touches and that is not blank, writes the record, maps the flash again
+  and hashes the area through the engine before it jumps. An area that does not hash is
+  logged and the other slot is tried.
+- **Firmware downloaded over USB.** The bootloader writes what it is given, so `flash factory`
+  and `flash firmware` leave the firmware in the clear. On the next boot the area does not
+  hash under the cipher but does hash as stored; the stub logs `firmware area in the clear:
+  encrypting it` and installs the slot's copy as an ordinary install. With no slot that
+  verifies, the stub still boots firmware that is there in the clear, with the engine off.
+- **Deep sleep.** A wake is a reset: it comes back through the bootloader and the stub, which
+  programs the engine again.
+
+Measured on a fleet OPENMV_N6 (2,270,360-byte firmware, timestamps from the debug UART):
+
+| Boot | Time in the stub |
+|---|---|
+| Nothing to install (key, engine, hash of the area) | under 0.5 s |
+| Trial install, firmware unchanged (blocks compared, window checked for stale data) | 2.5 s |
+| Install after a USB download (every block erased and programmed) | 13.5 s to 15 s |
+
+- **The chip holds ciphertext.** The FIRMWARE partition read back over DFU (the bootloader
+  runs before the stub, so nothing deciphers it): the stub's bytes equal the stub image; of
+  the firmware's 141,898 16-byte blocks, none equal the build's; 8.000 bits of entropy per
+  byte against the build's 7.355; the record's `OMVI` magic readable.
+- **Why the window is scrubbed.** The first read-back found 276 KiB of an older, longer
+  firmware past the end of the new one, in the clear. After the scrub everything between the
+  firmware and the record is blank, bar the 8 bytes of padding that round the firmware up to
+  the flash's 16-byte write unit.
+- **Deep sleep, on the board.** After `machine.deepsleep(3000)` the debug UART showed the
+  stub's boot, `flash cipher on`, `firmware area verified`, `boot normal`, and the app
+  reporting `reset_cause=4`.
+- **Update cycles.** `delta` (twice) and `bad_sig` from `ci/hil/ota_cycle.py` passed on the
+  board with the encrypting stub.
 
 ## Open questions to verify against documentation
 

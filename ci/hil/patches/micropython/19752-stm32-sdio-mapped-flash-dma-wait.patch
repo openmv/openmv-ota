@@ -1,0 +1,130 @@
+From b94ea0dc99c7b714ce9979cdad51625dcbfaad20 Mon Sep 17 00:00:00 2001
+From: "Kwabena W. Agyeman" <kwagyeman@openmv.io>
+Date: Wed, 14 Oct 2026 20:09:51 -0700
+Subject: [PATCH] stm32/sdio: Wait for a DMA write before leaving memory-mapped
+ mode.
+
+The CYW43 firmware can be stored in memory-mapped external flash (the
+Arduino GIGA, Portenta H7 and Nicla Vision keep it in QSPI), and the
+firmware download DMAs straight from it.  If the flash controller leaves
+memory-mapped mode under the DMA -- USB MSC writing a filesystem on the
+same flash does, from its IRQ, as does the flash cache flush -- the
+transfer fails with IDMATE/TXUNDERR (sdio_transfer_cmd53:
+error=08000010), active(True) silently leaves the interface down and the
+first connect() raises EPERM, or the transfer stalls and the board hangs.
+
+Add sdio_wait_dma_write(), which spins while the data path of a DMA
+write is active, and call it from qspi_memory_map_exit() and
+octospi_memory_map_exit().  There is nothing to wait for before the data
+path starts: nothing has been read from flash yet, and the SDMMC IRQ
+that starts it has a lower priority than the USB and flash IRQs that
+leave memory-mapped mode, so it can't run until they return.  The DMA
+needs no IRQ to finish, so the wait also works with IRQs disabled; it is
+bounded at 10 ms using mp_hal_delay_us(), which does too.
+
+Tested on an Arduino GIGA (OpenMV firmware, STM USB stack), bringing up
+WiFi at a fixed 1.7-2.8 s after reset while the host wrote to the MSC
+drive continuously: 14 of 14 OK, and 0 of 7 without this change.
+
+Signed-off-by: Kwabena W. Agyeman <kwagyeman@openmv.io>
+---
+ ports/stm32/octospi.c |  6 ++++++
+ ports/stm32/qspi.c    |  6 ++++++
+ ports/stm32/sdio.c    | 23 +++++++++++++++++++++++
+ ports/stm32/sdio.h    |  1 +
+ 4 files changed, 36 insertions(+)
+
+diff --git a/ports/stm32/octospi.c b/ports/stm32/octospi.c
+index ea40008..6319b53 100644
+--- a/ports/stm32/octospi.c
++++ b/ports/stm32/octospi.c
+@@ -33,6 +33,7 @@
+ #include "mpu.h"
+ #include "octospi.h"
+ #include "pin_static_af.h"
++#include "sdio.h"
+ #include "storage.h"
+ 
+ #if defined(MICROPY_HW_OSPIFLASH_SIZE_BITS_LOG2)
+@@ -211,6 +212,11 @@ void octospi_memory_map(void) {
+ }
+ 
+ void octospi_memory_map_exit(void) {
++    #if MICROPY_PY_NETWORK_CYW43
++    // The CYW43 firmware may be stored here, and a DMA may be reading it.
++    sdio_wait_dma_write();
++    #endif
++
+     // Prevent access to QSPI memory-mapped region.
+     octospi_mpu_disable_all();
+ 
+diff --git a/ports/stm32/qspi.c b/ports/stm32/qspi.c
+index 2ef9a4d..e100511 100644
+--- a/ports/stm32/qspi.c
++++ b/ports/stm32/qspi.c
+@@ -31,6 +31,7 @@
+ #include "mpu.h"
+ #include "qspi.h"
+ #include "pin_static_af.h"
++#include "sdio.h"
+ #include "storage.h"
+ 
+ #if defined(MICROPY_HW_QSPIFLASH_SIZE_BITS_LOG2)
+@@ -180,6 +181,11 @@ void qspi_memory_map(void) {
+ }
+ 
+ void qspi_memory_map_exit(void) {
++    #if MICROPY_PY_NETWORK_CYW43
++    // The CYW43 firmware may be stored here, and a DMA may be reading it.
++    sdio_wait_dma_write();
++    #endif
++
+     // Prevent access to QSPI memory-mapped region.
+     qspi_mpu_disable_all();
+ 
+diff --git a/ports/stm32/sdio.c b/ports/stm32/sdio.c
+index 4d18102..cd7f545 100644
+--- a/ports/stm32/sdio.c
++++ b/ports/stm32/sdio.c
+@@ -520,4 +520,27 @@ int sdio_transfer_cmd53(bool write, uint32_t block_size, uint32_t arg, size_t le
+     return 0;
+ }
+ 
++// Wait for a DMA write to finish, so that the caller can take memory-mapped flash
++// out of memory-mapped mode without breaking a transfer that reads from it (for
++// example, the cyw43 firmware may be DMA'd directly out of memory-mapped flash).
++// Only waits while the data path is active, which relies on this being called
++// from a higher priority than SDMMC_IRQn, as the USB MSC and flash IRQs that leave
++// memory-mapped mode are: the SDMMC IRQ that starts a write's data path then can't
++// run until the caller returns, and before the data path starts nothing has been
++// read from flash.  The DMA doesn't need an IRQ to finish, so this works with IRQs
++// disabled too, as does mp_hal_delay_us(), which bounds the wait at 10 ms.
++void sdio_wait_dma_write(void) {
++    if (sdmmc_irq_state == SDMMC_IRQ_STATE_DONE || !sdmmc_dma || !sdmmc_write) {
++        return;
++    }
++    #if defined(STM32F7)
++    const uint32_t active = SDMMC_STA_TXACT;
++    #else
++    const uint32_t active = SDMMC_STA_DPSMACT;
++    #endif
++    for (uint32_t us = 0; us < 10000 && (SDMMC->STA & active); ++us) {
++        mp_hal_delay_us(1);
++    }
++}
++
+ #endif
+diff --git a/ports/stm32/sdio.h b/ports/stm32/sdio.h
+index 7cbf024..cea658b 100644
+--- a/ports/stm32/sdio.h
++++ b/ports/stm32/sdio.h
+@@ -36,5 +36,6 @@ void sdio_enable_irq(bool enable);
+ void sdio_enable_high_speed_4bit(void);
+ int sdio_transfer(uint32_t cmd, uint32_t arg, uint32_t *resp);
+ int sdio_transfer_cmd53(bool write, uint32_t block_size, uint32_t arg, size_t len, uint8_t *buf);
++void sdio_wait_dma_write(void);
+ 
+ #endif // MICROPY_INCLUDED_STM32_SDIO_H
+-- 
+2.43.0
+

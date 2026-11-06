@@ -8,6 +8,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The N6's firmware is ciphertext in its flash chip.** The OpenMV N6 runs its firmware from
+  an external flash that can be read off the board. The boot stub now derives a key from the
+  chip's own hardware key (nothing is burned, nothing is provisioned, the key is stored
+  nowhere), has the STM32N6's memory cipher engine decipher the firmware area as the core
+  runs from it, and encrypts the firmware as it installs it; the engine is locked before the
+  firmware starts. Firmware written over USB is in the clear until the first boot, when the
+  stub installs the slot's copy encrypted, and an install erases whatever else the area held.
+  The app's ROMFS slots, which carry the same firmware compressed, are not encrypted yet, and
+  until the device is closed a debug probe can derive the same key: this is the first piece
+  of [encryption at rest](docs/design/flash-encryption.md), not the whole of it.
+- **The boot stub proves an install before it runs it.** After an install the stub hashes
+  what it wrote through the memory map, the way the firmware will read it, and tries the
+  other slot when it does not match (`stub: installed area verified` on the debug UART).
 - **`se.seal()` / `se.unseal()`: data only this camera can open.** An application that keeps
   something secret on the camera -- a record on `/flash`, which any PC can mount, a token, a
   setting -- seals it instead of encrypting it under its serial number. The key is derived from

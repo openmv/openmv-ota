@@ -60,8 +60,19 @@ SRC_C += $(addprefix $(HAL_DIR)/src/, \
 
 ifeq ($(HAL_SERIES),n6)
 CFLAGS += -DHAL_IWDG_MODULE_ENABLED      # the N6 HAL config leaves the IWDG module out
+CFLAGS += -DHAL_CRYP_MODULE_ENABLED      # ...and CRYP: SAES derives the flash key (mce.c)
+CFLAGS += -Ilib/aes
 SRC_C += $(PORT_DIR)/xspi.c \
-         $(HAL_DIR)/src/stm32n6xx_hal_xspi.c
+         $(PORT_DIR)/mce.c \
+         $(PORT_DIR)/mce_stream.c \
+         lib/aes/aes128.c \
+         $(HAL_DIR)/src/stm32n6xx_hal_xspi.c \
+         $(HAL_DIR)/src/stm32n6xx_hal_cryp.c \
+         $(HAL_DIR)/src/stm32n6xx_hal_cryp_ex.c
+# BSEC, SAES and the MCE are the chip's security peripherals: reach them as the bootloader
+# and the firmware do (both are built -mcmse), through their secure aliases. The rest of
+# the stub keeps the addressing it has always run with.
+$(BUILD)/mce.o $(BUILD)/stm32n6xx_hal_cryp.o $(BUILD)/stm32n6xx_hal_cryp_ex.o: CFLAGS += -mcmse
 endif
 
 ifeq ($(HAL_SERIES),h7)

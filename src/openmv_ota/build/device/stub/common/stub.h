@@ -198,6 +198,7 @@ typedef struct {
 void record_read(record_t *r);
 bool record_matches(const record_t *r, const slot_t *s);
 bool record_area_ok(const record_t *r);
+bool record_area_in_clear(const record_t *r);
 int install_slot(const slot_t *s, uint32_t reason);
 int burn_attempt(slot_t *s);
 
