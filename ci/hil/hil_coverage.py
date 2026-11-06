@@ -65,9 +65,10 @@ STUB_FILES = sorted(glob.glob(os.path.join(STUB_DIR, "common", "*.c"))
 _CLOGCALL = re.compile(r'\blog_(line|kv|str)\(\s*"((?:[^"\\]|\\.)*)"')
 
 
-def stub_log_lines():
-    """(relpath, lineno, text) for every line the stub can put on the UART, as the UART sees
-    it."""
+def stub_points():
+    """(relpath, lineno, kind, text) for every log call in the stub: ``kind`` is how the C
+    prints it (``line``: the literal alone; ``kv``: the literal and a 0x%08x value; ``str``:
+    the literal as it is, a piece of a line) and ``text`` what the UART then carries."""
     for path in STUB_FILES:
         try:
             f = open(path)
@@ -79,7 +80,52 @@ def stub_log_lines():
                 if not m:
                     continue
                 kind, lit = m.group(1), m.group(2).encode().decode("unicode_escape")
-                yield os.path.relpath(path, REPO), lineno, (lit if kind == "str" else "stub: " + lit)
+                yield os.path.relpath(path, REPO), lineno, kind, (lit if kind == "str" else "stub: " + lit)
+
+
+def stub_log_lines():
+    """(relpath, lineno, text) for every line the stub can put on the UART, as the UART sees
+    it."""
+    for rel, lineno, _kind, text in stub_points():
+        yield rel, lineno, text
+
+
+def _stub_line_rx(kind, text):
+    """How one stub log call reads in a captured UART line. A ``line`` is the whole line (so
+    "stub: slot" never passes for "stub: slot ok"), a ``kv`` carries its value, a ``str`` is a
+    fragment. Searched, not matched: a capture can run two lines together."""
+    text = text.strip()
+    if kind == "line":
+        return re.compile(re.escape(text) + r"\s*$")
+    if kind == "kv":
+        return re.compile(re.escape(text) + r" 0x[0-9a-f]{8}")
+    return re.compile(re.escape(text))
+
+
+def stub_line_coverage(traces):
+    """The boot stub's coverage, read off its own UART output: for every line its C can print,
+    the scenarios whose captured UART shows it. ``{text: {"where": [(relpath, lineno)], "hits":
+    {"board/network/scenario"}}}``. Unlike the markers above this needs no catalog: the stub
+    logs at every decision it takes, so its source IS the list of points, and a trace's raw
+    UART (the scored window, and the provisioning boots before it) says which were reached."""
+    points = {}
+    for rel, lineno, kind, text in stub_points():
+        key = text.strip()
+        if not key or key == "stub:":            # a bare newline, or the prefix of a built-up line
+            continue
+        p = points.setdefault(key, {"where": [], "hits": set(), "rx": _stub_line_rx(kind, text)})
+        p["where"].append((rel, lineno))
+    for t in traces:
+        lines = t.get("log") or []
+        if not lines:
+            continue
+        who = "%s/%s/%s" % (t["board"], t["network"], t["scenario"])
+        for p in points.values():
+            if any(p["rx"].search(ln) for ln in lines):
+                p["hits"].add(who)
+    for p in points.values():
+        del p["rx"]
+    return points
 
 
 def _import_coverage_map():
@@ -137,6 +183,8 @@ def load_traces(trace_dir):
             "network": t.get("network", "?"),
             "passed": t.get("passed", False),
             "markers": set(t.get("markers", [])),
+            # the device's raw UART: the provisioning boots, then the scored window
+            "log": list(t.get("log_setup") or []) + list(t.get("log") or []),
         })
     return out
 
@@ -187,12 +235,86 @@ def render_md(cov, traces, loc, hit):
     if miss:
         lines.append("Not exercised by any trace: " + ", ".join("`%s`" % m for m in sorted(miss)))
     lines.append("")
+    lines += _render_stub_md(traces)
     lines.append("## Traces")
     for t in traces:
         lines.append("- `%s` %s/%s/%s -> %s (%d markers)"
                      % (t["file"], t["board"], t["network"], t["scenario"],
                         "PASS" if t["passed"] else "FAIL", len(t["markers"])))
     return "\n".join(lines) + "\n"
+
+
+def _render_stub_md(traces):
+    """The stub's line-by-line section: what its UART showed, what it never showed, and of the
+    latter which lines only a hardware fault can print (ota_cycle.STUB_FAULT_ONLY, each with
+    its reason) -- so what is left is the list of paths a scenario could reach and none does."""
+    points = stub_line_coverage(traces)
+    if not points:
+        return []
+    sys.path.insert(0, HERE)
+    import ota_cycle
+    fault = ota_cycle.STUB_FAULT_ONLY
+
+    def is_fault(text):
+        return any(text.startswith(f) for f in fault)
+
+    seen = sorted(t for t, p in points.items() if p["hits"])
+    reach = sorted(t for t in points if not is_fault(t))
+    covered = [t for t in reach if points[t]["hits"]]
+    out = ["## Boot stub, line by line", ""]
+    out.append("Read off the stub's own UART output: every line its C can print is a point, and "
+               "a trace's captured UART (the provisioning boots and the scored window) says which "
+               "were reached.")
+    out.append("")
+    out.append("**%d / %d** lines a scenario can reach were seen (%d lines in the source; %d need "
+               "a hardware fault)." % (len(covered), len(reach), len(points), len(points) - len(reach)))
+    out.append("")
+    missing = [t for t in reach if not points[t]["hits"]]
+    if missing:
+        out.append("Reachable, never seen:")
+        out.append("")
+        for t in missing:
+            out.append("- `%s` (%s)" % (t, ", ".join("%s:%d" % w for w in points[t]["where"])))
+        out.append("")
+    # A line of the shared code that some stub boards showed and others never did: the same
+    # path, unexercised on that board.
+    stub_boards = sorted({h.split("/")[0] for h in points.get("stub: version", {"hits": ()})["hits"]})
+    gaps = []
+    for t in covered:
+        if not all("/common/" in r for r, _n in points[t]["where"]):
+            continue                             # a port's own line: not every board has it
+        want = [b for b in stub_boards
+                if not t.startswith(ota_cycle.STUB_CRYPT_LINES) or ota_cycle._stub_encrypts(b)]
+        lack = sorted(set(want) - {h.split("/")[0] for h in points[t]["hits"]})
+        if lack:
+            gaps.append("- `%s`: never on %s" % (t, ", ".join(lack)))
+    if gaps:
+        out.append("Seen on some stub boards, not on others (%d stub boards in these traces):"
+                   % len(stub_boards))
+        out.append("")
+        out += gaps
+        out.append("")
+    bad = [t for t in seen if is_fault(t)]
+    if bad:
+        out.append("**Fault lines that DID appear** (a board hit a hardware fault path):")
+        out.append("")
+        for t in bad:
+            out.append("- `%s`: %s" % (t, ", ".join(sorted(points[t]["hits"]))))
+        out.append("")
+    out.append("| stub line | source | boards | scenarios |")
+    out.append("|---|---|---|---|")
+    for t in sorted(points):
+        hits = points[t]["hits"]
+        boards = sorted({h.split("/")[0] for h in hits})
+        scen = sorted({h.split("/")[2] for h in hits})
+        where = ", ".join("%s:%d" % (os.path.basename(r), n) for r, n in points[t]["where"])
+        if hits:
+            out.append("| `%s` | %s | %s | %s |" % (t, where, ", ".join(boards), ", ".join(scen)))
+        else:
+            why = next((fault[f] for f in fault if t.startswith(f)), None)
+            out.append("| `%s` | %s | %s | |" % (t, where, ("_fault only: %s_" % why) if why else "**— not seen —**"))
+    out.append("")
+    return out
 
 
 def render_lcov(loc, hit):

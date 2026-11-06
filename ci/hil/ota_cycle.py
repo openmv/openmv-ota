@@ -538,6 +538,13 @@ COVERAGE = {
     "stub: area scrub failed": "stub.failed",
     "stub: nothing to boot": "stub.failed",
     "stub: no slot": "stub.failed",
+    "stub: blob read failed": "stub.failed",
+    "stub: flash cipher setup failed": "stub.failed",
+    "stub: no hardware key": "stub.failed",
+    # A fault inside the stub: at the jump (stm32, where it is skipped and logged) or anywhere
+    # (alif, mimxrt, whose handlers dump the frame). Either is a stub bug or a failing board.
+    "stub: stray fault": "stub.failed",
+    "stub: fault pc": "stub.failed",
     "boot: slot read": "boot.read",                           # the XIP slot-read closure ran
     "boot: slot mounting": "boot.mount_call",                 # the mount closure ran (vfs.mount)
     "boot: no prior mount": "boot.no_prior_mount",            # mp_init didn't auto-mount /rom (blank romfs)
@@ -842,6 +849,54 @@ def _has_stub(board):
         return get_board(board).stub is not None
     except Exception:                        # not installed, or an unknown board
         return False
+
+
+# THE STUB'S COVERAGE IS READ OFF ITS UART, LINE BY LINE (hil_coverage.stub_line_coverage): the
+# stub logs at every decision, so every log call in its C is a point and a trace's raw UART
+# says which were reached. These are the lines NO scenario can reach on a healthy board, each
+# with what it would take -- a prefix covers a family of lines. Everything not listed here is
+# a path a scenario could exercise, and the coverage report names the ones none does.
+STUB_FAULT_ONLY = {
+    "stub: no hardware key": "the chip's hardware key is not valid",
+    "stub: flash cipher setup failed": "the cipher engine refused its key",
+    "stub: component install failed": "an erase, a program or its read-back failed",
+    "stub: area scrub failed": "a read or an erase of the encrypted area failed",
+    "stub: record write failed": "the install record could not be programmed",
+    "stub: memory map restore failed": "the flash would not go back to memory-mapped mode",
+    "stub: attempt mark failed": "the trial's attempt mark could not be programmed",
+    "stub: installed area does not verify": "flash that read back right while programming "
+                                            "reads wrong through the memory map",
+    "stub: blob read failed": "a read of a slot's component failed",
+    "stub: nothing to boot": "both slots and the firmware area destroyed: a board only USB recovers",
+    "stub: stray fault": "a bus fault at the jump (stm32)",
+    "stub: fault ": "the stub itself faulted (alif, mimxrt)",
+    "stub: fcb ": "the boot ROM's flash configuration block missing, or of another geometry",
+    "stub: ospi id timeout": "the flash did not answer",
+    "stub: ospi no part": "the flash did not answer",
+    "stub: qspi init failed": "the flash controller could not be set up",
+    "stub: qspi addr4 failed": "the flash did not take 4-byte addressing",
+    # What stm32/qspi.c prints, once, when the part does not come out of its reset idle.
+    "stub: qspi reset": "the flash did not answer its reset",
+    "stub: qspi hal err": "the flash did not answer its reset",
+    "stub: qspi sr": "the flash did not answer its reset",
+    "stub: qspi status": "the flash did not answer its reset",
+    "stub: qspi sel inherited": "the flash did not answer its reset",
+    "stub: qspi inherited ar": "the flash did not answer its reset",
+    "stub: qspi inherited dlr": "the flash did not answer its reset",
+    "stub: qspi inherited dcr": "the flash did not answer its reset",
+    "stub: qspi cr": "the flash did not answer its reset",
+    "stub: qspi dcr": "the flash did not answer its reset",
+    "stub: qspi ccr": "the flash did not answer its reset",
+    "stub: flash optsr": "the flash did not answer its reset",
+    "stub: rcc ": "the flash did not answer its reset",
+    "stub: dbgmcu cr": "the flash did not answer its reset",
+}
+
+
+# Lines only a stub that keeps its firmware area encrypted prints (boards.json stub.encrypted):
+# the per-board gaps in the coverage report do not ask the other boards for them.
+STUB_CRYPT_LINES = ("stub: flash cipher", "stub: stale blocks erased",
+                    "stub: firmware area in the clear", "stub: area scrub", "stub: no hardware key")
 
 
 def _stub_encrypts(board):
@@ -1167,6 +1222,7 @@ class UartCapture:
         self._ser.reset_input_buffer()
         self.markers = []                    # ordered (t, point)
         self.raw = []
+        self.setup = []                      # the lines before reset(): the provisioning boots
         self.flooded = 0                     # noise lines dropped across the whole capture
         self.contended = 0                   # reads lost to ANOTHER reader of this port (see _run)
         self._window, self._seen_in_window, self._dropped = time.time(), 0, 0
@@ -1317,6 +1373,7 @@ class UartCapture:
         markers must not count toward a scenario's expect/forbid sets."""
         self._t0 = t0
         self.markers = []
+        self.setup.extend(self.raw)          # kept apart: never scored, but it is what ran
         self.raw = []
 
     def tail(self, n=40):
@@ -3979,6 +4036,10 @@ def main():
             trace["missed"] = sorted(set(COVERAGE.values()) - set(cap.points()))
             trace["marker_trace"] = cap.markers
             trace["log"] = cap.raw                # the full device log for this run
+            # ...and the boots before the scored window: the factory flash's first boot is where
+            # a stub installs what USB just wrote (and, on a board that encrypts, where it finds
+            # the area in the clear). Not scored; read for the stub's line coverage.
+            trace["log_setup"] = cap.setup
         bench_server.stop(srv)                    # tear the per-run server + store down
         trace["elapsed_s"] = round(time.time() - t0, 1)
         # CREATE THE TRACE DIRECTORY. A whole scenario -- provision, flash, install, confirm, the
