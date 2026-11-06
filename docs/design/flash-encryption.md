@@ -264,6 +264,19 @@ Measured on a fleet OPENMV_N6 (2,270,360-byte firmware, timestamps from the debu
 - **Update cycles.** `delta` (twice) and `bad_sig` from `ci/hil/ota_cycle.py` passed on the
   board with the encrypting stub.
 
+The fleet repeats the read-back on every run (`ci/hil/ota_cycle.py`, `check_at_rest`): after
+the `delta` scenario on a board whose stub encrypts, the harness enters the bootloader, uploads
+the FIRMWARE partition over DFU and fails the scenario unless the stub's sector is the stub, no
+16-byte block of the firmware is stored as built, no sample of the build appears anywhere in
+the area, the stored firmware has more than 7.9 bits of entropy per byte, and everything after
+it up to the record is blank. On the N6 node the read takes about 10 s and reported 0 of
+141,897 blocks stored as built at 8.000 bits per byte.
+
+The `fw_corrupt` scenario damages the area from outside: garbage over the first block of the
+installed firmware, written through the bootloader, the record left alone. The next boot logs
+`firmware area does not match the record`, installs the slot's copy again (about 3 s: one
+block rewritten, the rest compared) and logs `boot reinstalled`.
+
 ## Open questions to verify against documentation
 
 - i.MX RT1062: BEE region alignment, CTR nonce scheme (the BEE "PRDB" protection region

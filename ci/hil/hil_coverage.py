@@ -22,6 +22,15 @@ already checks -- aggregated across every scenario trace. A marker with no sourc
 device path no scenario exercises, is called out so the catalog and the log lines can't drift
 apart silently.
 
+THE BOOT STUB IS READ DIFFERENTLY, and more completely. It is C, it logs "stub: <line>" on the
+same UART at every decision it takes, and its log calls are whole literals -- so its source IS
+the list of coverage points and needs no catalog. stub_line_coverage() matches every line the
+stub can print against each trace's raw UART (the scored window and the provisioning boots
+before it); the report's "Boot stub, line by line" section gives the lines a scenario can reach
+and how many were seen, names the ones never seen, names the boards that never showed a line
+of the shared code the others did, and flags any line only a hardware fault prints
+(ota_cycle.STUB_FAULT_ONLY) that appeared anyway.
+
     python3 ci/hil/hil_coverage.py --traces <dir-of-hil-*.json> [--md out.md] [--lcov out.info]
 """
 

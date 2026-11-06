@@ -290,6 +290,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The STM32 boot stub's debug UART no longer garbles a line around a delay.** The stub slept
+  with a character still in the transmitter; the STM32N6 gates a peripheral's clock while the
+  core sleeps, so the end of one log line and the start of the next came out as junk each
+  time the flash controller was set up. The stub now lets the UART finish before it sleeps.
 - **The STM32H7 stub resets the QSPI part on 1 line before 4.** The fleet's Portenta
   booted without its slots ("qspi reset timeout") on about one debug-core reset in ten:
   the controller stuck on the stub's very first instruction, the reset-enable sent on 4
