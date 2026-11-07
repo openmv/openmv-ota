@@ -285,6 +285,85 @@ USB, in the clear: both slots are rejected, no record vouches for a plaintext ar
 stub boots what looks like firmware with the engine off (`no slot: booting the installed
 firmware`).
 
+## The ROMFS slots, ciphertext at rest (2026-11-07)
+
+What is still in the clear on the N6 after the firmware area: the two slots, each a filesystem
+image, the firmware as a compressed component, a status sector and a trailer. They carry the app
+and a copy of the firmware, so they are the piece that hides the product.
+
+- **Engine budget.** MCE2 has four regions and two contexts. Region 1 with context 1 stays on
+  the firmware area. Region 2 with context 2 covers the slot the stub boots, from the slot's
+  first byte to the end of its last component, rounded up to the engine's 4 KiB region grain
+  (the installer writes ciphertext up to that same bound, blank bytes included). The other slot is never mapped: the only code
+  that reads it is the stub, verifying it, and the installer, writing it and reading it back,
+  and both apply the keystream themselves. The engine's counter is the address, so what the
+  engine deciphers through the memory map and what software deciphers from an indirect read
+  are the same bytes (`mce_stream.c` already does this for the firmware area).
+- **In the clear, in every slot:** the 0xFF pad after the last component, the status sector and
+  the trailer. The stub and `boot.py` read the trailer before anything is keyed, the marks are
+  programmed without an erase, and nothing in those 8 KiB is secret.
+- **The tweak, per slot:** the first 10 bytes of SHA-256 over the label `omv-slot-crypt-1`,
+  the slot index (a little-endian word), and the SHA-256 of the trailer's signed region. The slot index keeps the two
+  slots apart even when they hold the same release; the trailer hash changes with every release,
+  so a slot rewritten with a new image never reuses the keystream the old image had at the same
+  addresses (the body hash alone would not do: two releases with the same app and a different
+  firmware share it, and their firmware blobs would XOR together). The same device key as the
+  firmware area; the labels keep the nonces apart.
+- **The manifest names the tweak.** It gains the trailer's signed-region hash. A streamed image
+  delivers its trailer last, and the installer must know the keystream before the first body
+  byte is written; the manifest is signed, so the installer trusts the hash the way it trusts
+  the body hash. The stub derives the same value from the trailer in flash, so an installer
+  that keyed a slot wrongly produces a slot whose body does not hash, and the trial is refused.
+- **The stub's boot.** Both trailers read raw; certificates and signatures checked as today.
+  For each slot that passes, context 2 is keyed with that slot's tweak and the body hashed
+  through the memory map; a body that does not hash is read raw and hashed again, which is how
+  a factory slot is recognised. The choice is made as today. Context 2 stays keyed for the
+  chosen slot, the region on, and the lock (both contexts, then `GLOCK`) is taken before the
+  jump as it is now. During an install the stub reads the chosen slot's blobs in indirect mode
+  through the slot's stream, as it reads the firmware area through its own.
+- **Factory.** `flash factory` writes the stub, the firmware and the factory slot in the clear.
+  On the first boot the stub verifies the slot raw, installs the firmware (encrypting it, as it
+  does today for a USB-written area), then copies the slot into the other slot through the
+  other slot's stream, status sector and trailer verbatim (confirmed, counter, floors), and
+  verifies the copy through the engine. Only then is the raw slot erased, its trailer block
+  first. The rule is general: a slot that verifies raw is converted into the other slot and
+  then erased when no ciphered slot verifies (the factory flow, and a second factory run over
+  DFU), and simply erased when one does (a conversion a reset cut short of its last step, or an
+  installer that wrote plaintext: nothing in the clear ever boots, and nothing in the clear
+  stays behind). A power cut anywhere repeats a step that compares before it writes. Cost on an
+  N6: about 10 s to copy a slot and 6 s to erase the clear one, on top of the firmware install.
+- **The installer (firmware).** A C module dropped into the firmware build the way
+  `ecdsa_verify.c` is: it derives the device key once (SAES under the DHUK, the stub's label),
+  shares the stream code with the stub, and XORs a buffer in place for a given flash address and
+  tweak. The installer XORs each 4 KiB chunk before `write_at`, XORs the read-back before it
+  compares, and XORs what it reads when it hashes the finished slot; the delta base is the
+  running slot, mapped, so it is read in the clear as today. One chunk at a time, within the
+  RAM budget. A firmware without the module writes in the clear, as every other board does.
+- **`boot.py`.** Unchanged. It follows the install record to the mapped slot and reads it in
+  the clear; the other slot's body does not hash for it, which it already tolerates (a slot it
+  did not choose is allowed to be anything).
+- **Stock firmware, the IDE.** As today: a slot the stub cannot verify is not mapped, and the
+  installed firmware boots with the slots in the clear.
+- **The fleet's read-back** extends to the ROMFS partition: after `delta` on the N6, the
+  harness uploads it over DFU and expects, in both slots, no 16-byte block of the slot as the
+  tool built it, more than 7.9 bits of entropy per byte over the body, the status sector and
+  trailer readable, and the pad blank.
+
+Measured on the fleet's OPENMV_N6 (bench, 2026-11-07; timestamps from the debug UART):
+
+| Step | Time |
+|---|---|
+| Factory slot copied into the other slot through the cipher (2.5 MB used) | 10.5 s |
+| The clear slot erased | 5.5 s |
+| Firmware installed from the ciphered slot (first boot) | 14.5 s |
+| A delta update written through `flash_crypt` (12 MB slot, 1.3 MB written) | 7 s |
+| The trial boot's firmware install (blocks compared, one rewritten) | 3 s |
+
+The first build of the conversion erased the blob's tail: the pad scrub started at the ciphered
+range's end rounded *down* to an erase block, inside the last block the copy had written. The
+stub's own blob hash caught it on the next boot (`blob hash mismatch`), before anything was
+installed from the copy.
+
 ## Open questions to verify against documentation
 
 - i.MX RT1062: BEE region alignment, CTR nonce scheme (the BEE "PRDB" protection region

@@ -8,6 +8,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The N6's ROMFS slots are ciphertext in its flash chip too.** The boot stub now keys the
+  chip's memory cipher engine over the slot it boots as well as over the firmware area, so
+  the app and the compressed firmware the slots carry are stored encrypted. The other slot is
+  never mapped: the installer writes it as ciphertext itself, through a `flash_crypt` C module
+  the firmware build adds on such a board (the same cipher the stub programs with, keyed by
+  the chip), and the manifest names the two inputs it needs before the first body byte
+  arrives (`trailer_sha256`, `crypt_size`). A factory image is written in the clear and
+  converted on the first boot: the stub copies the slot into the other one through the
+  cipher and erases the clear one; a slot in the clear beside a ciphered one that verifies
+  is erased, never booted. The fleet's at-rest read-back covers the slots.
 - **The N6's firmware is ciphertext in its flash chip.** The OpenMV N6 runs its firmware from
   an external flash that can be read off the board. The boot stub now derives a key from the
   chip's own hardware key (nothing is burned, nothing is provisioned, the key is stored
