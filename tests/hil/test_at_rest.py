@@ -85,6 +85,67 @@ def test_the_wrong_stub_and_a_short_read_are_reported():
     assert at_rest.entropy(b"") == 0.0 and at_rest.entropy(b"\x00" * 64) == 0.0
 
 
+# -- the slots -----------------------------------------------------------------------------
+
+SLOT = 16 * 4096                       # a small slot: 14 body blocks, status sector, trailer
+
+
+def _slot_image(body, tag=b""):
+    """A plaintext slot image: body, 0xFF pad, a status sector, a trailer naming the body."""
+    from tests import trust
+    trailer = trust.trailer(trust.ROOT_PRIV, body, meta={"t": tag.decode()})
+    control = trailer.ljust(4096, b"\xff")
+    return body.ljust(SLOT - 2 * 4096, b"\xff") + bytes(4096) + control
+
+
+def _ciphered(image, csize):
+    """The image as an encrypting stub stores it: random bytes over the ciphered range, the
+    rest as it is (a pad left blank, the control sectors in the clear)."""
+    return os.urandom(csize) + image[csize:]
+
+
+def _csize(image):
+    from openmv_ota.ota import slot_crypt
+    from openmv_ota.ota.trailer import parse_trailer
+    return slot_crypt.crypt_size(parse_trailer(image[SLOT - 4096:]), slot_body_end=SLOT - 2 * 4096)
+
+
+def test_two_ciphered_slots_of_known_images_pass():
+    a, b = _slot_image(os.urandom(5000), b"a"), _slot_image(os.urandom(9000), b"b")
+    dump = _ciphered(a, _csize(a)) + _ciphered(b, _csize(b))
+    problems, numbers = at_rest.judge_slots(dump, SLOT, [a, b])
+    assert problems == []
+    assert [n["slot"] for n in numbers["slots"]] == ["A", "B"]
+    assert all(n["same"] == 0 and n["found"] == 0 and n["stale"] == 0 for n in numbers["slots"])
+    assert numbers["slots"][0]["blocks"] == 8192 // 16            # 5000 -> 8 KiB ciphered
+
+
+def test_a_slot_stored_as_built_fails_every_way():
+    a, b = _slot_image(os.urandom(5000), b"a"), _slot_image(os.urandom(9000), b"b")
+    dump = a + _ciphered(b, _csize(b))                            # A in the clear
+    problems, numbers = at_rest.judge_slots(dump, SLOT, [a, b])
+    assert numbers["slots"][0]["same"] == numbers["slots"][0]["blocks"]
+    assert any("slot A: " in p and "stored exactly as built" in p for p in problems)
+    assert any("slot A: " in p and "samples of its image" in p for p in problems)
+    assert any("slot A: " in p and "entropy" in p for p in problems)
+    assert not any("slot B" in p for p in problems)
+
+
+def test_an_unknown_trailer_a_dirty_pad_and_a_short_read_are_reported():
+    a, b = _slot_image(os.urandom(5000), b"a"), _slot_image(os.urandom(9000), b"b")
+    other = _slot_image(os.urandom(100), b"x")
+    dump = _ciphered(other, _csize(other)) + _ciphered(b, _csize(b))
+    problems, numbers = at_rest.judge_slots(dump, SLOT, [a, b])
+    assert problems == ["slot A holds no trailer of a known image"] and numbers["slots"][0] == {"slot": "A"}
+    ca = _csize(a)
+    dirty = bytearray(_ciphered(a, ca))
+    dirty[ca + 100:ca + 116] = b"\x00" * 16                      # something left in the pad
+    problems, numbers = at_rest.judge_slots(bytes(dirty) + _ciphered(b, _csize(b)), SLOT, [a, b])
+    assert problems == ["slot A: 16 bytes between its body and its status sector are not blank"]
+    problems, numbers = at_rest.judge_slots(b"\xff" * SLOT, SLOT, [a, b])
+    assert "does not cover two" in problems[0] and numbers == {}
+
+
 # -- the read ------------------------------------------------------------------------------
 
 @pytest.fixture
@@ -122,6 +183,46 @@ def test_the_read_enters_dfu_uploads_the_firmware_alt_and_leaves(bench):
     assert not os.path.exists(os.path.dirname(argv[-1]))                # the dump is not kept
     assert any("0 of %d firmware blocks stored as built" % (len(FW) // 16) in ln
                for ln in bench["logged"])
+    assert any("no slot images in build/" in ln for ln in bench["logged"])   # nothing published here
+
+
+def test_with_the_slot_images_the_romfs_partition_is_read_and_judged_too(bench, tmp_path, monkeypatch):
+    a, b = _slot_image(os.urandom(5000), b"a"), _slot_image(os.urandom(9000), b"b")
+    build = tmp_path / "build"
+    import gzip
+    (build / ("%s-ota.img.gz" % BOARD)).write_bytes(gzip.compress(a))
+    (build / ("%s-factory-romfs.img" % BOARD)).write_bytes(b + b)       # the same image in both slots
+    bench["romfs"] = _ciphered(a, _csize(a)) + _ciphered(b, _csize(b))
+
+    def sh(argv, **k):
+        bench["ran"].append(argv)
+        with open(argv[-1], "wb") as f:
+            f.write(bench["romfs"] if argv[argv.index("-a") + 1] == "3" else bench["dump"])
+        return 0, ""
+    monkeypatch.setattr(ota_cycle, "sh", sh)
+    ok, report = ota_cycle.check_at_rest(BOARD)
+    assert ok and report["problems"] == [] and [n["slot"] for n in report["slots"]] == ["A", "B"]
+    assert len(bench["exec"]) == 2                                      # DFU entered for each read
+    assert [argv[argv.index("-a") + 1] for argv in bench["ran"]] == ["1", "3"]
+    assert any("slot A: 0 of" in ln for ln in bench["logged"])
+    # a slot in the clear fails the whole check
+    bench["romfs"] = a + _ciphered(b, _csize(b))
+    ok, report = ota_cycle.check_at_rest(BOARD)
+    assert not ok and any("slot A: " in p for p in report["problems"])
+    # and a romfs read that never happens is a problem of its own, the firmware verdict kept
+    bench["romfs"] = None
+
+    def sh_fail(argv, **k):
+        bench["ran"].append(argv)
+        if argv[argv.index("-a") + 1] == "3":
+            return 74, "no DFU device"
+        with open(argv[-1], "wb") as f:
+            f.write(bench["dump"])
+        return 0, ""
+    monkeypatch.setattr(ota_cycle, "sh", sh_fail)
+    monkeypatch.setattr(ota_cycle, "dfu_reset_catch", lambda *a, **k: (1, "still nothing"))
+    ok, report = ota_cycle.check_at_rest(BOARD)
+    assert not ok and report["same"] == 0 and "alt 3" in report["problems"][0]
 
 
 def test_plaintext_in_the_chip_is_a_failure_with_its_reasons(bench):
@@ -149,6 +250,14 @@ def test_with_the_cdc_gone_it_catches_the_dfu_window_and_no_read_is_a_failure(be
     assert not ok and "the read-back did not happen" in report["problems"][0]
 
 
+def test_rollback_on_an_encrypting_board_shows_in_the_stub_not_in_boot_pys_fallback():
+    expect, forbid = ota_cycle.scenario_markers("OPENMV_N6", "rollback")
+    assert "boot.fallback" not in expect and "boot.fallback" not in forbid
+    assert {"stub.slot_rejected", "stub.boot_reverted", "install.armed"} <= expect
+    expect, _forbid = ota_cycle.scenario_markers("OPENMV4P", "rollback")   # a stub in the clear
+    assert "boot.fallback" in expect
+
+
 def test_the_ae3_runs_rollback_for_its_stubs_revert_path():
     ae3 = ota_cycle.regression_scenarios("OPENMV_AE3", ota_cycle.BOARDS["OPENMV_AE3"]["network"])
     assert ae3[:2] == ["delta", "rollback"] and "watchdog" in ae3
@@ -161,6 +270,12 @@ def test_fw_corrupt_expects_the_stubs_repair_and_runs_where_the_harness_can_dama
     assert {"stub.area_bad", "stub.install", "stub.record_written", "stub.install_verified",
             "stub.boot_reinstalled", "stub.fast_path", "stub.boot_normal", "boot.ready"} <= expect
     assert "stub.failed" in forbid and "install.start" in forbid
+    n6 = ota_cycle.regression_scenarios("OPENMV_N6", ota_cycle.BOARDS["OPENMV_N6"]["network"])
+    # The N6's stub keeps the slots encrypted: a blob damaged by a DFU download of the factory
+    # image is a slot in the clear, erased rather than installed from, so blob_corrupt is off the
+    # list there until it damages a ciphered slot from the device.
+    assert n6[-1:] == ["fw_corrupt"] and "blob_corrupt" not in n6
+    monkeypatch.setattr(ota_cycle, "_stub_encrypts", lambda board: False)
     n6 = ota_cycle.regression_scenarios("OPENMV_N6", ota_cycle.BOARDS["OPENMV_N6"]["network"])
     assert n6[-2:] == ["fw_corrupt", "blob_corrupt"]
     for board in ota_cycle.BOARDS:
