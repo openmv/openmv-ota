@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -526,18 +527,33 @@ COVERAGE = {
     "stub: boot normal": "stub.boot_normal",                  # jumping: the confirmed slot
     "stub: boot trial": "stub.boot_trial",                    # jumping: a trial, attempt burned
     "stub: boot reverted": "stub.boot_reverted",              # jumping: the other slot failed its trial
+    "stub: firmware area does not match the record": "stub.area_bad",   # the record is right, the bytes are not
+    "stub: boot reinstalled": "stub.boot_reinstalled",        # jumping: the firmware area was installed again
     # Every way the stub gives up on a slot or a boot. Forbidden in every stub-board scenario
     # but no_slot, where giving up on both slots is the point.
-    "stub: install failed": "stub.failed",
     "stub: component install failed": "stub.failed",
-    "stub: blob hash mismatch": "stub.failed",
+    # Two of them a scenario CAN reach (blob_corrupt), so they are markers of their own:
+    # forbidden everywhere else, expected there.
+    "stub: blob hash mismatch": "stub.blob_bad",              # a slot's firmware blob does not hash: never decoded
+    "stub: install failed": "stub.install_failed",            # that slot is given up on, the next one tried
     "stub: attempt mark failed": "stub.failed",
     "stub: memory map restore failed": "stub.failed",
     "stub: record write failed": "stub.failed",
     "stub: installed area does not verify": "stub.failed",
     "stub: area scrub failed": "stub.failed",
     "stub: nothing to boot": "stub.failed",
-    "stub: no slot": "stub.failed",
+    # No slot verifies and no record vouches for the area, but firmware is there: a camera
+    # provisioned over USB whose slots were wiped. Expected in no_slot on a board whose stub
+    # encrypts (the USB download is in the clear, so its record cannot vouch for it), forbidden
+    # everywhere else.
+    "stub: no slot: booting the installed firmware": "stub.no_slot_boot",
+    "stub: blob read failed": "stub.failed",
+    "stub: flash cipher setup failed": "stub.failed",
+    "stub: no hardware key": "stub.failed",
+    # A fault inside the stub: at the jump (stm32, where it is skipped and logged) or anywhere
+    # (alif, mimxrt, whose handlers dump the frame). Either is a stub bug or a failing board.
+    "stub: stray fault": "stub.failed",
+    "stub: fault pc": "stub.failed",
     "boot: slot read": "boot.read",                           # the XIP slot-read closure ran
     "boot: slot mounting": "boot.mount_call",                 # the mount closure ran (vfs.mount)
     "boot: no prior mount": "boot.no_prior_mount",            # mp_init didn't auto-mount /rom (blank romfs)
@@ -844,6 +860,82 @@ def _has_stub(board):
         return False
 
 
+# THE FIRMWARE AREA DAMAGED UNDER A GOOD RECORD. The stub hashes the installed firmware on every
+# boot and installs it again from the slot when it does not match its record -- the one repair
+# a camera makes to its own firmware, and a path no update exercises (the line-by-line reading
+# of the stub's UART showed it had never run on the fleet). The harness overwrites the first
+# block of the installed firmware through the bootloader, leaving the record alone; the boot
+# that follows has to say so, install the slot's copy again and come up, and the record then
+# reads "reinstalled". No update is offered. Boards the harness can damage this way:
+FW_CORRUPT_BOARDS = ("OPENMV_N6",)           # a DFU download to the FIRMWARE alt; widen per backend
+# ...AND THE SLOT'S OWN COPY DAMAGED TOO. A slot's trailer is signed and names its firmware blob
+# by hash; the blob's bytes are checked only when the stub is about to install them -- the gate
+# that keeps anything unverified from the decompressor. Here the booted slot's blob is damaged
+# (a block of it rewritten through the bootloader) AND the firmware area is, so the repair has to
+# refuse that slot's copy, give the slot up, and install the other slot's.
+SCENARIOS["blob_corrupt"] = dict(
+    publish="none", app="confirm", end="golden", corrupt_firmware=True, corrupt_blob=True,
+    desc="firmware area AND the booted slot's firmware blob damaged: the stub refuses the blob "
+         "and installs the other slot's",
+    expect=["log.configured", "boot.ready", "run.checkin"],
+    forbid=["install.start", "install.armed", "confirm.promoted"],
+)
+SCENARIOS["fw_corrupt"] = dict(
+    publish="none", app="confirm", end="golden", corrupt_firmware=True,
+    desc="firmware area damaged under a good record: the stub installs it again from the slot",
+    expect=["log.configured", "boot.ready", "run.checkin"],
+    forbid=["install.start", "install.armed", "confirm.promoted"],
+)
+
+
+# THE STUB'S COVERAGE IS READ OFF ITS UART, LINE BY LINE (hil_coverage.stub_line_coverage): the
+# stub logs at every decision, so every log call in its C is a point and a trace's raw UART
+# says which were reached. These are the lines NO scenario can reach on a healthy board, each
+# with what it would take -- a prefix covers a family of lines. Everything not listed here is
+# a path a scenario could exercise, and the coverage report names the ones none does.
+STUB_FAULT_ONLY = {
+    "stub: no hardware key": "the chip's hardware key is not valid",
+    "stub: flash cipher setup failed": "the cipher engine refused its key",
+    "stub: component install failed": "an erase, a program or its read-back failed",
+    "stub: area scrub failed": "a read or an erase of the encrypted area failed",
+    "stub: record write failed": "the install record could not be programmed",
+    "stub: memory map restore failed": "the flash would not go back to memory-mapped mode",
+    "stub: attempt mark failed": "the trial's attempt mark could not be programmed",
+    "stub: installed area does not verify": "flash that read back right while programming "
+                                            "reads wrong through the memory map",
+    "stub: blob read failed": "a read of a slot's component failed",
+    "stub: nothing to boot": "both slots and the firmware area destroyed: a board only USB recovers",
+    "stub: stray fault": "a bus fault at the jump (stm32)",
+    "stub: fault ": "the stub itself faulted (alif, mimxrt)",
+    "stub: fcb ": "the boot ROM's flash configuration block missing, or of another geometry",
+    "stub: ospi id timeout": "the flash did not answer",
+    "stub: ospi no part": "the flash did not answer",
+    "stub: qspi init failed": "the flash controller could not be set up",
+    "stub: qspi addr4 failed": "the flash did not take 4-byte addressing",
+    # What stm32/qspi.c prints, once, when the part does not come out of its reset idle.
+    "stub: qspi reset": "the flash did not answer its reset",
+    "stub: qspi hal err": "the flash did not answer its reset",
+    "stub: qspi sr": "the flash did not answer its reset",
+    "stub: qspi status": "the flash did not answer its reset",
+    "stub: qspi sel inherited": "the flash did not answer its reset",
+    "stub: qspi inherited ar": "the flash did not answer its reset",
+    "stub: qspi inherited dlr": "the flash did not answer its reset",
+    "stub: qspi inherited dcr": "the flash did not answer its reset",
+    "stub: qspi cr": "the flash did not answer its reset",
+    "stub: qspi dcr": "the flash did not answer its reset",
+    "stub: qspi ccr": "the flash did not answer its reset",
+    "stub: flash optsr": "the flash did not answer its reset",
+    "stub: rcc ": "the flash did not answer its reset",
+    "stub: dbgmcu cr": "the flash did not answer its reset",
+}
+
+
+# Lines only a stub that keeps its firmware area encrypted prints (boards.json stub.encrypted):
+# the per-board gaps in the coverage report do not ask the other boards for them.
+STUB_CRYPT_LINES = ("stub: flash cipher", "stub: stale blocks erased",
+                    "stub: firmware area in the clear", "stub: area scrub", "stub: no hardware key")
+
+
 def _stub_encrypts(board):
     """True when this board's stub keeps the firmware area encrypted (boards.json
     ``stub.encrypted``): its UART then says so on every boot that reads or writes the area."""
@@ -866,13 +958,19 @@ def _stub_marks(key, spec):
     attempts, so the stub rejects the slot (trial-failed) and boots the other one reverted,
     installing it again on the way. no_slot bricks both slots: both rejected, nothing more."""
     if key == "no_slot":
-        return {"stub.version", "stub.slot_rejected"}
+        return {"stub.version", "stub.slot_rejected"}        # (+ stub.no_slot_boot, see scenario_markers)
     marks = {"stub.version", "stub.slot_ok", "stub.fast_path", "stub.boot_normal"}
     if "install.armed" in spec["expect"]:
         marks |= {"stub.slot_trial", "stub.attempt", "stub.install", "stub.record_written",
                   "stub.install_verified", "stub.boot_trial"}
     if key == "rollback":
         marks |= {"stub.slot_rejected", "stub.boot_reverted"}
+    if spec.get("corrupt_firmware"):
+        marks |= {"stub.area_bad", "stub.install", "stub.record_written", "stub.install_verified"}
+        # Repaired from the same slot it reads "reinstalled"; from the other slot, after this
+        # one's blob was refused, it is that slot's ordinary install.
+        marks |= ({"stub.blob_bad", "stub.install_failed"} if spec.get("corrupt_blob")
+                  else {"stub.boot_reinstalled"})
     return marks
 
 
@@ -958,8 +1056,11 @@ def scenario_markers(board, key):
         expect |= _stub_marks(key, s)
         if key != "no_slot":
             forbid.add("stub.failed")
+            forbid |= {"stub.blob_bad", "stub.install_failed", "stub.no_slot_boot"} - expect
             if _stub_encrypts(board):
                 expect.add("stub.crypt")
+        elif _stub_encrypts(board):
+            expect.add("stub.no_slot_boot")
     return expect, forbid
 
 
@@ -987,8 +1088,12 @@ def regression_scenarios(board, network):
     # too: the coprocessor-MRAM write is the AE3's third board-specific path, and the one whose
     # failure costs a power cycle -- so it is proven on every PR (HIL_COPROC=0 opts out). coproc
     # dirties the partition first; otherwise sync() stream-compares, matches, and skips.
+    # `rollback` rides along for the STUB's sake: the line-by-line reading of the stub's UART
+    # (hil_coverage) showed the AE3 was the one stub board that had never rejected a slot or
+    # reverted to the other one -- and its revert is the AE3's own, two components back into
+    # two MRAM partitions. That is a port path, not board-agnostic device logic.
     if board == "OPENMV_AE3":
-        return ["delta", "watchdog", "watchdog_recover"] + (
+        return ["delta", "rollback", "watchdog", "watchdog_recover"] + (
             ["coproc", "coproc_skip"] if COPROC_ENABLED else [])
     # The Portenta runs a REDUCED suite too, for the AE3's reason: only the paths PROVEN on it.
     # Measured on the bench, running its full set for the first time -- delta, full, bad_sig and
@@ -1024,7 +1129,11 @@ def regression_scenarios(board, network):
     # taking the REPL stops the feed -- the board bites, reboots, re-arms, and the seed never lands.
     # After `watchdog` that was merely racy; after `watchdog_recover` it failed every time (RT1060).
     # `reinstall` leaves the plain confirm app, which a REPL touch cannot hurt.
-    if BOARDS[board]["flash"] == "blhost_imx":          # no_slot bricks via blhost slot-erase
+    # ...and on a board whose stub encrypts: both slots' trailers erased from the REPL, then the
+    # firmware downloaded over USB (see _flash_dfu_cli). That is the one way to the stub's last
+    # resort -- no slot, no record that vouches, firmware in the clear -- and to boot.py's
+    # no-slot path on this board.
+    if BOARDS[board]["flash"] == "blhost_imx" or _stub_encrypts(board):
         scs.append("no_slot")
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
     # full OTA cycle -> promoted) on all of them, so every device PR proves the on-watchdog install
@@ -1035,6 +1144,8 @@ def regression_scenarios(board, network):
         scs += ["watchdog", "watchdog_recover"]       # ...and survives run() rebuilding the network
     if board == "OPENMV_N6":
         scs.append("watchdog_bite")
+    if board in FW_CORRUPT_BOARDS:                     # last: their app is the plain confirm one,
+        scs += ["fw_corrupt", "blob_corrupt"]          # and they take the REPL to reach DFU
     return scs
 
 
@@ -1167,6 +1278,7 @@ class UartCapture:
         self._ser.reset_input_buffer()
         self.markers = []                    # ordered (t, point)
         self.raw = []
+        self.setup = []                      # the lines before reset(): the provisioning boots
         self.flooded = 0                     # noise lines dropped across the whole capture
         self.contended = 0                   # reads lost to ANOTHER reader of this port (see _run)
         self._window, self._seen_in_window, self._dropped = time.time(), 0, 0
@@ -1317,6 +1429,7 @@ class UartCapture:
         markers must not count toward a scenario's expect/forbid sets."""
         self._t0 = t0
         self.markers = []
+        self.setup.extend(self.raw)          # kept apart: never scored, but it is what ran
         self.raw = []
 
     def tail(self, n=40):
@@ -1626,6 +1739,127 @@ def build_golden(board):
                        env=penv, check=True, timeout=900)
 
 
+def _damaged_slot_prefix(board):
+    """The start of the factory ROMFS image, up to and including the first block of slot A's
+    firmware blob, with 16 bytes of that blob flipped: what a DFU download to the ROMFS alt
+    rewrites slot A's beginning with. The trailer still verifies -- it names the blob by hash
+    -- and the blob no longer hashes to it. (bytes, blob offset)"""
+    from openmv_ota.flash.targets import flash_config
+    from openmv_ota.ota.trailer import parse_trailer
+    cfg = flash_config(board)
+    path = os.path.join(CFG["project"], "build",
+                        "%s-%s" % (board, cfg.filename("romfs", "factory-romfs.img")))
+    with open(path, "rb") as f:
+        image = bytearray(f.read())
+    slot = len(image) // 2                           # the same image in both slots
+    blob = parse_trailer(bytes(image[slot - 4096:slot])).components[0]
+    at = blob.offset + min(4096, blob.size // 2)
+    for i in range(at, at + 16):
+        image[i] ^= 0xFF
+    end = -(-(at + 16) // 65536) * 65536
+    return bytes(image[:end]), blob.offset
+
+
+def corrupt_firmware_area(board, blob=False):
+    """Damage the installed firmware from outside, leaving its install record alone: garbage
+    over the first block of the firmware area, written through the bootloader. A DFU download
+    starts at the partition's start, so the stub's own sector is rewritten as it is; the
+    bootloader erases only what it writes, and the record lives in the partition's last block.
+    The reset that ends the download boots the stub onto a record that names what is installed
+    and an area that no longer hashes to it.
+
+    ``blob``: first damage slot A's firmware blob in the same DFU session (see
+    _damaged_slot_prefix), so the copy the stub would repair from is no good either."""
+    from openmv_ota.flash.targets import flash_config
+    from openmv_ota.romfs.boards import get_board
+    cfg, layout = flash_config(board), get_board(board).stub
+    with open(os.path.join(CFG["project"], "build", "%s-stub.bin" % board), "rb") as f:
+        stub = f.read()
+    start = layout.firmware_dest - layout.origin
+    d = tempfile.mkdtemp(prefix="fw-corrupt-")
+    steps = []                                       # (alt, file): the last one leaves DFU
+    if blob:
+        prefix, off = _damaged_slot_prefix(board)
+        path = os.path.join(d, "slot-with-a-bad-blob.bin")
+        with open(path, "wb") as f:
+            f.write(prefix)
+        steps.append((cfg.alt_of("romfs"), path))
+        log("corrupt: 16 bytes of slot A's firmware blob (at 0x%x) flipped, through the bootloader" % off)
+    path = os.path.join(d, "stub-and-garbage.bin")
+    with open(path, "wb") as f:
+        f.write(stub + b"\xff" * (start - len(stub)) + os.urandom(64 * 1024))
+    steps.append((cfg.alt_of("firmware"), path))
+    log("corrupt: garbage over the first block of %s's firmware area, through the bootloader" % board)
+    try:
+        device_exec("import machine; machine.bootloader()", timeout=20, check=False)
+        for i, (alt, path) in enumerate(steps):
+            argv = [CFG["dfu"], "-w", "-d", "," + cfg.usb, "-a", str(alt)]
+            argv += (["--reset"] if i == len(steps) - 1 else []) + ["-D", path]
+            rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False, quiet=True)
+            if rc != 0 and i == 0:
+                log("corrupt: the CDC route failed (rc=%d) -- through the bootloader's DFU window" % rc)
+                rc, out = dfu_reset_catch(board, argv, timeout=NOCDC_FLASH_TIMEOUT)
+            if rc != 0:
+                raise RuntimeError("could not damage the board (rc=%d): %s" % (rc, (out or "")[-300:]))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def check_at_rest(board):
+    """ENCRYPTION AT REST, CHECKED FROM OUTSIDE THE CHIP: read the board's FIRMWARE partition
+    back through its bootloader and require ciphertext. ``(ok, report)``.
+
+    A board whose stub keeps the firmware area encrypted deciphers it as it runs, so nothing
+    the running camera says can show what its flash chip holds. The bootloader can: it runs
+    before the stub, with the cipher engine off, so a DFU upload of the partition returns the
+    stored bytes. They are judged against the build (at_rest.judge): the stub's sector is the
+    stub, no firmware block is stored as built, the stored firmware has the entropy of
+    ciphertext, and nothing else is left in the area.
+
+    Run after a scenario is scored: entering DFU over the CDC stops the app, and the upload
+    leaves DFU with a reset. With the CDC gone it catches the bootloader's DFU window."""
+    import at_rest
+    from openmv_ota.flash.targets import flash_config
+    from openmv_ota.romfs.boards import firmware_image_name, get_board
+    cfg, layout = flash_config(board), get_board(board).stub
+    build = os.path.join(CFG["project"], "build")
+    with open(os.path.join(build, "%s-stub.bin" % board), "rb") as f:
+        stub = f.read()
+    with open(os.path.join(build, firmware_image_name(board)), "rb") as f:
+        firmware = f.read()
+    d = tempfile.mkdtemp(prefix="at-rest-")
+    path = os.path.join(d, "firmware-partition.bin")       # dfu-util refuses an existing file
+    argv = [CFG["dfu"], "-w", "-d", "," + cfg.usb, "-a", str(cfg.alt_of("firmware")),
+            "--reset", "-U", path]
+    log("at rest: reading %s's firmware partition back through the bootloader" % board)
+    try:
+        device_exec("import machine; machine.bootloader()", timeout=20, check=False)
+        rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False, quiet=True)
+        if rc != 0 or not os.path.exists(path):
+            log("at rest: the CDC route failed (rc=%d) -- through the bootloader's DFU window" % rc)
+            if os.path.exists(path):
+                os.unlink(path)
+            rc, out = dfu_reset_catch(board, argv, timeout=NOCDC_FLASH_TIMEOUT)
+        if rc != 0 or not os.path.exists(path):
+            return False, {"problems": ["the read-back did not happen (rc=%d): %s"
+                                        % (rc, (out or "")[-200:])]}
+        with open(path, "rb") as f:
+            dump = f.read()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    start = layout.firmware_dest - layout.origin
+    problems, numbers = at_rest.judge(dump, stub, firmware, start, start + layout.firmware_max)
+    report = dict(numbers, problems=problems)
+    if numbers:
+        log("at rest: stub %s; %d of %d firmware blocks stored as built, %d build samples "
+            "found, %.3f bits/byte, %d bytes not blank after it"
+            % ("as built" if numbers["stub_ok"] else "NOT this build's", numbers["same"],
+               numbers["blocks"], numbers["found"], numbers["entropy"], numbers["stale"]))
+    for why in problems:
+        log("at rest: NOT ENCRYPTED -- " + why)
+    return not problems, report
+
+
 def flash_golden(board, bad_romfs=False):
     fn = globals()["_flash_" + BOARDS[board]["flash"]]
     fn(board, bad_romfs) if bad_romfs else fn(board)
@@ -1653,6 +1887,45 @@ def _log_cli_tail(rc, out, lines=25):
         log("  [cli] " + ln[:240])
 
 
+# Erase the first and the trailer block of both romfs slots, from the device: the partition is
+# one buffer (rom_ioctl 2), each half a slot, its trailer the slot's last 4 KiB (ioctl 3 erases
+# a range, 5 ends the write). Without its trailer a slot does not verify; without its first
+# block the firmware finds no filesystem to mount at start-up either, which is the state the
+# scenario's boot.no_prior_mount stands for. Seconds, where blanking the partition over DFU
+# is minutes.
+_ERASE_TRAILERS = (
+    "import vfs\n"
+    "n = len(vfs.rom_ioctl(2, 0)) // 2\n"
+    "for s in (0, 1):\n"
+    "    a = vfs.rom_ioctl(3, 0, s * n, 4096)\n"
+    "    b = vfs.rom_ioctl(3, 0, (s + 1) * n - 4096, 4096)\n"
+    "    print('ERASED', s, a, b)\n"
+    "vfs.rom_ioctl(5, 0)\n"
+)
+
+
+def _brick_slots_dfu(board):
+    """The no_slot brick on a DFU board with a boot stub: no slot left that verifies, and the
+    firmware written over USB. Both trailers are erased from the REPL; `flash firmware` then
+    downloads the stub and the firmware as built. On a board whose stub encrypts, that download
+    is in the clear, so the install record cannot vouch for the area and the stub is down to
+    its last resort: firmware that at least looks like firmware, booted with the cipher off."""
+    if not _has_stub(board):
+        raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
+    rc, out = device_exec(_ERASE_TRAILERS, timeout=60, check=False)
+    if (out or "").count("ERASED") != 2:
+        raise RuntimeError("could not erase the slots' trailers (rc=%d): %s" % (rc, (out or "")[-300:]))
+    argv = [ota("openmv-ota"), "flash", "firmware", CFG["project"], "-b", board,
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote")]
+    log("brick: both slots' trailers erased; flash firmware -> %s (openmv-ota, DFU -w)" % board)
+    rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False)
+    _log_cli_tail(rc, out)
+    if rc != 0:
+        rc, out = dfu_reset_catch(board, argv + ["--in-bootloader"], timeout=NOCDC_FLASH_TIMEOUT)
+    if rc != 0:
+        raise RuntimeError("flash firmware failed on both routes rc=%d: %s" % (rc, (out or "")[-400:]))
+
+
 def _flash_dfu_cli(board, bad_romfs=False):
     """Golden flash for the DFU boards (N6, AE3) via the openmv-ota CLI's `flash factory` -- the SAME
     tooling users ship with (and the recipe the OpenMV IDE uses). It enters DFU with
@@ -1671,7 +1944,7 @@ def _flash_dfu_cli(board, bad_romfs=False):
     global _FLASH_MARK
     _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
     if bad_romfs:
-        raise RuntimeError("no_slot (bad_romfs) flash not implemented for %s yet" % board)
+        return _brick_slots_dfu(board)
     _ensure_cdc(board, allow_erase=True)   # pre-flash: safe to erase; the flash below reprovisions
     argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
             "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote"),
@@ -3853,6 +4126,12 @@ def main():
                     "(prepare writes it; a recovery erase DEFERS that write), and that nothing else "
                     "holds the port." % (CFG["uart"], BOARDS[args.board]["cov_uart"]))
             cap.reset(time.time())               # scored window starts HERE (see the early start above)
+            if spec.get("corrupt_firmware"):
+                # Inside the window: the boot the damage causes is what this scenario scores.
+                # Let it finish before run_cycle's own reset, which would cut the repair short.
+                phase("corrupt_firmware", lambda: corrupt_firmware_area(
+                    args.board, blob=spec.get("corrupt_blob", False)))
+                _await_boot(args.board)
             # "install" phase = the whole autonomous OTA (check-in -> download -> write -> trial ->
             # confirm/promote or fallback). Timing it makes install SPEED a tracked metric too.
             result = phase("install", lambda: run_cycle(
@@ -3876,6 +4155,16 @@ def main():
         # THE CONSUMER, NOT JUST THE WRITE: after a green coproc run, boot the helper core and make
         # it read back this run's nonce from the partition sync() just wrote. Scored window is over,
         # so taking the REPL here costs nothing.
+        # A QUICK LOOK AT THE FLASH CHIP ITSELF, on a board that encrypts: after the happy-path
+        # update -- by now the stub has stored the factory flash's plaintext download and then
+        # installed the update -- read the firmware back through the bootloader and require
+        # ciphertext (check_at_rest). The scored window is over, so taking the REPL costs nothing.
+        if trace["passed"] and args.scenario == "delta" and _stub_encrypts(args.board):
+            ok, report = phase("at_rest", lambda: check_at_rest(args.board))
+            trace["at_rest"] = report
+            if not ok:
+                trace["passed"] = False
+                log("FAIL: the firmware is not ciphertext in the flash chip")
         if trace["passed"] and spec.get("he_boot"):
             ok, why = phase("he_boot", lambda: coproc_he_boot_check(args.board, _COPROC_NONCE))
             trace["he_boot"] = why
@@ -3979,6 +4268,10 @@ def main():
             trace["missed"] = sorted(set(COVERAGE.values()) - set(cap.points()))
             trace["marker_trace"] = cap.markers
             trace["log"] = cap.raw                # the full device log for this run
+            # ...and the boots before the scored window: the factory flash's first boot is where
+            # a stub installs what USB just wrote (and, on a board that encrypts, where it finds
+            # the area in the clear). Not scored; read for the stub's line coverage.
+            trace["log_setup"] = cap.setup
         bench_server.stop(srv)                    # tear the per-run server + store down
         trace["elapsed_s"] = round(time.time() - t0, 1)
         # CREATE THE TRACE DIRECTORY. A whole scenario -- provision, flash, install, confirm, the

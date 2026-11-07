@@ -93,6 +93,16 @@ reference, so they can't drift from the code:
   registrar); its docstring is the bench-topology story.
 - **`hil/hil_coverage.py`** — folds scenario traces into a device-path coverage
   report; its docstring explains how coverage works on a live, rebooting device.
+  The boot stub is read line by line off its own UART output: every line its C
+  can print is a point, and the report names the ones no scenario reached, the
+  boards that never showed a line the others did, and any hardware-fault line
+  that appeared (`STUB_FAULT_ONLY` in `ota_cycle.py` lists those, each with its
+  reason).
+- **`hil/at_rest.py`** — judges a read-back of a board's FIRMWARE partition: is
+  the firmware ciphertext where it is stored? On a board whose stub encrypts,
+  `delta` ends with that read, made through the bootloader (which runs before
+  the stub, with the cipher engine off), and fails if the flash chip holds
+  anything else.
 - **`hil/recover.py`** — brings a board back when its USB-CDC is gone, including
   the two-stage corrupt-firmware reflash; its docstring is the recovery manual.
 - **`hil/provision.sh`** — the runner-owned tooling bootstrap; its header
