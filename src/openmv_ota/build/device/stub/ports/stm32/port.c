@@ -276,15 +276,25 @@ int port_crypt_init(void) {
     return mce_init();
 }
 
-int port_crypt_select(const uint8_t *tweak) {
-    int ret = mce_select(tweak);
-    // The area just changed under the caches, and under the controller's read-ahead: a
-    // read somewhere else makes the next one in the area start afresh.
+// A range just changed under the caches, and under the controller's read-ahead: a read
+// somewhere else makes the next one in the range start afresh.
+static void crypt_changed(void) {
     SCB_CleanInvalidateDCache();
     SCB_InvalidateICache();
     if (!prog_mode) {
         (void) *(volatile const uint32_t *) STUB_FLASH_ORIGIN;
     }
+}
+
+int port_crypt_select(const uint8_t *tweak) {
+    int ret = mce_select(tweak);
+    crypt_changed();
+    return ret;
+}
+
+int port_crypt_slot_select(const uint8_t *tweak, uint32_t start, uint32_t end) {
+    int ret = mce_slot_select(tweak, start, end);
+    crypt_changed();
     return ret;
 }
 

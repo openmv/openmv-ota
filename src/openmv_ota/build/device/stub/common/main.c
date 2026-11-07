@@ -154,6 +154,55 @@ int main(void) {
         if (!s->ok) {
             continue;
         }
+        #ifdef STUB_SLOT_CRYPT
+        // The body, under this slot's cipher: how the firmware will read it. A body that is
+        // not this slot's ciphertext is in the clear (a factory slot, or an installer that
+        // wrote plaintext) or damaged. A clear slot never boots as it is: it is converted
+        // into the other slot when no ciphered slot verifies, and erased when one does.
+        if (!slot_body_ok(s, false)) {
+            slot_t *o = &slots[1 - s->index];
+            if (port_crypt_slot_select(NULL, 0, 0) != 0 || !slot_in_clear(s)) {
+                log_line("slot body does not verify");
+                s->ok = false;
+                s->reject = "body";
+                continue;
+            }
+            if (o->ok && slot_body_ok(o, false)) {
+                log_line("slot in the clear: erased");
+                (void) erase_slot(s);
+                continue;
+            }
+            log_line("slot in the clear: converting");
+            if (convert_slot(s, o) != 0) {
+                log_line("slot convert failed");
+                s->ok = false;
+                s->reject = "convert";
+                continue;
+            }
+            // The copy, as the next boot would find it.
+            if (!read_slot(o, o->index)) {
+                o->reject = "read";
+            }
+            slot_read_floors(o);
+            verify_slot(o, rollback_floor, epoch_floor);
+            if (!o->ok || !slot_body_ok(o, false)) {
+                log_line("converted slot does not verify");
+                continue;
+            }
+            (void) erase_slot(s);
+            log_line("clear slot erased");
+            s = o;
+        }
+        {
+            // The other slot in the clear -- a conversion a reset cut short of its last step,
+            // or a plaintext install -- never boots: erased, so no plaintext stays behind.
+            slot_t *o = &slots[1 - s->index];
+            if (o->ok && slot_in_clear(o)) {
+                log_line("other slot in the clear: erased");
+                (void) erase_slot(o);
+            }
+        }
+        #endif
         uint32_t reason = REASON_NORMAL;
         if (s->trial) {
             // Pay for the trial before it runs: a slot that cannot record an attempt
@@ -200,6 +249,7 @@ int main(void) {
 
     // No slot verifies. Boot what is installed if the record vouches for it, or if it
     // at least looks like firmware (a USB-provisioned camera whose slots were wiped).
+    (void) port_crypt_slot_select(NULL, 0, 0);     // no slot is mapped under a cipher
     if (record.valid && record_area_ok(&record)) {
         jump(record.hdr.reason);
     }
