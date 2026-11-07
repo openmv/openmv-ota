@@ -740,6 +740,17 @@ def _select_rep(body, delta_capable, base_payload_version, base_body_sha):
     return best
 
 
+# --- The slot cipher (mirror of openmv_ota.ota.slot_crypt; pinned by a test) --------------
+_SLOT_CRYPT_LABEL = b"omv-slot-crypt-1"            # the stub's slot_label
+
+
+def _slot_tweak(index, trailer_sha256):
+    """The tweak slot ``index`` (0 = A, 1 = B) is ciphered under for an image whose trailer's
+    signed region hashes to ``trailer_sha256`` (32 bytes, from the manifest)."""
+    h = hashlib.sha256(_SLOT_CRYPT_LABEL + struct.pack("<I", index) + trailer_sha256)
+    return h.digest()[:10]
+
+
 def _trailer_version(trailer):
     """A slot trailer's ``payload_version``; 0 if it doesn't parse (blank or torn)."""
     if len(trailer) < struct.calcsize(_TRAILER_HEADER_STRUCT):
@@ -1149,7 +1160,8 @@ def _fill(source, mv, want, feed):
 
 def _install_stream(source, write, readback, slot_size, block, feed,
                     progress=None, expect_sha=None, repr_marker=None, gc_collect=None,
-                    work=None, counter=None, floor=0, primed=0, epoch=0):
+                    work=None, counter=None, floor=0, primed=0, epoch=0, crypt=None,
+                    crypt_size=0):
     """Stream the decompressed image into the ALREADY-ERASED TARGET slot 1:1
     (verifying every write by read-back, skipping already-erased 0xFF runs), then
     arm the trial.
@@ -1256,7 +1268,13 @@ def _install_stream(source, write, readback, slot_size, block, feed,
             break                                    # source exhausted; the size check below rejects short
         chunk = mv[:n]
         if digest is not None:
-            digest.update(chunk)
+            digest.update(chunk)                     # the image as signed: before the cipher
+        if crypt is not None and off < crypt_size:
+            # The slot's first crypt_size bytes are stored ciphered (the stub reads them through
+            # the chip's engine): ciphered in place, so the write, its read-back and the blank
+            # test below all see what the flash will hold. The pad after them stays blank.
+            k = n if off + n <= crypt_size else crypt_size - off
+            crypt(off, mv[:k])
         if not _is_blank(chunk):                     # erased regions are already 0xFF
             feed()                                   # the feed at the top of this iteration was
             #                                          spent by the recv + delta reconstruct above,
@@ -1699,8 +1717,8 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
                   base_body_sha=""):
     """Verify + vet a signed manifest already in RAM and pick a representation -- the
     pure-CPU half of the manifest phase, shared by the HTTPS fetch and the on-disk
-    path. Returns ``(image_url, fmt, expect_sha)``; raises OSError (to the app,
-    nothing erased) on any rejection.
+    path. Returns ``(image_url, fmt, expect_sha, wbits, alt, enc, crypt)``; raises OSError
+    (to the app, nothing erased) on any rejection.
 
     Everything here -- CRC parse, the ECDSA signature verify, and the flash-vetting --
     is single unsplittable C/Python calls with no seam to feed through, and the P-256
@@ -1744,6 +1762,18 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
     image_url = _resolve_url(manifest_url, rep["url"])
     fmt = rep.get("format")
     expect_sha = body_dict.get("sha256")
+    # The slot cipher's inputs, on a board whose stub keeps the slots encrypted: the trailer's
+    # signed-region hash (the tweak's input) and how far the cipher reaches. Signed with the
+    # rest; a manifest without them cannot be installed there, because the keystream must be
+    # known before the first body byte is written.
+    crypt = None
+    if getattr(cfg, "SLOT_CRYPT", False):
+        tsha = body_dict.get("trailer_sha256")
+        csize = body_dict.get("crypt_size")
+        if not isinstance(tsha, str) or len(tsha) != 64 or not isinstance(csize, int) or csize < 0:
+            log.warning("install: reject no slot cipher inputs")
+            raise OSError("manifest has no slot cipher inputs")
+        crypt = (binascii.unhexlify(tsha), csize)
     log.debug("install: manifest accepted")
     # The demote fallback: when a DELTA was chosen, hand back the full rep too, so a delta
     # that fails its post-write sha check costs one attempt, not the whole install -- the
@@ -1758,7 +1788,7 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
     # get small-window images; 0 = the format default). Signed like everything else.
     # enc: how to decrypt this artifact -- the wraps, the iv and the plaintext length.
     # Signed too, which is what stops a key id or a length being swapped under us.
-    return image_url, fmt, expect_sha, rep.get("wbits") or 0, alt, rep.get("enc")
+    return image_url, fmt, expect_sha, rep.get("wbits") or 0, alt, rep.get("enc"), crypt
 
 
 _SILENT = 51          # above logging.CRITICAL (50): the level openmv_log sets when logging is off
@@ -1910,6 +1940,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     # which is what lets `part_read` below serve every slot and lets the target's offset be
     # nothing more than an addend.
     part = vfs.rom_ioctl(2, 0)
+    xip_base = None                                   # set by the XIP write path below
     _seen = set()                                     # one-shot log guard: emit each per-chunk
     if hasattr(part, "ioctl"):                        # write marker once (bounded, RAM-safe)
         log.debug("install: write path block-device")
@@ -2053,6 +2084,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     else:                                             # XIP-mapped romfs (stm32/alif/samd)
         log.debug("install: write path XIP")
         base = uctypes.addressof(part)                # partition XIP base
+        xip_base = base
         # Never hand out an alias that reaches the end of the mapped partition -- a bulk read of
         # it wedges the QUADSPI and silently kills the board mid-install (see _XIP_TAIL_GUARD).
         # Reads are SHORTENED, never moved, and only ever at the very end of the last slot, which
@@ -2225,6 +2257,21 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     log.info("install: target slot %s at %d (%d bytes), counter %d, floor %d"
              % (target, target_off, slot_size, counter, floor))
 
+    # The slot cipher, on a board whose stub keeps the slots encrypted: the C module the
+    # firmware carries, keyed by the chip, over the target slot's addresses under the tweak
+    # the manifest's trailer hash gives this slot. Without the module there is no writing in
+    # the clear: the stub would erase a plaintext slot, so the install is refused up front.
+    crypt = None
+    crypt_size = 0
+    if getattr(cfg, "SLOT_CRYPT", False):
+        import flash_crypt   # hil-residual: the firmware's C module (openmv-ota build firmware drops it on an encrypting board)
+        if xip_base is None:  # hil-residual: an encrypting board is always XIP-mapped; the guard is for a port that is not
+            raise OSError("slot cipher needs an XIP-mapped partition")  # hil-residual: unreachable on the fleet's one encrypting board (XIP)
+
+        def crypt(off, buf, _slot=1 if target == "B" else 0):   # hil-residual: a def line; its body is witnessed by the stub's `slot ok` on the trial boot
+            flash_crypt.xor(xip_base + target_off + off, buf, _tweak[_slot])  # hil-residual: witnessed by the stub's `slot ok` on the trial boot
+        _tweak = (None, None)                         # hil-residual: a placeholder the vetted manifest replaces (install.slot_cipher)
+
     def write(off, data):                             # SLOT-RELATIVE, so _install_stream and the
         write_at(target_off + off, data)  # hil-residual: bare delegation (write_at carries the write marker)
 
@@ -2255,14 +2302,15 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     # handshake in _connect, each recv in _Reader) relax() at their leaf; the erase/write loops stay
     # PROGRESS-fed per block/piece, so a hung flash/reconstruct loop is still caught. All no-op off.
     log.info("install: fetching manifest %s" % manifest_url)
+    crypt_in = None
     try:
         if _is_path(manifest_url):                # a manifest file path (mounted FS, e.g. SD)
-            image_url, fmt, expect_sha, wbits, alt, enc = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
+            image_url, fmt, expect_sha, wbits, alt, enc, crypt_in = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
                 manifest_url, cfg, verify,
                 floor=floor, base_version=base_version, delta_capable=delta_capable,
                 base_body_sha=base_body_sha)
         else:
-            image_url, fmt, expect_sha, wbits, alt, enc = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
+            image_url, fmt, expect_sha, wbits, alt, enc, crypt_in = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
                 manifest_url, ca_pem, cfg, verify, socket, ssl, feed,
                 floor=floor, base_version=base_version, delta_capable=delta_capable,
                 base_body_sha=base_body_sha)
@@ -2278,6 +2326,11 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
         else:
             log.warning("install: rejected before erase (%r)" % e)       # /rom untouched (%r shows the class)
         raise  # hil-residual: bare re-raise to the app (reject -> install.reject; transport -> retry next poll, marker-less)
+    if crypt is not None:
+        # Both slots' tweaks for this image (the target is fixed above; both cost nothing).
+        _tweak = (_slot_tweak(0, crypt_in[0]), _slot_tweak(1, crypt_in[0]))
+        crypt_size = crypt_in[1]
+        log.debug("install: slot cipher ready")
     # An update encrypted for each camera opens with the lockbox the server sent with the offer.
     # Opened here, before the erase, so a missing or foreign one rejects with /rom untouched.
     try:
@@ -2417,7 +2470,8 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
             log.info("install: writing %s" % target)
             _install_stream(source, write, readback, slot_size, block, feed,
                             progress, expect_sha, repr_marker, gc_collect, work,
-                            counter=counter, floor=floor, primed=primed, epoch=epoch)
+                            counter=counter, floor=floor, primed=primed, epoch=epoch,
+                            crypt=crypt, crypt_size=crypt_size)
             # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
             # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
             # ports cache the final sub-page writes -- the trailer + arm markers -- and

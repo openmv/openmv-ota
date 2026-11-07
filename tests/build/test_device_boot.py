@@ -764,6 +764,55 @@ def test_the_stub_record_overrides_this_firmwares_mark_policy(mark):
                      BLOCK, PRODUCT_ID, trust.ROOTS).run()[0] == "A"    # no record: policy rules
 
 
+def test_on_an_encrypting_board_the_records_slot_is_mounted_without_blaming_the_other():
+    """The stub maps only the slot it boots; the other is ciphertext to this firmware (or
+    blank, after the factory conversion). With the record naming B, B is mounted and the
+    unreadable A is no rejection -- `boot: mounted`, not a fallback."""
+    priv, _pub = _key()
+    bdy_b = b"bbb" * 40
+    sb = _counter(bytearray(_status(True, True, True)), 2)
+    back = _back(priv, 0x100, bdy_b, sb, components=[_comp(0xBB)])
+    garbage = bytes((i * 131 + 7) & 0xFF for i in range(FRONT_SIZE))      # A as ciphertext reads
+    dev = _Dev(_partition(garbage, back))
+    ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,
+                   BLOCK, PRODUCT_ID, trust.ROOTS,
+                   record=_record(1, [(0x70090000, 200, bytes([0xBB]) * 32)]), slot_crypt=True)
+    slot, _t, reason = ob.run()
+    assert slot == "B" and dev.mounted == [bdy_b] and reason is None and ob.stub == (7, 1)
+    # without the flag the same flash reads as a fallback from a rejected A
+    ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,
+                   BLOCK, PRODUCT_ID, trust.ROOTS,
+                   record=_record(1, [(0x70090000, 200, bytes([0xBB]) * 32)]))
+    slot, _t, reason = ob.run()
+    assert slot == "B" and reason is not None and reason.startswith("A:")
+    # a record naming a slot that does not hold its components falls through to the usual choice
+    ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,
+                   BLOCK, PRODUCT_ID, trust.ROOTS,
+                   record=_record(1, [(0x70090000, 200, bytes([0xCC]) * 32)]), slot_crypt=True)
+    slot, _t, _reason = ob.run()
+    assert slot == "B" and ob.stub is None
+    # ...as does one whose slot fails verification (another product's image)
+    other = _back(priv, 0x100, bdy_b, sb, components=[_comp(0xBB)], product_id=0x999)
+    dev = _Dev(_partition(garbage, other))
+    ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,
+                   BLOCK, PRODUCT_ID, trust.ROOTS,
+                   record=_record(1, [(0x70090000, 200, bytes([0xBB]) * 32)]), slot_crypt=True)
+    with pytest.raises(B.OtaReject):
+        ob.run()
+
+
+def test_on_an_encrypting_board_the_records_slot_overrides_the_mark_policy_too():
+    priv, _pub = _key()
+    bdy_b = b"bbb" * 40
+    sb = _spend_attempts(_counter(bytearray(_status(True, False, False)), 1), B.DEFAULT_MAX_ATTEMPTS)
+    dev = _Dev(_partition(bytes(FRONT_SIZE), _back(priv, 0x100, bdy_b, sb, components=[_comp(0xBB)])))
+    ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,
+                   BLOCK, PRODUCT_ID, trust.ROOTS,
+                   record=_record(1, [(0x70090000, 200, bytes([0xBB]) * 32)]), slot_crypt=True)
+    slot, _t, reason = ob.run()
+    assert slot == "B" and reason is None and ob.stub == (7, 1)
+
+
 @pytest.mark.parametrize("record", [
     None,                                                     # no stub
     b"\xff" * 4096,                                           # erased sector
