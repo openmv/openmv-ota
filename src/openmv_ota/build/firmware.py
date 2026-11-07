@@ -68,6 +68,8 @@ _KEY_PACKAGE = _DEVICE_DIR / "openmv_se"      # the camera's keys, frozen per bo
 _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ dir
 _KEY_STORE_C = _DEVICE_DIR / "key_store.c"
 _KEY_STORE_MODULE = "key_store.c"        # likewise, on a board that keeps its own keys
+_FLASH_CRYPT_C = _DEVICE_DIR / "flash_crypt.c"
+_FLASH_CRYPT_MODULE = "flash_crypt.c"    # likewise, on a board whose stub keeps the slots encrypted
 
 # The OTA installer verifies its download's TLS against a PEM CA bundle. micropython used to
 # build mbedtls DER-only, so an OTA build pointed it at a patched copy of the per-port config;
@@ -221,6 +223,7 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
     tmp: Path | None = None
     cmod: Path | None = None
     kmod: Path | None = None
+    xmod: Path | None = None
     try:
         build_args = ["TARGET=%s" % name, "-j%d" % (jobs or os.cpu_count() or 1)]
         if ota:
@@ -231,10 +234,11 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
                 build_args.append("OMV_BOARD_CONFIG_DIR=%s/" % overlay.as_posix())
             cmod = _install_verify_module(repo)
             kmod = _install_key_store_module(repo, name)
+            xmod = _install_crypt_module(repo, name)
             speed = _mbedtls_speed_arg(p, repo, name, tmp)
             if speed is not None:
                 build_args.append(speed)
-        digest = _inputs_digest(tmp, build_args, [cmod, kmod])
+        digest = _inputs_digest(tmp, build_args, [cmod, kmod, xmod])
         if not incremental or _stale_inputs(repo, name, digest):
             _run_make(repo, ["TARGET=%s" % name, "clean"])
         _ensure_mpy_cross(repo)
@@ -250,7 +254,7 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
         return FirmwareResult(name, outputs, ota=ota,
                               build_dir=tmp if (ota and keep_build_dir) else None)
     finally:
-        for mod in (cmod, kmod):                   # restore the firmware tree
+        for mod in (cmod, kmod, xmod):             # restore the firmware tree
             if mod is not None:
                 mod.unlink(missing_ok=True)
 
@@ -565,6 +569,13 @@ def _stub_record_addr(name: str) -> int | None:
     return stub.record_addr if stub is not None else None
 
 
+def _slot_crypt(name: str) -> bool:
+    """Whether this board's boot stub keeps the ROMFS slots ciphertext at rest
+    (``StubLayout.encrypted``), so the installer must write its slot through the cipher."""
+    stub = get_board(name).stub
+    return stub is not None and stub.encrypted
+
+
 def _cloud_stamp(name: str) -> tuple[str | None, str | None]:
     """``(_ota_config.CLOUD, _ota_config.LIVE_FRAMESIZE)`` for board ``name``: its boards.json
     cloud level and Live frame-size cap (None where it has none)."""
@@ -631,6 +642,9 @@ def _render_ota_config(p, name: str, payload_keys: dict[int, bytes]) -> str:
         # THE BOOT STUB'S INSTALL RECORD, on a board that has a stub: the last 4 KiB of the
         # firmware area (just past the install window). boot.py mounts the slot it names.
         + "STUB_RECORD_ADDR = %r\n" % _stub_record_addr(name)
+        # THE SLOT CIPHER, on a board whose stub keeps the ROMFS slots encrypted: the installer
+        # writes the other slot as ciphertext (the flash_crypt module, keyed by the chip).
+        + "SLOT_CRYPT = %r\n" % _slot_crypt(name)
         # RECOVERY CONFIG -- in the FIRMWARE, deliberately, not the romfs. A device whose image is
         # gone still needs both of these to reach the server, which is exactly when recovery runs;
         # keeping them in the app is what made recovery impossible in v1. CA_PEM is empty only
@@ -736,6 +750,40 @@ def _install_key_store_module(repo: Path, name: str) -> Path | None:
     dst.write_text("// Added by `openmv-ota build firmware`: %s's key area (boards.json).\n"
                    "#define OMV_KEY_AREA_ADDR (0x%08XUL)\n\n" % (name, se["key_area"])
                    + _KEY_STORE_C.read_text(encoding="utf-8"), encoding="utf-8")
+    return dst
+
+
+def _flash_crypt_sources() -> str:
+    """The ``flash_crypt`` module as one C file: the stub's AES-128 and engine-stream sources
+    (``lib/aes``, ``ports/stm32/mce_stream``) pasted above the module, their local includes
+    dropped, so the firmware build's ``modules/*.c`` glob compiles exactly the cipher the
+    stub programs with -- one copy of that code, in the stub tree."""
+    from . import stub as stub_mod
+
+    parts = []
+    for rel in ("lib/aes/aes128.h", "lib/aes/aes128.c", "ports/stm32/mce_stream.h",
+                "ports/stm32/mce_stream.c"):
+        text = (stub_mod.STUB_DIR / rel).read_text(encoding="utf-8")
+        parts.append("".join(line for line in text.splitlines(keepends=True)
+                             if not line.startswith(('#include "aes128.h"', '#include "mce_stream.h"'))))
+    text = _FLASH_CRYPT_C.read_text(encoding="utf-8")
+    parts.append("".join(line for line in text.splitlines(keepends=True)
+                         if not line.startswith(('#include "aes128.h"', '#include "mce_stream.h"'))))
+    return "// Generated by `openmv-ota build firmware`: the stub's cipher sources, then the module.\n" \
+           + "\n".join(parts)
+
+
+def _install_crypt_module(repo: Path, name: str) -> Path | None:
+    """On a board whose stub keeps the ROMFS slots encrypted, drop the ``flash_crypt`` C module
+    (the installer's slot cipher) into the firmware's ``modules/`` dir. Returns the installed
+    path for the caller to remove after the build; None on any other board, or if a file is
+    already there (left intact rather than clobbered)."""
+    stub = get_board(name).stub
+    dst = repo / "modules" / _FLASH_CRYPT_MODULE
+    if stub is None or not stub.encrypted or dst.exists():
+        return None
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(_flash_crypt_sources(), encoding="utf-8")
     return dst
 
 

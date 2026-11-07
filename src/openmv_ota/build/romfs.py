@@ -1147,6 +1147,7 @@ def _manifest_body(p, tr, image: bytes, reps: list[dict]) -> dict:
     """The manifest's signed body dict for ``image`` (the decompressed download image),
     identity bound from its trailer ``tr``. Shared by ``build_manifest`` and the factory
     build's publishable pair, so the two can never drift on a field."""
+    from openmv_ota.ota import slot_crypt
     from openmv_ota.ota.manifest import SCHEMA
     from openmv_ota.ota.version import decode_app_version
 
@@ -1170,6 +1171,11 @@ def _manifest_body(p, tr, image: bytes, reps: list[dict]) -> dict:
         "min_stub": tr.min_stub,
         "size": len(image),
         "sha256": hashlib.sha256(image).hexdigest(),
+        # The slot cipher's inputs, on a board whose stub keeps the slots encrypted: the
+        # installer derives the keystream from these before the first body byte is written
+        # (the trailer, which also names them, arrives last). Harmless to every other board.
+        "trailer_sha256": slot_crypt.trailer_sha256(tr).hex(),
+        "crypt_size": slot_crypt.crypt_size(tr),
         "representations": reps,
     }
 
