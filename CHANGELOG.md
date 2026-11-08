@@ -94,6 +94,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The OpenMV Cam H7 Plus OTA firmware drops `find_datamatrices()`.** The stock firmware
+  now fills both of that board's code regions, so the OTA firmware (frozen boot script,
+  recovery installer and PEM parsing on top) no longer fits with it. `build firmware`
+  turns `IMLIB_ENABLE_DATAMATRICES` off through the board-directory overlay, as it already
+  does on the OpenMV Cam H7, and `build romfs` refuses an app that calls it. The stock
+  firmware is unchanged.
 - **Trailer v4 and signing-key certificates.** A camera now embeds only two **root** public
   keys (`keys/root_keys.json`, `ROOT_KEYS` in the firmware); every signing key reaches it as a
   160-byte certificate in the image trailer, signed by a root (`openmv_ota.ota.certificate`:

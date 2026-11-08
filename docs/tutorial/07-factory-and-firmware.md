@@ -119,7 +119,9 @@ The project's OTA flag steers the build automatically:
   (`make OMV_BOARD_CONFIG_DIR=<copy>`), so the firmware tree is still not touched. The
   stock firmware for that board keeps all four; an app that calls any of them is
   refused by [`build romfs`](06-building.md#build-romfs) rather than failing
-  on the camera.
+  on the camera. The **OpenMV Cam H7 Plus** (`OPENMV4P`) is one step behind: its stock
+  firmware already fills both code regions, so its OTA firmware turns off
+  `find_datamatrices()` alone, the same way.
 
 The build is **clean by default** (`make clean` first), so a stale tree can't
 turn into a confusing link-time failure; pass `--incremental` to skip the clean

@@ -179,10 +179,11 @@ def make_firmware(tmp_path):
                     "#define IMLIB_ENABLE_QRCODES\n#define IMLIB_ENABLE_DATAMATRICES\n"
                     "#define IMLIB_ENABLE_BARCODES\n#define IMLIB_ENABLE_FIND_DISPLACEMENT\n"
                     "#define IMLIB_ENABLE_FIND_LBP\n#endif\n")
-            if board in ("OPENMV4P", "OPENMVPT"):   # these give up the LAB lookup table instead
-                (d / "imlib_config.h").write_text(
+            if board in ("OPENMV4P", "OPENMVPT"):   # the LAB LUT moves to the second region;
+                (d / "imlib_config.h").write_text(   # the H7 Plus also drops datamatrices
                     "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"
-                    "#define IMLIB_ENABLE_LAB_LUT\n#define IMLIB_ENABLE_QRCODES\n#endif\n")
+                    "#define IMLIB_ENABLE_LAB_LUT\n#define IMLIB_ENABLE_QRCODES\n"
+                    "#define IMLIB_ENABLE_DATAMATRICES\n#endif\n")
         if with_mpy_cross:
             mc = repo / "lib" / "micropython" / "mpy-cross" / "build"
             mc.mkdir(parents=True)

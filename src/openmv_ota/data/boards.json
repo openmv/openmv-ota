@@ -109,6 +109,7 @@
     "OPENMV4P": {
       "secure_element": {"chip": "soft", "key_area": 134344704, "bootloader_max": 126976},
       "stub": {"origin": "0x08040000", "firmware_dest": "0x08060000", "firmware_max": "0x19F000", "text2": {"dest": "0x08020000", "max": "0x20000"}},
+      "ota_firmware_drops": {"IMLIB_ENABLE_DATAMATRICES": "find_datamatrices"},
       "display_name": "OpenMV Cam H7 Plus (STM32H743 w/ SDRAM)",
       "cloud": "full",
       "live_framesize": "QVGA",

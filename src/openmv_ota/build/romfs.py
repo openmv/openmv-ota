@@ -420,7 +420,8 @@ def _refuse_dropped_calls(app_dir: Path, board: str) -> None:
 
     ``build firmware`` turns some imlib features off on a board whose flash cannot hold an
     OTA firmware with them (``ota_firmware_drops`` in the board table -- the OpenMV Cam H7
-    loses ``find_barcodes()`` and ``find_datamatrices()``). A call to one of them would
+    loses ``find_barcodes()`` and ``find_datamatrices()``, the H7 Plus
+    ``find_datamatrices()``). A call to one of them would
     only fail on the camera, as an AttributeError at the moment the frame arrives; here it
     is a build error that names the file and line. Tokenized rather than grepped, so a
     mention in a comment or a string is not a call."""
