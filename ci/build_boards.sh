@@ -138,7 +138,7 @@ part_size() {  # proj  board
 
 build_firmware() {  # proj  board
   [ -n "${NO_FIRMWARE:-}" ] && return 0
-  expect_success "build firmware" $OTA build firmware "$1" -b "$2"
+  expect_success "build firmware" $OTA build firmware "$1" -b "$2" --allow-dev-key
   if ls "$1/build/$2"-firmware*.bin >/dev/null 2>&1; then
     pass "firmware image written (<board>-firmware*.bin)"
   else

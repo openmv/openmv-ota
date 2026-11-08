@@ -4,13 +4,17 @@ The stub is C (``build/device/stub/``): its own Makefile and linker script per b
 built against the vendor HAL and CMSIS in the project's firmware checkout. This module
 writes the header that bakes the project's trust into it -- the root public keys, the
 board's product id, the attempt budget -- runs make, and copies ``<board>-stub.bin``
-into the build directory. The stub is flashed over USB alongside the firmware; it
-never travels in an OTA image and never updates itself.
+into the build directory, sealed with its footer: the stub's sector as flashed, the
+code followed by 0xFF and a signed 512-byte footer (``openmv_ota.ota.stub_footer``)
+that names the code's hash, the stub version and the product id under the project's
+factory key -- what a bootloader verifies under the root. The stub is flashed over USB
+alongside the firmware; it never travels in an OTA image and never updates itself.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -33,7 +37,9 @@ COMBINED_SUFFIX = "firmware-with-stub.bin"   # <board>-firmware-with-stub.bin: w
 class StubResult:
     board: str
     output: Path
-    size: int
+    size: int          # bytes of stub code
+    sector: int = 0    # bytes written: the sealed sector (code, pad, footer)
+    key_id: int = 0    # the factory key that signed the footer
 
 
 def build_stub(
@@ -43,6 +49,9 @@ def build_stub(
     boards: list[str] | None = None,
     firmware: str | Path | None = None,
     jobs: int | None = None,
+    factory_key: int | None = None,
+    key_passphrase_file: str | Path | None = None,
+    allow_dev_key: bool = False,
 ) -> list[StubResult]:
     project = Path(project)
     try:
@@ -66,12 +75,14 @@ def build_stub(
     except OtaError as e:
         raise BuildError(str(e)) from None
 
+    signer = _footer_signer(p, factory_key, key_passphrase_file, allow_dev_key)
     out_dir = Path(output) if output else project / "build"
     out_dir.mkdir(parents=True, exist_ok=True)
-    return [_build_one(p, name, roots, out_dir, jobs) for name in names]
+    return [_build_one(p, name, roots, out_dir, jobs, signer) for name in names]
 
 
-def build_for_firmware(p, name: str, out_dir: Path, jobs) -> list[Path]:
+def build_for_firmware(p, name: str, out_dir: Path, jobs, *, key_passphrase_file=None,
+                       allow_dev_key: bool = False) -> list[Path]:
     """The stub a ``build firmware`` of a stub board also produces (the firmware is linked for
     it, so one is not flashable without the other): ``[<out_dir>/<board>-stub.bin]``, or ``[]``
     on a board with no stub layout or in a non-OTA project (no root keys to bake in)."""
@@ -79,12 +90,38 @@ def build_for_firmware(p, name: str, out_dir: Path, jobs) -> list[Path]:
     if not p.config.ota or get_board(name).stub is None:
         return []
     roots = read_root_keys(ProjectPaths(p.root).root_keys)
-    return [_build_one(p, name, roots, out_dir, jobs).output]
+    signer = _footer_signer(p, None, key_passphrase_file, allow_dev_key)
+    return [_build_one(p, name, roots, out_dir, jobs, signer).output]
+
+
+def _footer_signer(p, factory_key, key_passphrase_file, allow_dev_key):
+    """The factory key that seals the stub's footer -- the key that signs the factory image
+    the stub is flashed with (``FACTORY_KEY_ID_BASE`` unless ``factory_key`` names another),
+    resolved the way every signing build resolves its key."""
+    from openmv_ota.ota.keys import FACTORY_KEY_ID_BASE
+
+    from .romfs import _key_backend
+    key_id = factory_key if factory_key is not None else FACTORY_KEY_ID_BASE
+    _entry, _alg, backend = _key_backend(p, key_id, require_role="factory",
+                                         key_passphrase_file=key_passphrase_file,
+                                         allow_dev_key=allow_dev_key)
+    return backend
+
+
+def stub_version() -> int:
+    """``STUB_VERSION`` from the stub sources (``common/stub.h``): the value the stub writes
+    into its install record, and the one its footer names."""
+    text = (STUB_DIR / "common" / "stub.h").read_text(encoding="utf-8")
+    m = re.search(r"(?m)^#define\s+STUB_VERSION\s+\(?(\d+)\)?", text)
+    if m is None:
+        raise BuildError("common/stub.h does not define STUB_VERSION")
+    return int(m.group(1))
 
 
 def compose_image(stub: bytes, firmware: bytes, layout) -> bytes:
     """``stub || 0xFF pad || firmware`` as one image for the FIRMWARE partition: the stub at
-    the partition start (where the bootloader jumps), the firmware at its destination."""
+    the partition start (where the bootloader jumps), the firmware at its destination. A
+    sealed stub is already its whole sector, so the pad is for a bare one."""
     if len(stub) > layout.stub_max:
         raise BuildError("stub is %d bytes but its sector holds %d" % (len(stub), layout.stub_max))
     return stub + b"\xff" * (layout.stub_max - len(stub)) + firmware
@@ -141,7 +178,9 @@ def _product_id(p, name: str) -> int:
     return int(bid) if bid is not None else derive_product_id(p.config.name, name)
 
 
-def _build_one(p, name: str, roots, out_dir: Path, jobs) -> StubResult:
+def _build_one(p, name: str, roots, out_dir: Path, jobs, signer) -> StubResult:
+    from openmv_ota.ota import stub_footer
+    from openmv_ota.ota.errors import OtaError
     tmp = Path(tempfile.mkdtemp(prefix="openmv-ota-stub-"))
     try:
         (tmp / KEYS_HEADER).write_text(
@@ -165,9 +204,16 @@ def _build_one(p, name: str, roots, out_dir: Path, jobs) -> StubResult:
         built = build / "stub.bin"
         if not built.is_file():
             raise BuildError("stub build produced no stub.bin for %s" % name)
+        image = built.read_bytes()
+        try:
+            sealed = stub_footer.seal(image, get_board(name).stub.stub_max,
+                                      stub_version=stub_version(), product_id=_product_id(p, name),
+                                      certificate=signer.certificate, signer=signer)
+        except OtaError as e:
+            raise BuildError("%s: %s" % (name, e)) from None
         out = out_dir / ("%s-stub.bin" % name)
-        shutil.copyfile(built, out)
-        return StubResult(name, out, out.stat().st_size)
+        out.write_bytes(sealed)
+        return StubResult(name, out, len(image), len(sealed), signer.key_id)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

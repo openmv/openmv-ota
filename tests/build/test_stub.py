@@ -39,7 +39,16 @@ def test_build_stub_generates_the_keys_header_and_copies_the_binary(make_project
     root, repo, _app = make_project(ota=True)
     [r] = stub_mod.build_stub(root, firmware=repo, jobs=2)
     assert r.board == "OPENMV_N6" and r.output == root / "build" / "OPENMV_N6-stub.bin"
-    assert r.size == 400 and r.output.read_bytes() == b"STUB" * 100
+    sealed = r.output.read_bytes()
+    assert (r.size, r.sector, r.key_id) == (400, 0x10000, 0x0001)      # code, sector, factory key
+    assert len(sealed) == 0x10000 and sealed[:400] == b"STUB" * 100
+    assert set(sealed[400:-512]) == {0xFF}
+    # the footer: the stub's version and product id, signed under the project's roots
+    from openmv_ota.ota import stub_footer
+    ok, why = stub_footer.verify(sealed, read_root_keys(ProjectPaths(root).root_keys))
+    assert ok, why
+    f = stub_footer.parse(stub_footer.footer_of(sealed))
+    assert f.stub_version == stub_mod.stub_version() >= 1
 
     [c] = calls
     assert c["BOARD"] == "OPENMV_N6" and c["OMV_DIR"] == str(repo.resolve()) and "-j2" in c["args"]
@@ -48,6 +57,7 @@ def test_build_stub_generates_the_keys_header_and_copies_the_binary(make_project
     roots = read_root_keys(ProjectPaths(root).root_keys)
     assert "#define STUB_PRODUCT_ID %dULL" % derive_product_id("proj", "OPENMV_N6") in h \
         or "#define STUB_PRODUCT_ID " in h
+    assert "#define STUB_PRODUCT_ID %dULL" % f.product_id in h       # footer == header
     assert "#define STUB_MAX_ATTEMPTS 3" in h
     assert "#define STUB_ROOT_KEY_COUNT %d" % len(roots) in h
     for k in roots:                                   # X || Y of each root, in root_id order
@@ -156,7 +166,8 @@ def test_build_stub_cli(make_project, monkeypatch, capsys):
     _fake_make(monkeypatch)
     root, repo, _app = make_project(ota=True)
     assert main(["build", "stub", str(root), "-f", str(repo), "-b", "OPENMV_N6", "-j", "1"]) == 0
-    assert "Built OPENMV_N6-stub.bin  (400 bytes)" in capsys.readouterr().out
+    assert ("Built OPENMV_N6-stub.bin  (400 bytes of stub in a 65536-byte sector, footer signed "
+            "by key 0x0001)") in capsys.readouterr().out
     rc = main(["build", "stub", str(root), "-f", str(repo), "-b", "NOPE"])
     assert rc != 0 and "no matching boards" in capsys.readouterr().err
 
@@ -206,3 +217,48 @@ def test_combined_image_takes_the_boards_own_firmware_name(tmp_path):
     (tmp_path / "OPENMV_AE3-firmware-M55_HP.bin").write_bytes(b"H" * 20)
     data = stub_mod.combined_image("OPENMV_AE3", tmp_path).read_bytes()
     assert data[:10] == b"S" * 10 and data[0x8000:] == b"H" * 20 and len(data) == 0x8000 + 20
+
+
+def test_the_sealed_stub_is_refused_when_its_code_leaves_no_room_for_the_footer(make_project, monkeypatch):
+    def fake(args):
+        kv = dict(a.split("=", 1) for a in args if "=" in a)
+        Path(kv["BUILD"]).mkdir(parents=True)
+        (Path(kv["BUILD"]) / "stub.bin").write_bytes(b"\0" * (0x10000 - 511))   # 1 byte too many
+    monkeypatch.setattr(stub_mod, "_run_make", fake)
+    root, repo, _app = make_project(ota=True)
+    with pytest.raises(BuildError, match="OPENMV_N6: stub is 65025 bytes but its sector holds 65024"):
+        stub_mod.build_stub(root, firmware=repo)
+
+
+def test_stub_version_comes_from_the_stub_sources(monkeypatch, tmp_path):
+    assert stub_mod.stub_version() >= 1
+    (tmp_path / "common").mkdir()
+    (tmp_path / "common" / "stub.h").write_text("#define STUB_OTHER (3)\n")
+    monkeypatch.setattr(stub_mod, "STUB_DIR", tmp_path)
+    with pytest.raises(BuildError, match="does not define STUB_VERSION"):
+        stub_mod.stub_version()
+    (tmp_path / "common" / "stub.h").write_text("#define STUB_VERSION 7\n")
+    assert stub_mod.stub_version() == 7
+
+
+def test_a_dev_key_seals_the_stub_only_when_allowed(make_project, monkeypatch, capsys):
+    """The footer is a production signature like the factory image's: a --dev project's
+    throwaway key is refused unless the build says it is a throwaway build."""
+    _fake_make(monkeypatch)
+    root, repo, _app = make_project(ota=True, dev=True)
+    rc = main(["build", "stub", str(root), "-f", str(repo), "-b", "OPENMV_N6"])
+    assert rc == 1 and "refusing to sign a production image with a dev signing key" in capsys.readouterr().err
+    rc = main(["build", "stub", str(root), "-f", str(repo), "-b", "OPENMV_N6",
+               "--allow-dev-key", "--factory-key", "0x0001"])
+    assert rc == 0 and "footer signed by key 0x0001" in capsys.readouterr().out
+    with pytest.raises(BuildError, match="key 0x0002 is not in keys/trusted_keys.json"):
+        stub_mod.build_stub(root, firmware=repo, factory_key=2, allow_dev_key=True)
+
+
+def test_a_broken_trusted_keys_file_is_a_build_error(make_project, monkeypatch):
+    from openmv_ota.project.project import ProjectPaths
+    _fake_make(monkeypatch)
+    root, repo, _app = make_project(ota=True)
+    ProjectPaths(root).trusted_keys.write_text("{not json")
+    with pytest.raises(BuildError, match="trusted_keys"):
+        stub_mod.build_stub(root, firmware=repo)

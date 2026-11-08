@@ -44,35 +44,21 @@ class _OtaSigner:
     carries so a camera that embeds only the roots trusts this key."""
 
 
-def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
-                 key_passphrase_file=None, allow_dev_key: bool = False) -> _OtaSigner:
-    """Resolve a signing context: the app version from
-    ``app/settings.json``, plus the trusted key ``key_id`` (which must have role
-    ``require_role`` and not be revoked) and a ``Signer`` for it. Shared by ``build
-    romfs`` (the OTA signing key) and ``build factory-romfs`` (a factory key)."""
+def _key_backend(p, key_id: int, *, require_role: str, key_passphrase_file=None,
+                 allow_dev_key: bool = False):
+    """The trusted key ``key_id`` (which must have role ``require_role``, not be revoked and
+    carry a certificate) and a ``Signer`` for it: ``(entry, alg, backend)``. What every
+    signing build resolves first -- an image's trailer, a manifest, the boot stub's footer."""
     from openmv_ota.ota import algorithm_for, read_trusted_keys
     from openmv_ota.ota.errors import OtaError
     from openmv_ota.ota.signer import build_signer
-    from openmv_ota.ota.version import encode_app_version
     from openmv_ota.project.backends import read_backends
     from openmv_ota.project.passphrase import resolve_passphrase
 
-    settings_path = app_dir / "settings.json"
     try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        raise BuildError("OTA build needs a readable %s: %s" % (settings_path, e),
-                         exit_code=1) from None
-    app_version = settings.get("app_version")
-    if not app_version:
-        raise BuildError("%s is missing app_version" % settings_path, exit_code=1)
-    try:
-        payload_version = encode_app_version(app_version)
         trusted = read_trusted_keys(ProjectPaths(p.root).trusted_keys)
     except OtaError as e:
         raise BuildError(str(e), exit_code=1) from None
-
-
     entry = next((k for k in trusted if k.key_id == key_id), None)
     if entry is None:
         raise BuildError("key 0x%04x is not in keys/trusted_keys.json" % key_id, exit_code=1)
@@ -103,6 +89,34 @@ def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
         raise BuildError("key 0x%04x has no certificate in keys/trusted_keys.json; a camera "
                          "trusts a signing key only through its root-signed certificate"
                          % key_id, exit_code=1)
+    return entry, alg, backend
+
+
+def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
+                 key_passphrase_file=None, allow_dev_key: bool = False) -> _OtaSigner:
+    """Resolve a signing context: the app version from
+    ``app/settings.json``, plus the trusted key ``key_id`` (which must have role
+    ``require_role`` and not be revoked) and a ``Signer`` for it. Shared by ``build
+    romfs`` (the OTA signing key) and ``build factory-romfs`` (a factory key)."""
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.version import encode_app_version
+
+    settings_path = app_dir / "settings.json"
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise BuildError("OTA build needs a readable %s: %s" % (settings_path, e),
+                         exit_code=1) from None
+    app_version = settings.get("app_version")
+    if not app_version:
+        raise BuildError("%s is missing app_version" % settings_path, exit_code=1)
+    try:
+        payload_version = encode_app_version(app_version)
+    except OtaError as e:
+        raise BuildError(str(e), exit_code=1) from None
+    entry, alg, backend = _key_backend(p, key_id, require_role=require_role,
+                                       key_passphrase_file=key_passphrase_file,
+                                       allow_dev_key=allow_dev_key)
     return _OtaSigner(app_version, payload_version,
                       str(settings.get("vendor", "")), key_id, entry.alg, alg, backend,
                       certificate=backend.certificate)

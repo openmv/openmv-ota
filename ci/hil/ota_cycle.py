@@ -1781,7 +1781,7 @@ def build_golden(board):
     set_version("1.0.0")
     penv = dict(os.environ, PATH=CFG["sdk"] + "/make:" + os.environ["PATH"])
     for step in ("firmware", "factory-romfs"):
-        extra = ["--allow-dev-key", "--no-account"] if step == "factory-romfs" else []
+        extra = ["--allow-dev-key"] + (["--no-account"] if step == "factory-romfs" else [])
         subprocess.run([ota("openmv-ota"), "build", step, CFG["project"], "-b", board] + extra,
                        env=penv, check=True, timeout=900)
 

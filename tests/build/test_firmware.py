@@ -434,8 +434,8 @@ def test_ota_config_carries_no_signing_keys(make_project, monkeypatch):
     root, repo, _app = make_project(ota=True)
     tk = ProjectPaths(root).trusted_keys
     keys = read_trusted_keys(tk)
-    keys[0].revoked = True
-    write_trusted_keys(tk, keys)
+    next(k for k in keys if k.role == "ota").revoked = True   # the key that rotates; the factory
+    write_trusted_keys(tk, keys)                                 # key still seals the stub
 
     r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
     ns = {}
@@ -1387,7 +1387,12 @@ def test_a_stub_boards_ota_firmware_build_also_builds_the_stub(make_project, mon
     [r] = fw.build_firmware(root, firmware=repo)
     names = sorted(o.name for o in r.outputs)
     assert "OPENMV_N6-stub.bin" in names and "OPENMV_N6-firmware.bin" in names
-    assert (root / "build" / "OPENMV_N6-stub.bin").read_bytes() == b"STUB" * 64
+    sealed = (root / "build" / "OPENMV_N6-stub.bin").read_bytes()
+    assert sealed[:256] == b"STUB" * 64 and len(sealed) == 0x10000   # sealed: the whole sector
+    from openmv_ota.ota import stub_footer
+    from openmv_ota.ota.keys import read_root_keys
+    from openmv_ota.project.project import ProjectPaths
+    assert stub_footer.verify(sealed, read_root_keys(ProjectPaths(root).root_keys))[0]
 
 
 def test_a_non_ota_firmware_build_has_no_stub(make_project, monkeypatch):
