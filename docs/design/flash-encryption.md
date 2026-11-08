@@ -128,8 +128,10 @@ region must therefore already be ciphertext under the engine's key and counter s
    either a verifying plaintext slot or a verifying encrypted one, never neither.
 7. **The stub image carries a signature from now on**, so a future bootloader can verify it
    under the project's root without a stub change (the stub is flashed over USB only and its
-   formats are permanent). The format goes into `firmware-updates.md` with the stub build;
-   the bootloader side is lockdown work.
+   formats are permanent). The format is the footer in
+   [firmware-updates.md](firmware-updates.md#stub-image-footer), written by every stub
+   build since 2026-11-08 and signed by the factory key; the bootloader side is lockdown
+   work.
 
 Still open, and a bench measurement rather than a decision: how the installer (Python)
 encrypts a slot it writes -- AES-CTR in `cryptolib` with the MCE's address-derived counter,
