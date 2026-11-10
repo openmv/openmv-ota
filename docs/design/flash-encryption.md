@@ -279,9 +279,12 @@ installed firmware, written through the bootloader, the record left alone. The n
 `firmware area does not match the record`, installs the slot's copy again (about 3 s: one
 block rewritten, the rest compared) and logs `boot reinstalled`.
 
-Two more scenarios reach what is left of the stub's repair paths. `blob_corrupt` also flips 16
-bytes of the booted slot's firmware blob: the stub logs `blob hash mismatch` and `install
-failed` for that slot, before anything is erased, and installs the other slot's copy. `no_slot`
+Two more scenarios reach what is left of the stub's repair paths. `blob_corrupt` first takes an
+update, so that both slots hold an image that verifies, and then also erases one block of the
+booted slot's firmware blob, from the camera: the stub logs `blob hash mismatch` and `install
+failed` for that slot, before anything is erased, and installs the other slot's copy (about
+3.5 s). The damaged slot still verifies by its trailer and its image, so every later boot tries
+it first and logs the same two lines before it boots the other slot. `no_slot`
 erases both slots' first and trailer blocks from the camera and downloads the firmware over
 USB, in the clear: both slots are rejected, no record vouches for a plaintext area, and the
 stub boots what looks like firmware with the engine off (`no slot: booting the installed

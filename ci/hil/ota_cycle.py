@@ -890,14 +890,30 @@ FW_CORRUPT_BOARDS = ("OPENMV_N6",)           # a DFU download to the FIRMWARE al
 # ...AND THE SLOT'S OWN COPY DAMAGED TOO. A slot's trailer is signed and names its firmware blob
 # by hash; the blob's bytes are checked only when the stub is about to install them -- the gate
 # that keeps anything unverified from the decompressor. Here the booted slot's blob is damaged
-# (a block of it rewritten through the bootloader) AND the firmware area is, so the repair has to
-# refuse that slot's copy, give the slot up, and install the other slot's.
+# AND the firmware area is, so the repair has to refuse that slot's copy, give the slot up, and
+# install the other slot's. That takes two slots that verify, so the scenario first takes an
+# update: the promoted release is the booted slot, the release before it is the one behind it.
+# The blob is damaged from the camera itself (one block of it erased, see damage_booted_blob):
+# on a board whose stub keeps the slots encrypted, anything written through the bootloader is
+# a slot in the clear, which the stub erases and never installs from.
 SCENARIOS["blob_corrupt"] = dict(
-    publish="none", app="confirm", end="golden", corrupt_firmware=True, corrupt_blob=True,
-    desc="firmware area AND the booted slot's firmware blob damaged: the stub refuses the blob "
-         "and installs the other slot's",
-    expect=["log.configured", "boot.ready", "run.checkin"],
-    forbid=["install.start", "install.armed", "confirm.promoted"],
+    publish="delta", app="confirm", end="promoted",
+    desc="delta install -> promote, THEN the firmware area and the booted slot's firmware blob "
+         "are damaged",
+    expect=["boot.mount", "run.offer", "install.start", "install.armed", "confirm.promoted"],
+    forbid=["install.fallback", "install.reject"],
+    then=dict(
+        desc="firmware area AND the booted slot's firmware blob damaged: the stub refuses the "
+             "blob and installs the other slot's",
+        publish="none", version="1.1.0", end="golden", corrupt_firmware=True, corrupt_blob=True,
+        phase="repair",
+        # Marker-scored: the camera comes up on the release behind the damaged slot, and the
+        # update is still published, so it starts taking it again (which also rewrites the
+        # damaged slot). What is scored is the repair, and it is over by the first check-in.
+        by_marker=True,
+        expect=["log.configured", "boot.ready", "run.checkin"],
+        forbid=[],
+    ),
 )
 SCENARIOS["fw_corrupt"] = dict(
     publish="none", app="confirm", end="golden", corrupt_firmware=True,
@@ -1057,9 +1073,9 @@ def _trial_mark(board):
     return {"boot.marked", "boot.marked_verify"}
 
 
-def scenario_markers(board, key):
+def scenario_markers(board, key, then=False):
     """(expect, forbid) marker sets for a scenario, with {cov_write}, {sync_idle} and {trial_mark}
-    resolved per board.
+    resolved per board. ``then``: the sets of the scenario's second phase.
 
     {sync_idle} is what the app's boot-time sync() does when there is nothing to write: a board
     with a coprocessor finds its partition already matching the bundle (the golden flash wrote it)
@@ -1086,8 +1102,8 @@ def scenario_markers(board, key):
             else:
                 out.add(n)
         return out
-    s = SCENARIOS[key]
-    expect, forbid = resolve(s["expect"]), resolve(s["forbid"])
+    s = SCENARIOS[key]["then"] if then else SCENARIOS[key]
+    expect, forbid = resolve(s["expect"]), resolve(s.get("forbid", ()))
     if _has_stub(board):
         expect |= _stub_marks(key, s)
         if key != "no_slot":
@@ -1193,13 +1209,7 @@ def regression_scenarios(board, network):
     if board == "OPENMV_N6":
         scs.append("watchdog_bite")
     if board in FW_CORRUPT_BOARDS:                     # last: their app is the plain confirm one,
-        scs += ["fw_corrupt"]                          # and they take the REPL to reach DFU
-        # blob_corrupt damages a slot's blob with a DFU download of the factory image's start: in
-        # the clear. On a board whose stub keeps the slots encrypted, a clear slot is erased, not
-        # installed from, so the blob path is not reached that way; the damage has to be done from
-        # the device, to a ciphered slot, once an update has filled the other one.
-        if not _stub_encrypts(board):
-            scs += ["blob_corrupt"]
+        scs += ["fw_corrupt", "blob_corrupt"]          # and they take the REPL to reach DFU
     return scs
 
 
@@ -1793,25 +1803,55 @@ def build_golden(board):
                        env=penv, check=True, timeout=900)
 
 
-def _damaged_slot_prefix(board):
-    """The start of the factory ROMFS image, up to and including the first block of slot A's
-    firmware blob, with 16 bytes of that blob flipped: what a DFU download to the ROMFS alt
-    rewrites slot A's beginning with. The trailer still verifies -- it names the blob by hash
-    -- and the blob no longer hashes to it. (bytes, blob offset)"""
-    from openmv_ota.flash.targets import flash_config
+# The booted slot is found by its trailer, which is stored in the clear on every board: the
+# camera prints both slots' trailer blocks and the harness looks for the published update's.
+_READ_TRAILERS = (
+    "import vfs, binascii\n"
+    "m = vfs.rom_ioctl(2, 0)\n"
+    "n = len(m) // 2\n"
+    "for s in (0, 1):\n"
+    "    print('TRAILER', s, n, binascii.hexlify(bytes(m[(s + 1) * n - 4096:(s + 1) * n])).decode())\n"
+)
+_ERASE_BLOCK = (
+    "import vfs\n"
+    "print('ERASED', vfs.rom_ioctl(3, 0, %d, 4096))\n"
+    "vfs.rom_ioctl(5, 0)\n"
+)
+
+
+def damage_booted_blob(board):
+    """Erase one block in the middle of the firmware blob of the slot that holds the published
+    update -- the slot a camera that took it is running from. Done from the camera, so it works
+    on a ciphered slot: the stored bytes change, and what the stub reads through the cipher no
+    longer hashes to what the trailer names. The trailer and the image (what the slot is
+    verified by before an install is tried) are untouched. Returns (slot index, offset)."""
     from openmv_ota.ota.trailer import parse_trailer
-    cfg = flash_config(board)
-    path = os.path.join(CFG["project"], "build",
-                        "%s-%s" % (board, cfg.filename("romfs", "factory-romfs.img")))
-    with open(path, "rb") as f:
-        image = bytearray(f.read())
-    slot = len(image) // 2                           # the same image in both slots
-    blob = parse_trailer(bytes(image[slot - 4096:slot])).components[0]
-    at = blob.offset + min(4096, blob.size // 2)
-    for i in range(at, at + 16):
-        image[i] ^= 0xFF
-    end = -(-(at + 16) // 65536) * 65536
-    return bytes(image[:end]), blob.offset
+    images = _slot_images(board)
+    if not images:
+        raise RuntimeError("no published update in build/: nothing says which slot is booted")
+    update = images[0]
+    rc, out = device_exec(_READ_TRAILERS, timeout=60, check=False)
+    for line in (out or "").splitlines():
+        parts = line.split()
+        if len(parts) != 4 or parts[0] != "TRAILER":
+            continue
+        index, slot = int(parts[1]), int(parts[2])
+        if bytes.fromhex(parts[3]) != update[slot - 4096:slot]:
+            continue
+        blob = parse_trailer(update[slot - 4096:slot]).components[0]
+        at = (blob.offset + blob.size // 2) & ~0xFFFF        # a whole erase block inside the blob
+        if at < blob.offset or at + 65536 > blob.offset + blob.size:
+            raise RuntimeError("the firmware blob (0x%x + %d) is too small to damage safely"
+                               % (blob.offset, blob.size))
+        rc, out = device_exec(_ERASE_BLOCK % (index * slot + at), timeout=60, check=False)
+        if "ERASED" not in (out or ""):
+            raise RuntimeError("could not erase a block of the blob (rc=%d): %s"
+                               % (rc, (out or "")[-300:]))
+        log("corrupt: a block of slot %s's firmware blob (at 0x%x) erased, from the camera"
+            % ("AB"[index], at))
+        return index, at
+    raise RuntimeError("neither slot holds the published update (rc=%d): %s"
+                       % (rc, (out or "")[-300:]))
 
 
 def corrupt_firmware_area(board, blob=False):
@@ -1822,8 +1862,8 @@ def corrupt_firmware_area(board, blob=False):
     The reset that ends the download boots the stub onto a record that names what is installed
     and an area that no longer hashes to it.
 
-    ``blob``: first damage slot A's firmware blob in the same DFU session (see
-    _damaged_slot_prefix), so the copy the stub would repair from is no good either."""
+    ``blob``: first damage the booted slot's firmware blob from the camera (see
+    damage_booted_blob), so the copy the stub would repair from is no good either."""
     from openmv_ota.flash.targets import flash_config
     from openmv_ota.romfs.boards import get_board
     cfg, layout = flash_config(board), get_board(board).stub
@@ -1833,12 +1873,7 @@ def corrupt_firmware_area(board, blob=False):
     d = tempfile.mkdtemp(prefix="fw-corrupt-")
     steps = []                                       # (alt, file): the last one leaves DFU
     if blob:
-        prefix, off = _damaged_slot_prefix(board)
-        path = os.path.join(d, "slot-with-a-bad-blob.bin")
-        with open(path, "wb") as f:
-            f.write(prefix)
-        steps.append((cfg.alt_of("romfs"), path))
-        log("corrupt: 16 bytes of slot A's firmware blob (at 0x%x) flipped, through the bootloader" % off)
+        damage_booted_blob(board)
     path = os.path.join(d, "stub-and-garbage.bin")
     with open(path, "wb") as f:
         f.write(stub + b"\xff" * (start - len(stub)) + os.urandom(64 * 1024))
@@ -4308,11 +4343,20 @@ def main():
             # here instead leaves the bad update offerable while the board is still running, and the
             # device (polling every ~5 s) can start installing it in the gap before the window's
             # reset lands, which then kills the install mid-erase and deadlocks the phase.
-            publish2 = lambda: phase("publish2",                                       # noqa: E731
-                                     lambda: publish_update(args.board, then["version"],
-                                                            then["publish"]))
+            publish2 = None
+            if then["publish"] != "none":
+                publish2 = lambda: phase("publish2",                                   # noqa: E731
+                                         lambda: publish_update(args.board, then["version"],
+                                                                then["publish"]))
             cap.reset(time.time())               # score phase 2 on its own window
             expect2, forbid2 = set(then["expect"]), set(then.get("forbid", ()))
+            if then.get("corrupt_firmware"):
+                # The stub's own lines are what this phase is for, so they are scored here.
+                # Inside the window, as in phase 1: the boot the damage causes is what is scored.
+                expect2, forbid2 = scenario_markers(args.board, args.scenario, then=True)
+                phase("corrupt_firmware", lambda: corrupt_firmware_area(
+                    args.board, blob=then.get("corrupt_blob", False)))
+                _await_boot(args.board)
             # SCORE PHASE 2 ON ITS MARKERS, not on a version transition. The assertion is that
             # the integrity gate fires from a non-golden start and the bad image never promotes --
             # which the marker set states exactly. Waiting for the device to SETTLE back on golden
@@ -4330,7 +4374,7 @@ def main():
             # (4 MiB) passes comfortably. Measured directly: with room, the same leg PASSES in
             # 1040 s -- nothing hangs, it was only ever short of budget. Scale by the retry count
             # rather than picking a bigger constant, so the window tracks the work.
-            result2 = phase("reinstall", lambda: run_cycle(
+            result2 = phase(then.get("phase", "reinstall"), lambda: run_cycle(
                 devid, "1.0.0", then["version"], then["end"], expect2, cap,
                 args.timeout * _RETRIES, after_reset=publish2,
                 by_marker=then.get("by_marker", False)))
