@@ -1309,7 +1309,7 @@ def _sd_body(rep_url="img.gz", fmt="full", base=None):
 
 
 def test_vet_manifest_happy_path_resolves_beside_the_manifest():
-    url, fmt, sha, wbits, alt, enc = inst("_vet_manifest")(
+    url, fmt, sha, wbits, alt, enc, crypt = inst("_vet_manifest")(
         "/sd/fw/m.bin", _host_manifest(body=_sd_body()), _vet_cfg(), lambda *a: True, 0, 0, True)
     assert (url, fmt, sha, wbits) == ("/sd/fw/img.gz", "full", "ab" * 32, 0)
     assert alt is None                                  # full chosen -> nothing to demote to
@@ -1326,7 +1326,7 @@ def test_vet_manifest_hands_back_the_full_fallback_when_a_delta_is_chosen():
         {"format": inst("_DELTA_FORMAT"), "url": "d.gz", "size": 40,
          "base_payload_version": base_pv, "base_body_sha256": base_sha},
     ]
-    url, fmt, sha, wbits, alt, _enc = inst("_vet_manifest")(
+    url, fmt, sha, wbits, alt, _enc, _crypt = inst("_vet_manifest")(
         "/sd/fw/m.bin", _host_manifest(body=body), _vet_cfg(), lambda *a: True,
         0, base_pv, True, base_sha)
     assert (url, fmt) == ("/sd/fw/d.gz", inst("_DELTA_FORMAT"))
@@ -1347,7 +1347,7 @@ def test_vet_manifest_requires_the_base_sha_for_a_delta():
     ]
     raw = _host_manifest(body=body)
     for device_sha in ("", "00" * 32):                  # unparseable trailer / different bytes
-        url, fmt, _sha, _wbits, alt, _enc = inst("_vet_manifest")(
+        url, fmt, _sha, _wbits, alt, _enc, _crypt = inst("_vet_manifest")(
             "/sd/fw/m.bin", raw, _vet_cfg(), lambda *a: True, 0, base_pv, True, device_sha)
         assert fmt == "full" and alt is None
 
@@ -1380,7 +1380,7 @@ def test_vet_manifest_rejections():
 def test_fetch_manifest_file_end_to_end(tmp_path):
     p = tmp_path / "OPENMV_N6-manifest.bin"
     p.write_bytes(_host_manifest(body=_sd_body(rep_url="OPENMV_N6-ota.img.gz")))
-    url, fmt, sha, wbits, _alt, _enc = inst("_fetch_manifest_file")(
+    url, fmt, sha, wbits, _alt, _enc, _crypt = inst("_fetch_manifest_file")(
         str(p), _vet_cfg(), lambda *a: True)
     assert url == str(tmp_path / "OPENMV_N6-ota.img.gz")  # resolved beside the manifest
     assert (fmt, sha, wbits) == ("full", "ab" * 32, 0)

@@ -10,6 +10,7 @@
  * between leaves "no record" -- the next boot installs again.
  */
 #include "stub.h"
+#include "slot_tweak.h"
 #include "port.h"
 #include "sha256.h"
 #include "LzmaDec.h"
@@ -314,6 +315,22 @@ static int write_record(const slot_t *s, uint32_t reason) {
 #ifdef STUB_CRYPT_START
 _Static_assert((STUB_CRYPT_START % STUB_FLASH_BLOCK) == 0, "the encrypted area starts on an erase block");
 
+// Is the erase block at addr blank, as stored?
+static bool block_blank(uint32_t addr) {
+    for (uint32_t off = 0; off < STUB_FLASH_BLOCK; off += IN_CHUNK) {
+        if (port_flash_read_stored(addr + off, cmp_chunk, IN_CHUNK) != 0) {
+            return false;
+        }
+        for (uint32_t i = 0; i < IN_CHUNK; i++) {
+            if (cmp_chunk[i] != 0xFF) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+
 // An encrypted area holds nothing but this install. Whatever else is in it -- the tail of
 // a longer firmware an earlier install left, or of one downloaded over USB in the clear --
 // is erased: every whole block no component touches that is not blank already. The area's
@@ -331,19 +348,7 @@ static int scrub_area(const slot_t *s) {
         if (used) {
             continue;
         }
-        bool blank = true;
-        for (uint32_t off = 0; blank && off < STUB_FLASH_BLOCK; off += IN_CHUNK) {
-            if (port_flash_read_stored(addr + off, cmp_chunk, IN_CHUNK) != 0) {
-                return -1;
-            }
-            for (uint32_t i = 0; i < IN_CHUNK; i++) {
-                if (cmp_chunk[i] != 0xFF) {
-                    blank = false;
-                    break;
-                }
-            }
-        }
-        if (!blank) {
+        if (!block_blank(addr)) {
             port_led_blink(50);
             if (port_flash_erase(addr) != 0) {
                 return -1;
@@ -410,6 +415,96 @@ done:
     }
     return ret;
 }
+
+#ifdef STUB_SLOT_CRYPT
+// Erase a slot that verified, control block first so it stops verifying at once, then
+// every block of its body that is not blank. Programming mode must be on.
+static int erase_slot_blocks(const slot_t *s) {
+    uint32_t last = s->start + s->size - STUB_FLASH_BLOCK;
+    if (port_flash_erase(last) != 0) {
+        return -1;
+    }
+    for (uint32_t addr = s->start; addr < s->start + s->crypt_size && addr < last; addr += STUB_FLASH_BLOCK) {
+        if (!block_blank(addr)) {
+            port_led_blink(50);
+            if (port_flash_erase(addr) != 0) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+int erase_slot(slot_t *s) {
+    if (port_flash_prog_begin() != 0) {
+        return -1;
+    }
+    int ret = erase_slot_blocks(s);
+    if (port_flash_prog_end() != 0) {
+        ret = -1;
+    }
+    s->ok = false;
+    s->reject = "erased";
+    return ret;
+}
+
+// A slot stored in the clear becomes the other slot, ciphered: the body block by block
+// through the other slot's stream, then the control block (status sector and trailer,
+// verbatim, in the clear), then the copy is verified through the engine, and only then is
+// the clear slot erased. The other slot's control block goes first, so the copy does not
+// verify until it is complete; a power cut anywhere leaves a clear slot that verifies and
+// a copy that does not, and the next boot does this again, skipping the blocks that match.
+int convert_slot(slot_t *src, slot_t *dst) {
+    uint8_t tweak[10];
+    slot_tweak_derive(dst->index, src->trailer_sha256, tweak);
+    if (port_crypt_slot_select(tweak, dst->start, dst->start + src->crypt_size) != 0) {
+        return -1;
+    }
+    if (port_flash_prog_begin() != 0) {
+        return -1;
+    }
+    int ret = -1;
+    uint32_t last = dst->start + dst->size - STUB_FLASH_BLOCK;
+    if (port_flash_erase(last) != 0) {
+        goto done;
+    }
+    for (uint32_t off = 0; off < src->crypt_size; off += STUB_FLASH_BLOCK) {
+        uint32_t n = src->crypt_size - off;
+        if (n > STUB_FLASH_BLOCK) {
+            n = STUB_FLASH_BLOCK;
+        }
+        if (dst->start + off == last) {
+            break;                              // the control block carries the tail
+        }
+        if (port_flash_read(src->start + off, out_block, n) != 0 || flush_block(dst->start + off, out_block, n) != 0) {
+            goto done;
+        }
+    }
+    // Nothing else may be left in the copy: the pad between the body and the control
+    // block, from whatever the slot held before -- every whole block after the last one the
+    // copy wrote (the body's last block carries pad too, blank from its erase).
+    uint32_t pad = (dst->start + src->crypt_size + STUB_FLASH_BLOCK - 1) & ~(uint32_t) (STUB_FLASH_BLOCK - 1);
+    for (uint32_t addr = pad; addr < last; addr += STUB_FLASH_BLOCK) {
+        if (!block_blank(addr)) {
+            port_led_blink(50);
+            if (port_flash_erase(addr) != 0) {
+                goto done;
+            }
+        }
+    }
+    if (port_flash_read(src->start + src->size - STUB_FLASH_BLOCK, out_block, STUB_FLASH_BLOCK) != 0 ||
+        flush_block(last, out_block, STUB_FLASH_BLOCK) != 0) {
+        goto done;
+    }
+    ret = 0;
+done:
+    if (port_flash_prog_end() != 0 || ret != 0) {
+        return -1;
+    }
+    log_line("slot converted");
+    return 0;
+}
+#endif
 
 // One 16-byte attempt mark into the slot's status sector (no erase).
 int burn_attempt(slot_t *s) {

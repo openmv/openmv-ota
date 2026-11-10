@@ -36,6 +36,9 @@ int port_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size);   // 16-
 #ifdef STUB_CRYPT_START
 int port_crypt_init(void);                          // the chip's key: 0, or -1 if it has none to give
 int port_crypt_select(const uint8_t *tweak);        // 0, or -1 (the area must then not be trusted)
+// A board that also keeps the booted slot encrypted (STUB_SLOT_CRYPT): the second ciphered
+// range, [start, end) of the slot, under the slot's tweak; NULL maps nothing there.
+int port_crypt_slot_select(const uint8_t *tweak, uint32_t start, uint32_t end);
 void port_crypt_lock(void);                         // nothing may change it until the next reset
 int port_flash_read_stored(uint32_t addr, uint8_t *buf, uint32_t size);   // programming mode: the bytes as the part holds them
 #else
@@ -47,6 +50,12 @@ static inline int port_crypt_select(const uint8_t *tweak) {
     return 0;
 }
 static inline void port_crypt_lock(void) {
+}
+static inline int port_crypt_slot_select(const uint8_t *tweak, uint32_t start, uint32_t end) {
+    (void) tweak;
+    (void) start;
+    (void) end;
+    return 0;
 }
 #endif
 

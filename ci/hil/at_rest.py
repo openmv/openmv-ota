@@ -80,3 +80,55 @@ def judge(dump, stub, firmware, firmware_offset, area_end):
     if n["stale"]:
         problems.append("%d bytes after the firmware are not blank" % n["stale"])
     return problems, n
+
+
+def judge_slots(dump, slot_size, images, control=4096):
+    """``(problems, numbers)`` for ``dump``, a read-back of the ROMFS partition from its start,
+    on a board whose stub keeps the slots ciphertext at rest. ``images`` are the plaintext slot
+    images that may be in it (each a whole slot: body, pad, status sector, trailer); a slot is
+    matched to its image by the trailer, which is stored in the clear. ``problems`` is empty
+    when both slots hold a known image as ciphertext and nothing else:
+
+      - the trailer names one of the images;
+      - no 16-byte block of the ciphered range (the body and every component, to the cipher's
+        grain) is stored as built;
+      - no sample of the image appears anywhere in the slot's body;
+      - the ciphered range has the entropy of ciphertext;
+      - the pad between the ciphered range and the status sector is blank."""
+    from openmv_ota.ota import slot_crypt
+    from openmv_ota.ota.trailer import parse_trailer
+
+    if len(dump) < 2 * slot_size:
+        return (["the read-back (%d bytes) does not cover two %d-byte slots" % (len(dump), slot_size)],
+                {})
+    problems, per = [], []
+    for i, name in enumerate("AB"):
+        s = dump[i * slot_size:(i + 1) * slot_size]
+        trailer = s[slot_size - control:]
+        image = next((img for img in images if img[slot_size - control:slot_size] == trailer), None)
+        if image is None:
+            problems.append("slot %s holds no trailer of a known image" % name)
+            per.append({"slot": name})
+            continue
+        csize = slot_crypt.crypt_size(parse_trailer(trailer), slot_body_end=slot_size - 2 * control)
+        stored, plain = s[:csize], image[:csize]
+        blocks = csize // BLOCK
+        same = sum(1 for off in range(0, blocks * BLOCK, BLOCK)
+                   if stored[off:off + BLOCK] == plain[off:off + BLOCK])
+        body = s[:slot_size - 2 * control]
+        found = sum(1 for piece in samples(plain) if body.find(piece) >= 0)
+        pad = s[csize:slot_size - 2 * control]
+        n = {"slot": name, "blocks": blocks, "same": same, "found": found,
+             "entropy": round(entropy(stored), 3), "stale": len(pad) - pad.count(0xFF)}
+        per.append(n)
+        if same:
+            problems.append("slot %s: %d of %d blocks are stored exactly as built" % (name, same, blocks))
+        if found:
+            problems.append("slot %s: %d samples of its image appear in the clear" % (name, found))
+        if n["entropy"] < MIN_ENTROPY:
+            problems.append("slot %s: %.3f bits of entropy per byte (ciphertext has close to 8)"
+                            % (name, n["entropy"]))
+        if n["stale"]:
+            problems.append("slot %s: %d bytes between its body and its status sector are not blank"
+                            % (name, n["stale"]))
+    return problems, {"slots": per}

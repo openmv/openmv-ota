@@ -968,8 +968,8 @@ def test_rt1060_ota_build_relinks_the_image_and_its_text_behind_the_stub(make_pr
 def test_h7_plus_ota_build_relinks_behind_the_stub_and_gets_its_second_region(make_project, monkeypatch):
     """One 128 KiB sector for the stub, 1660K for the firmware (the record takes the last 4 KiB
     of the last sector) and the spare 0x08020000 sector as a second text region, relinked after
-    the build's own link. No imlib feature is dropped: the board config is overlaid for the
-    relink alone."""
+    the build's own link. The LAB lookup table stays (it goes to the second region); only
+    find_datamatrices() is dropped, in the same overlay."""
     fake = _fake_make(["bin/firmware.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)
     monkeypatch.setattr(fw, "_ensure_mpy_cross", lambda repo: None)
@@ -996,7 +996,8 @@ def test_h7_plus_ota_build_relinks_behind_the_stub_and_gets_its_second_region(ma
     assert "#define OMV_FLASH_TXT_LENGTH                  1788K\n" in seen["h"]
     assert "#define OMV_ROMFS_PART0_ORIGIN                0x91800000\n" in seen["h"]   # untouched
     assert "OMV_FIRM_ADDR=0x08060000\n" in seen["mk"] and "OMV_FIRM_BASE=0x08000000" in seen["mk"]
-    assert "#define IMLIB_ENABLE_LAB_LUT\n" in seen["cfg"]                        # nothing dropped
+    assert "#define IMLIB_ENABLE_LAB_LUT\n" in seen["cfg"]                        # kept
+    assert "// #define IMLIB_ENABLE_DATAMATRICES  // dropped by openmv-ota" in seen["cfg"]
     assert relinked == [("OPENMV4P", 0x08020000)]
     assert fw._stub_record_addr("OPENMV4P") == 0x081FF000
 

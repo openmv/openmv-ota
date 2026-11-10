@@ -12,6 +12,7 @@
 #include "port.h"
 #include "sha256.h"
 #include "p256-m.h"
+#include "slot_tweak.h"
 
 // sha256(b"openmv-ota.status." + label)[:16] -- openmv_ota.ota.status
 const uint8_t STATUS_PENDING[MARKER_SIZE] = {
@@ -213,6 +214,21 @@ void verify_slot(slot_t *s, uint64_t rollback_floor, uint64_t epoch_floor) {
     s->comps = comps;
     s->cert = cert;
 
+    // What the body covers, for the cipher: the image and every component, to the grain.
+    uint32_t used = h->body_size;
+    for (uint32_t i = 0; i < h->comp_count; i++) {
+        if (comps[i].offset + comps[i].size > used) {
+            used = comps[i].offset + comps[i].size;
+        }
+    }
+    #ifndef STUB_CRYPT_GRAIN
+    #define STUB_CRYPT_GRAIN    (16)
+    #endif
+    used = (used + STUB_CRYPT_GRAIN - 1) & ~(uint32_t) (STUB_CRYPT_GRAIN - 1);
+    s->crypt_size = (used > body_end) ? body_end : used;
+    sha256_of(t, meta_end, s->trailer_sha256);
+    slot_tweak_derive(s->index, s->trailer_sha256, s->tweak);
+
     // Status marks. A confirmed slot ran and was kept: bootable, floors do not apply
     // (the floor rises on confirm, so the fallback is below it by construction).
     if (s->confirmed) {
@@ -232,6 +248,31 @@ void verify_slot(slot_t *s, uint64_t rollback_floor, uint64_t epoch_floor) {
         return;
     }
     return reject(s, "status");
+}
+
+// The body hashes to what the trailer signed: under the slot's cipher (the engine keyed
+// and left on the slot, which is how the firmware will read it), or as it is stored.
+bool slot_body_ok(slot_t *s, bool stored) {
+    const uint8_t *tweak = (stored || s->crypt_size == 0) ? NULL : s->tweak;
+    if (port_crypt_slot_select(tweak, s->start, s->start + s->crypt_size) != 0) {
+        return false;
+    }
+    uint8_t hash[32];
+    return sha256_flash(s->start, s->hdr->body_size, hash) && memcmp(hash, s->hdr->body_sha256, 32) == 0;
+}
+
+// A slot whose body is stored in the clear: the filesystem's magic readable where it is
+// stored, and the body hashing as stored. For a slot the engine does not cover.
+bool slot_in_clear(const slot_t *s) {
+    uint8_t magic[3];
+    if (port_flash_read(s->start, magic, sizeof(magic)) != 0) {
+        return false;
+    }
+    if (magic[0] != 0xD2 || magic[1] != 0xCD || magic[2] != 0x31) {     // VfsRom: 'R'|0x80 'M'|0x80 '1'
+        return false;
+    }
+    uint8_t hash[32];
+    return sha256_flash(s->start, s->hdr->body_size, hash) && memcmp(hash, s->hdr->body_sha256, 32) == 0;
 }
 
 bool verify_blob(const slot_t *s, const component_t *c) {

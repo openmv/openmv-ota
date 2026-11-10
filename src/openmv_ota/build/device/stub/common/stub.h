@@ -174,6 +174,12 @@ typedef struct {
     uint32_t attempts_used;
     uint64_t rollback_floor;    // the highest entries this slot's sector records
     uint64_t epoch_floor;
+    // What the slot's body covers: the filesystem image and every component, rounded up to
+    // the cipher's grain. The pad after it, the status sector and the trailer are never
+    // ciphered.
+    uint32_t crypt_size;
+    uint8_t trailer_sha256[32]; // of the trailer's signed region (the tweak's input)
+    uint8_t tweak[10];          // this slot's tweak (STUB_SLOT_CRYPT)
 } slot_t;
 
 static inline uint32_t slot_status_offset(const slot_t *s) {
@@ -184,6 +190,8 @@ static inline uint32_t slot_status_offset(const slot_t *s) {
 void slot_read_floors(slot_t *s);
 void verify_slot(slot_t *s, uint64_t rollback_floor, uint64_t epoch_floor);
 bool verify_blob(const slot_t *s, const component_t *c);
+bool slot_body_ok(slot_t *s, bool stored);
+bool slot_in_clear(const slot_t *s);
 void sha256_of(const uint8_t *data, size_t len, uint8_t out[32]);
 bool sha256_flash(uint32_t addr, uint32_t len, uint8_t out[32]);
 uint32_t crc32_of(const uint8_t *data, size_t len);
@@ -201,6 +209,8 @@ bool record_area_ok(const record_t *r);
 bool record_area_in_clear(const record_t *r);
 int install_slot(const slot_t *s, uint32_t reason);
 int burn_attempt(slot_t *s);
+int convert_slot(slot_t *src, slot_t *dst);
+int erase_slot(slot_t *s);
 
 // log.c
 void log_open(uint32_t uart_id, uint32_t baud);

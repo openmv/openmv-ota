@@ -102,7 +102,10 @@ reference, so they can't drift from the code:
   the firmware ciphertext where it is stored? On a board whose stub encrypts,
   `delta` ends with that read, made through the bootloader (which runs before
   the stub, with the cipher engine off), and fails if the flash chip holds
-  anything else.
+  anything else. The ROMFS partition is read back and judged the same way,
+  slot by slot: the update the scenario installed and the factory image the
+  stub converted must both be ciphertext, with the status sector and trailer
+  readable and the pad blank.
 - **`hil/recover.py`** — brings a board back when its USB-CDC is gone, including
   the two-stage corrupt-firmware reflash; its docstring is the recovery manual.
 - **`hil/provision.sh`** — the runner-owned tooling bootstrap; its header

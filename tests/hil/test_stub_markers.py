@@ -98,6 +98,24 @@ def test_enable_stub_uart_rewrites_the_projects_log_module(tmp_path, monkeypatch
     assert "STUB_DEBUG_UART" not in os.environ
 
 
+def test_enable_stub_uart_puts_an_encrypting_boards_bench_build_at_debug(tmp_path, monkeypatch, stub_boards):
+    dev = tmp_path / "device"
+    dev.mkdir()
+    mod = dev / "openmv_log.py"
+    text = "# the log module\nLEVEL = logging.INFO   # emit this level and above\nENABLED = False\nUART = None\n"
+    mod.write_text(text)
+    monkeypatch.setattr(ota_cycle, "log", lambda *a: None)
+    monkeypatch.setattr(ota_cycle, "_stub_encrypts", lambda board: board == "OPENMV_N6")
+    assert ota_cycle._enable_stub_uart(str(tmp_path), "OPENMV_N6") is True
+    assert "\nLEVEL = logging.DEBUG   # emit this level and above\n" in "\n" + mod.read_text()
+    mod.write_text(text)
+    assert ota_cycle._enable_stub_uart(str(tmp_path), "OPENMV4P") is True
+    assert "LEVEL = logging.INFO" in mod.read_text()                    # a board in the clear: the file decides
+    mod.write_text("# the log module\nLEVEL = 1\nENABLED = False\nUART = None\n")
+    with pytest.raises(RuntimeError, match="LEVEL"):
+        ota_cycle._enable_stub_uart(str(tmp_path), "OPENMV_N6")
+
+
 def test_enable_stub_uart_refuses_a_module_without_the_defaults(tmp_path, stub_boards):
     dev = tmp_path / "device"
     dev.mkdir()

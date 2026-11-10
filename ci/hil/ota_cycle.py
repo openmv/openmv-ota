@@ -458,6 +458,7 @@ COVERAGE = {
     "install: TLS up": "install.tls",                    # a verified TLS socket to the server
     "install: fetched body": "install.fetched",          # a 2xx download body (manifest/image)
     "install: manifest accepted": "install.manifest_ok",  # sig + board/version/platform vetting passed
+    "install: slot cipher ready": "install.slot_cipher",  # the slot's tweaks derived from the manifest (an encrypting board)
     "install: staged installer": "install.staged",       # installer exec'd into RAM, about to run
     # Installer write-path primitives. The block-device (mimxrt) and XIP (stm32/alif) branches
     # each log a variant of the same step; both map to ONE semantic id, so a scenario expects
@@ -524,6 +525,15 @@ COVERAGE = {
     "stub: record written": "stub.record_written",            # the install record landed last
     "stub: installed area verified": "stub.install_verified",  # ...and the area hashes to it through the memory map
     "stub: flash cipher on": "stub.crypt",                    # the firmware area is ciphertext at rest, and the chip took the key
+    # The slots, on a board whose stub keeps them ciphertext at rest too: a slot stored in the
+    # clear (the factory image) is copied into the other slot through the cipher and erased.
+    "stub: slot in the clear: converting": "stub.slot_convert",
+    "stub: slot converted": "stub.slot_converted",
+    "stub: clear slot erased": "stub.slot_clear_erased",
+    # A clear slot beside a ciphered one that verifies: erased, never booted (a conversion a
+    # reset cut short, or an installer that wrote plaintext).
+    "stub: slot in the clear: erased": "stub.slot_clear_dropped",
+    "stub: other slot in the clear: erased": "stub.slot_clear_dropped",
     "stub: boot normal": "stub.boot_normal",                  # jumping: the confirmed slot
     "stub: boot trial": "stub.boot_trial",                    # jumping: a trial, attempt burned
     "stub: boot reverted": "stub.boot_reverted",              # jumping: the other slot failed its trial
@@ -550,6 +560,9 @@ COVERAGE = {
     "stub: blob read failed": "stub.failed",
     "stub: flash cipher setup failed": "stub.failed",
     "stub: no hardware key": "stub.failed",
+    "stub: slot body does not verify": "stub.failed",
+    "stub: slot convert failed": "stub.failed",
+    "stub: converted slot does not verify": "stub.failed",
     # A fault inside the stub: at the jump (stm32, where it is skipped and logged) or anywhere
     # (alif, mimxrt, whose handlers dump the frame). Either is a stub bug or a failing board.
     "stub: stray fault": "stub.failed",
@@ -904,6 +917,9 @@ STUB_FAULT_ONLY = {
     "stub: installed area does not verify": "flash that read back right while programming "
                                             "reads wrong through the memory map",
     "stub: blob read failed": "a read of a slot's component failed",
+    "stub: slot body does not verify": "a slot's body is neither its ciphertext nor in the clear",
+    "stub: slot convert failed": "the copy of a clear slot into the other slot failed",
+    "stub: converted slot does not verify": "the ciphered copy does not read back through the engine",
     "stub: nothing to boot": "both slots and the firmware area destroyed: a board only USB recovers",
     "stub: stray fault": "a bus fault at the jump (stm32)",
     "stub: fault ": "the stub itself faulted (alif, mimxrt)",
@@ -933,7 +949,10 @@ STUB_FAULT_ONLY = {
 # Lines only a stub that keeps its firmware area encrypted prints (boards.json stub.encrypted):
 # the per-board gaps in the coverage report do not ask the other boards for them.
 STUB_CRYPT_LINES = ("stub: flash cipher", "stub: stale blocks erased",
-                    "stub: firmware area in the clear", "stub: area scrub", "stub: no hardware key")
+                    "stub: firmware area in the clear", "stub: area scrub", "stub: no hardware key",
+                    "stub: slot in the clear", "stub: slot converted", "stub: clear slot erased",
+                    "stub: other slot in the clear", "stub: slot body does not verify",
+                    "stub: slot convert failed", "stub: converted slot does not verify")
 
 
 def _stub_encrypts(board):
@@ -995,6 +1014,16 @@ def _enable_stub_uart(project, board):
     if "\nENABLED = True" not in new or "\nUART = %d" % uart not in new:
         raise RuntimeError("%s: could not set ENABLED/UART for the boot stub -- the module's "
                            "defaults are not where this expects" % path)
+    if _stub_encrypts(board):
+        # Bench mode (DEBUG, the lines the coverage keys on) normally comes from the baked
+        # .hilcov_uart file, read at import through the stock /rom mount -- the start of the
+        # partition, slot A. On a board whose stub keeps the slots encrypted, slot A is
+        # ciphertext or blank to that mount whenever the booted slot is B (the factory slot
+        # after its conversion), and the file is not found: the level has to come from the
+        # module itself.
+        new = re.sub(r"(?m)^LEVEL = logging\.INFO\b", "LEVEL = logging.DEBUG", new)
+        if "\nLEVEL = logging.DEBUG" not in new:
+            raise RuntimeError("%s: could not set LEVEL for the encrypting board's bench build" % path)
     with open(path, "w") as f:
         f.write(new)
     # AND OPEN THAT UART FROM THE STUB'S FIRST INSTRUCTION (the stub Makefile's bench hook,
@@ -1059,8 +1088,20 @@ def scenario_markers(board, key):
             forbid |= {"stub.blob_bad", "stub.install_failed", "stub.no_slot_boot"} - expect
             if _stub_encrypts(board):
                 expect.add("stub.crypt")
+                if "install.armed" in expect:
+                    expect.add("install.slot_cipher")    # the installer wrote its slot through the cipher
         elif _stub_encrypts(board):
             expect.add("stub.no_slot_boot")
+        if _stub_encrypts(board):
+            # The factory slot is converted on the first boot after the golden flash, before any
+            # window opens; inside a window nothing in the clear may turn up (a conversion or a
+            # drop there means a slot was written in the clear).
+            forbid |= {"stub.slot_convert", "stub.slot_converted", "stub.slot_clear_erased",
+                       "stub.slot_clear_dropped"}
+            # boot.py follows the install record alone here (the other slot is ciphertext to it),
+            # so a revert reads `boot: mounted` from boot.py and `boot reverted` from the stub;
+            # the firmware's fallback line is not where a rollback shows on this board.
+            expect.discard("boot.fallback")
     return expect, forbid
 
 
@@ -1145,7 +1186,13 @@ def regression_scenarios(board, network):
     if board == "OPENMV_N6":
         scs.append("watchdog_bite")
     if board in FW_CORRUPT_BOARDS:                     # last: their app is the plain confirm one,
-        scs += ["fw_corrupt", "blob_corrupt"]          # and they take the REPL to reach DFU
+        scs += ["fw_corrupt"]                          # and they take the REPL to reach DFU
+        # blob_corrupt damages a slot's blob with a DFU download of the factory image's start: in
+        # the clear. On a board whose stub keeps the slots encrypted, a clear slot is erased, not
+        # installed from, so the blob path is not reached that way; the damage has to be done from
+        # the device, to a ciphered slot, once an update has filled the other one.
+        if not _stub_encrypts(board):
+            scs += ["blob_corrupt"]
     return scs
 
 
@@ -1827,11 +1874,73 @@ def check_at_rest(board):
         stub = f.read()
     with open(os.path.join(build, firmware_image_name(board)), "rb") as f:
         firmware = f.read()
-    d = tempfile.mkdtemp(prefix="at-rest-")
-    path = os.path.join(d, "firmware-partition.bin")       # dfu-util refuses an existing file
-    argv = [CFG["dfu"], "-w", "-d", "," + cfg.usb, "-a", str(cfg.alt_of("firmware")),
-            "--reset", "-U", path]
     log("at rest: reading %s's firmware partition back through the bootloader" % board)
+    dump, why = _dfu_upload(board, cfg.alt_of("firmware"), "firmware-partition.bin")
+    if dump is None:
+        return False, {"problems": [why]}
+    start = layout.firmware_dest - layout.origin
+    problems, numbers = at_rest.judge(dump, stub, firmware, start, start + layout.firmware_max)
+    report = dict(numbers, problems=problems)
+    if numbers:
+        log("at rest: stub %s; %d of %d firmware blocks stored as built, %d build samples "
+            "found, %.3f bits/byte, %d bytes not blank after it"
+            % ("as built" if numbers["stub_ok"] else "NOT this build's", numbers["same"],
+               numbers["blocks"], numbers["found"], numbers["entropy"], numbers["stale"]))
+    # The ROMFS slots too, where the build has the plaintext of what they should hold: the
+    # update the scenario installed (slot A, the slot the installer wrote) and the factory
+    # image the stub converted (slot B). Matched by trailer, so the order is not assumed.
+    images = _slot_images(board)
+    if images:
+        log("at rest: reading %s's romfs partition back through the bootloader" % board)
+        slots, why = _dfu_upload(board, cfg.alt_of("romfs"), "romfs-partition.bin")
+        if slots is None:
+            problems.append(why)
+        else:
+            slot_size = len(images[-1]) // 2            # the factory image: both slots
+            more, numbers = at_rest.judge_slots(slots, slot_size, [images[0], images[-1][:slot_size]])
+            problems += more
+            report["slots"] = numbers.get("slots", [])
+            for n in report["slots"]:
+                if "blocks" in n:
+                    log("at rest: slot %s: %d of %d blocks stored as built, %d image samples found, "
+                        "%.3f bits/byte, %d bytes not blank before its status sector"
+                        % (n["slot"], n["same"], n["blocks"], n["found"], n["entropy"], n["stale"]))
+    else:
+        log("at rest: no slot images in build/ -- the romfs partition is not checked")
+    report["problems"] = problems
+    for why in problems:
+        log("at rest: NOT ENCRYPTED -- " + why)
+    return not problems, report
+
+
+def _slot_images(board):
+    """The plaintext slot images the build has for an encrypting board's at-rest check:
+    ``[<board>-ota.img.gz (decompressed), <board>-factory-romfs.img]`` -- the update as the
+    device flashed it, and both factory slots -- or [] when either is missing (a run that never
+    published)."""
+    import gzip
+    from openmv_ota.flash.targets import flash_config
+    cfg = flash_config(board)
+    build = os.path.join(CFG["project"], "build")
+    update = os.path.join(build, "%s-ota.img.gz" % board)
+    factory = os.path.join(build, "%s-%s" % (board, cfg.filename("romfs", "factory-romfs.img")))
+    if not (os.path.exists(update) and os.path.exists(factory)):
+        return []
+    with gzip.open(update, "rb") as f:
+        image = f.read()
+    with open(factory, "rb") as f:
+        return [image, f.read()]
+
+
+def _dfu_upload(board, alt, name):
+    """One partition read back through the bootloader: ``(bytes, None)``, or ``(None, why)``.
+    Enters DFU over the CDC (the app stops), uploads the alt, and the upload's reset leaves DFU;
+    with the CDC gone it catches the bootloader's DFU window instead."""
+    from openmv_ota.flash.targets import flash_config
+    cfg = flash_config(board)
+    d = tempfile.mkdtemp(prefix="at-rest-")
+    path = os.path.join(d, name)                             # dfu-util refuses an existing file
+    argv = [CFG["dfu"], "-w", "-d", "," + cfg.usb, "-a", str(alt), "--reset", "-U", path]
     try:
         device_exec("import machine; machine.bootloader()", timeout=20, check=False)
         rc, out = sh(argv, timeout=CDC_FLASH_TIMEOUT, check=False, quiet=True)
@@ -1841,23 +1950,11 @@ def check_at_rest(board):
                 os.unlink(path)
             rc, out = dfu_reset_catch(board, argv, timeout=NOCDC_FLASH_TIMEOUT)
         if rc != 0 or not os.path.exists(path):
-            return False, {"problems": ["the read-back did not happen (rc=%d): %s"
-                                        % (rc, (out or "")[-200:])]}
+            return None, "the read-back did not happen (alt %s, rc=%d): %s" % (alt, rc, (out or "")[-200:])
         with open(path, "rb") as f:
-            dump = f.read()
+            return f.read(), None
     finally:
         shutil.rmtree(d, ignore_errors=True)
-    start = layout.firmware_dest - layout.origin
-    problems, numbers = at_rest.judge(dump, stub, firmware, start, start + layout.firmware_max)
-    report = dict(numbers, problems=problems)
-    if numbers:
-        log("at rest: stub %s; %d of %d firmware blocks stored as built, %d build samples "
-            "found, %.3f bits/byte, %d bytes not blank after it"
-            % ("as built" if numbers["stub_ok"] else "NOT this build's", numbers["same"],
-               numbers["blocks"], numbers["found"], numbers["entropy"], numbers["stale"]))
-    for why in problems:
-        log("at rest: NOT ENCRYPTED -- " + why)
-    return not problems, report
 
 
 def flash_golden(board, bad_romfs=False):
@@ -2010,6 +2107,14 @@ def _flash_dfu_cli(board, bad_romfs=False):
             _log_cli_tail(rc, out)
             raise RuntimeError("flash factory (no-CDC path) failed rc=%d: %s" % (rc, out[-400:]))
     time.sleep(15)                           # Alif/STM32N6 take a beat to boot + re-enumerate
+    # A stub board's first boot after a factory flash is its longest: the stub installs the
+    # firmware from the slot (and, where it keeps the slots encrypted, first copies the factory
+    # slot through the cipher and erases the clear one -- about 45 s on the N6), with the board
+    # off USB the whole time. Probing the CDC then reads as a board that vanished, and the probe's
+    # power cycle cuts the stub off mid-work. Watch the UART for the firmware's own boot first;
+    # a board that never gets there falls through to the probe as before.
+    if _has_stub(board) and _CAP is not None and not _await_boot(board, budget=180):
+        log("flash: %s showed no boot on its UART within 180 s of the factory flash" % board)
     _ensure_cdc(board)                       # POST-flash: allow_erase stays False -- never wipe the golden just written
 
 

@@ -123,10 +123,15 @@ def test_the_stm32h7_boards_share_one_stub_layout():
         assert stub.stub_max == 0x20000                                 # one 128 KiB sector
         assert stub.firmware_dest + stub.firmware_max == 0x081FF000     # the record's 4 KiB
         # the sector the bootloader jumps past (the unused internal filesystem's) is the
-        # firmware's second text region, so no board drops a feature to fit behind the stub
+        # firmware's second text region; only the H7 Plus, whose stock firmware already
+        # fills both, drops a feature to fit behind the stub
         assert (stub.text2_dest, stub.text2_max) == (0x08020000, 0x20000), name
         assert stub.text2_prefer == () and stub.text2_exclude == ()
-        assert B.get_board(name).ota_firmware_drops == {}, name
+        drops = B.get_board(name).ota_firmware_drops
+        if name == "OPENMV4P":
+            assert drops == {"IMLIB_ENABLE_DATAMATRICES": "find_datamatrices"}
+        else:
+            assert drops == {}, name
     assert B.get_board("OPENMV_N6").stub.text2_dest is None            # one window is plenty there
 
 

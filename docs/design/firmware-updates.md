@@ -121,6 +121,11 @@ slot start                                                           slot end
   `pad_size`). `pad_size` goes; each component carries its own offset and size.
 - `body_sha256` covers the filesystem image only (what `boot.py` mounts).
 - Blob offsets are absolute in the slot and may move every release.
+- On a board whose stub keeps the slots encrypted (the N6), the filesystem image and
+  the blobs, rounded up to the cipher's 4 KiB grain, are stored as ciphertext; the pad,
+  the status sector and the trailer stay in the clear. The manifest names that range
+  (`crypt_size`) and the trailer hash the slot's tweak is derived from (`trailer_sha256`);
+  see [flash-encryption.md](flash-encryption.md).
 
 ## Trailer v4
 

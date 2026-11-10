@@ -35,6 +35,8 @@
 #define STUB_RECORD_ADDR            0x703FF000      // the install record's sector
 #define STUB_CRYPT_START            STUB_INSTALL_START  // ciphertext at rest: the install window,
 #define STUB_CRYPT_END              STUB_INSTALL_END    //   and not the record after it (mce.c)
+#define STUB_SLOT_CRYPT             1               // and the booted slot's body (verify.c, install.c)
+#define STUB_CRYPT_GRAIN            0x1000          // the engine's region addresses are 4 KiB aligned
 #define STUB_ROMFS_ORIGIN           0x70800000
 #define STUB_ROMFS_LENGTH           0x01800000
 #define STUB_CONTROL_STRIDE         16

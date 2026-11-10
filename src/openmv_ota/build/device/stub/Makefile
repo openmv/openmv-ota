@@ -45,6 +45,7 @@ CFLAGS += $(EXTRA_CFLAGS) -Icommon \
 
 SRC_C := common/main.c \
          common/verify.c \
+         common/slot_tweak.c \
          common/install.c \
          common/log.c \
          lib/lzma/LzmaDec.c \

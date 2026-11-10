@@ -473,8 +473,9 @@ class OtaBoot:
 
     def __init__(self, read, verify, mount, write_marker, partition_size,
                  front_size, block, product_id, root_keys,
-                 max_attempts=DEFAULT_MAX_ATTEMPTS, record=None):
+                 max_attempts=DEFAULT_MAX_ATTEMPTS, record=None, slot_crypt=False):
         self.read = read
+        self.slot_crypt = slot_crypt         # the stub maps only the slot it boots (the N6)
         self.verify = verify
         self.mount = mount
         self.write_marker = write_marker
@@ -547,6 +548,30 @@ class OtaBoot:
         """
         floor = self._rollback_floor()
         epoch_floor = self._epoch_floor()
+        if self.record is not None and self.slot_crypt:
+            # On a board whose stub keeps the slots encrypted, the slot the record names is
+            # the one the stub mapped under its cipher -- the only one this firmware can read
+            # in the clear. The other slot is ciphertext here whatever it holds, so hashing it
+            # says nothing about it and its "rejection" is not one. The record's slot is
+            # evaluated alone; only when it does not hold up does the full choice run below.
+            name = ("A", "B")[self.record[1]]
+            for n, offset, size in self._slots():
+                if n != name:
+                    continue
+                body, status, trailer = self._read_slot(offset, size)
+                try:
+                    t, consume = evaluate_slot(
+                        body, status, trailer, floor, self.product_id, self.root_keys,
+                        self.verify, self.max_attempts, epoch_floor)
+                except OtaReject as e:
+                    if str(e) not in _POLICY_REJECTS:
+                        break                                 # not this firmware's to run
+                    t = parse_trailer(trailer)
+                if self.record[3] == [(c[0], c[3], c[5]) for c in t.components]:
+                    self._pending[name] = (offset, size, body, status, t, False)
+                    self.stub = (self.record[0], self.record[2])
+                    return self._mount(name, [])
+                break
         candidates, rejects, policy = [], [], {}
         for name, offset, size in self._slots():
             body, status, trailer = self._read_slot(offset, size)
@@ -798,7 +823,8 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         ob = OtaBoot(
             read, verify, mount, write_marker, cfg.PARTITION_SIZE, cfg.FRONT_SIZE,
             cfg.CONTROL_BLOCK, cfg.PRODUCT_ID, cfg.ROOT_KEYS,
-            getattr(cfg, "MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS), record)
+            getattr(cfg, "MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS), record,
+            getattr(cfg, "SLOT_CRYPT", False))
         slot, trailer, reject_reason = ob.run()
     except OtaReject as e:
         log.error("boot: no bootable slot: %s" % e)

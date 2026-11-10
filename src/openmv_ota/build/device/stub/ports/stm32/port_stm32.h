@@ -43,6 +43,7 @@ int qspi_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size);
 // mce.c: the N6's memory cipher engine over the firmware area (STUB_CRYPT_START/END).
 int mce_init(void);
 int mce_select(const uint8_t *tweak);
+int mce_slot_select(const uint8_t *tweak, uint32_t start, uint32_t end);
 void mce_lock(void);
 bool mce_covers(uint32_t addr, uint32_t n);
 void mce_xor(uint32_t addr, uint8_t *buf, uint32_t n);
