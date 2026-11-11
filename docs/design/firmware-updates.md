@@ -262,6 +262,44 @@ Last 4 KiB of the firmware area, written after all components are installed.
   own version comes from the record's `stub_version`: Python reads the record and
   never the stub binary.
 
+## Stub image footer
+
+The stub is flashed over USB and never updates itself, so nothing in the field verifies
+it today. Its image still carries a signature, so that a bootloader can check it under
+the project's root later without a stub change. `build firmware` and `build stub` write
+`<board>-stub.bin` as the stub's whole sector (`stub_max` in `boards.json`): the code,
+0xFF padding, and a 512-byte footer at the sector's end. The stub itself never reads it.
+
+```
+[ stub code (image_size) ][ 0xFF pad ][ footer (512) ]
+                                       ^ stub_max - 512
+```
+
+Footer, little-endian (`openmv_ota.ota.stub_footer`):
+
+| Offset | Field | Meaning |
+|---|---|---|
+| 0 | `magic:4s` | `OMVS` |
+| 4 | `version:u32` | `1` |
+| 8 | `image_size:u32` | bytes of stub code from the sector start |
+| 12 | `stub_version:u32` | the stub's `STUB_VERSION`, the value its install record carries |
+| 16 | `product_id:u64` | the cross-flash guard the stub was built for |
+| 24 | `reserved:u64` | 0 |
+| 32 | `image_sha256:32s` | hash of the stub code |
+| 64 | `certificate:160s` | the signing key's certificate, as in a trailer |
+| 224 | `signature:64s` | the certified key's ECDSA over bytes 0..224 |
+| 288 | `crc32:u32` | over bytes 0..288 |
+| 292 | | 0xFF to 512 |
+
+The key is the project's **factory** key, the one that signs the factory image the stub
+is flashed with (`--factory-key` on `build stub` picks another; a `--dev` project's key
+needs `--allow-dev-key`, as for every signing build). Verification is the trailer's
+two-step check plus the hash: root over the certificate, certified key over the signed
+region, SHA-256 over `image_size` bytes of the sector. `build inspect <board>-stub.bin`
+decodes the footer and `build verify <board>-stub.bin` checks it against
+`keys/root_keys.json`. A sealed stub is already its whole sector, so the
+`stub ‖ 0xFF ‖ firmware` image for the FIRMWARE partition pads nothing before the firmware.
+
 ## Stub algorithm
 
 1. Read both slots' trailers; parse; verify certificate + signature; check product
@@ -305,7 +343,8 @@ window, and encrypts what it installs
 ([flash-encryption.md](flash-encryption.md)). `boards.json` marks such a board
 with `"encrypted": true` in its `stub` entry.
 
-Provisioning over USB: `build firmware` emits the stub beside the firmware, and
+Provisioning over USB: `build firmware` emits the stub beside the firmware (sealed
+with its [footer](#stub-image-footer), so `<board>-stub.bin` is the whole sector), and
 `flash firmware` / `flash factory` download `stub ‖ 0xFF ‖ firmware` as one image
 to the FIRMWARE partition (`<board>-firmware-with-stub.bin`) — the firmware is linked
 to run behind the stub, so neither is flashable alone.

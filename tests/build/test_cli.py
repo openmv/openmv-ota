@@ -629,3 +629,52 @@ def test_a_server_that_will_not_allocate_stops_the_build(make_project, monkeypat
     monkeypatch.setattr("openmv_ota.client.api.Api", _Api)
     with pytest.raises(BuildError, match="next publish counter"):
         build_cli._publish_seq_for(str(root))
+
+
+def _make_sealed_stub(tmp_path):
+    """A sealed <board>-stub.bin and the root_keys.json it verifies under."""
+    from openmv_ota.ota import certificate as C
+    from openmv_ota.ota import keys, sign, stub_footer, write_root_keys
+    from tests import trust
+
+    class Signer:
+        def __init__(self, priv):
+            self.priv, self.certificate = priv, trust.certificate(priv, kind=C.KIND_FACTORY)
+
+        def sign(self, region):
+            return sign.sign_region(self.priv, region, trust.SPEC)
+
+    s = Signer(keys.generate_private_key(trust.SPEC))
+    sealed = stub_footer.seal(b"STUB" * 300, 0x2000, stub_version=1, product_id=0x1234,
+                              certificate=s.certificate, signer=s)
+    path = tmp_path / "OPENMV_N6-stub.bin"
+    path.write_bytes(sealed)
+    roots = tmp_path / "root_keys.json"
+    write_root_keys(roots, trust.root_keys())
+    return path, roots
+
+
+def test_build_inspect_and_verify_a_sealed_stub(tmp_path, capsys):
+    import json
+    path, roots = _make_sealed_stub(tmp_path)
+    assert main(["build", "inspect", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "boot stub v1 for product 0x0000000000001234" in out
+    assert "code: 1200 bytes in a 8192-byte sector" in out and "kind 1, root 0, epoch 0" in out
+    assert main(["build", "inspect", str(path), "--json"]) == 0
+    j = json.loads(capsys.readouterr().out)
+    assert j["kind"] == "stub" and j["image_size"] == 1200 and j["certificate"]["kind"] == 1
+    assert main(["build", "verify", str(path), "--root-keys", str(roots)]) == 0
+    assert "verified: stub v1 for product 0x0000000000001234, 1200 bytes" in capsys.readouterr().out
+    # tamper with the code: the footer still parses, the hash no longer matches
+    data = bytearray(path.read_bytes())
+    data[0] ^= 1
+    path.write_bytes(bytes(data))
+    assert main(["build", "inspect", str(path)]) == 0
+    assert main(["build", "verify", str(path), "--root-keys", str(roots)]) == 1
+    assert "stub code hash mismatch" in capsys.readouterr().err
+    # damage the footer itself: inspect reports it, the file no longer looks like a stub
+    data[-512 + 8] ^= 1
+    path.write_bytes(bytes(data))
+    assert main(["build", "inspect", str(path)]) == 2
+    assert "not a valid stub footer: stub footer: crc32 mismatch" in capsys.readouterr().err

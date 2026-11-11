@@ -111,6 +111,16 @@ The project's OTA flag steers the build automatically:
   would be a key anyone who can reach the artifact already has. On a multi-core board
   only the main core carries any of this — the helper core runs no OTA.
 
+  On a board with a **boot stub** (the N6, the AE3, the RT1062, the STM32H7 cameras) the
+  build also produces `<board>-stub.bin`, the stub's whole flash sector: its code, then
+  a signed footer that names the code's hash, the stub version and the product id under
+  the project's factory key — the key that signs the factory image the stub is flashed
+  with. Nothing on the camera checks it yet; it is there for the bootloader that will.
+  The same passphrase opens that key, and a `--dev` project's throwaway key is refused
+  without `--allow-dev-key`, as for every signing build. `openmv-ota build inspect
+  build/<board>-stub.bin` decodes the footer; `build verify` checks it against
+  `keys/root_keys.json`.
+
   On the **OpenMV Cam H7** (`OPENMV4`) the OTA firmware does not fit as-is — the frozen
   boot script, recovery installer and PEM parsing overflow its 1664 KB code region by
   about 45 KB — so the build turns off `find_barcodes()`, `find_datamatrices()`,

@@ -105,7 +105,8 @@ the environment where provisioning refuses it, deliberately: a wrong value at
 signing fails loudly and signs nothing, while a wrong value at provisioning
 would silently seal the key supply. A `--dev` project signs without any of
 this; the production rail stays closed unless a build is passed
-`--allow-dev-key`.
+`--allow-dev-key` — `build romfs`, `build factory-romfs`, and on a boot-stub board
+`build firmware` and `build stub`, whose stub footer the factory key signs.
 
 ## Day to day: `status` and `rotate`
 

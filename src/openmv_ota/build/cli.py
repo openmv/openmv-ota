@@ -86,13 +86,16 @@ def register(build_parser: argparse.ArgumentParser):
     p_fw.add_argument("--incremental", action="store_true",
                       help="skip the clean rebuild (faster; only when the tree is known good)")
     p_fw.add_argument("-f", "--firmware", help="firmware checkout override")
-    # Not a signing flag here: firmware is not signed. It is the same project
-    # passphrase, because the payload keys this build bakes in are encrypted at rest
-    # under it.
+    # The firmware itself is not signed; the passphrase opens the payload keys this build
+    # bakes in and, on a stub board, the factory key that seals the stub's footer.
     p_fw.add_argument("--key-passphrase-file", metavar="FILE",
                       help="passphrase (from a file) that decrypts the project's payload keys "
+                           "and, on a boot-stub board, the factory key that signs the stub "
                            "(else the OPENMV_OTA_KEY_PASSPHRASE env var, or an interactive "
                            "prompt)")
+    p_fw.add_argument("--allow-dev-key", action="store_true",
+                      help="allow the boot stub's footer to be signed with a throwaway --dev "
+                           "key (refused by default)")
     p_fw.add_argument("--keep-build-dir", action="store_true",
                       help="keep the generated wrapper manifest dir (OTA builds) for inspection")
     p_fw.set_defaults(func=cmd_firmware, _command="build firmware")
@@ -106,6 +109,10 @@ def register(build_parser: argparse.ArgumentParser):
     p_stub.add_argument("-j", "--jobs", type=int, metavar="N",
                         help="parallel make jobs (default: CPU count)")
     p_stub.add_argument("-f", "--firmware", help="firmware checkout override")
+    p_stub.add_argument("--factory-key", type=lambda s: int(s, 0), metavar="ID",
+                        help="factory key id that signs the stub's footer (default: the "
+                             "first factory key, 0x0001)")
+    _add_signing_flags(p_stub)
     p_stub.set_defaults(func=cmd_stub, _command="build stub")
 
     p_otr = sub.add_parser("ota-romfs",
@@ -152,14 +159,15 @@ def register(build_parser: argparse.ArgumentParser):
     p_ins = sub.add_parser("inspect", help="decode + print an OTA artifact "
                                            "(image trailer, manifest, or delta)")
     p_ins.add_argument("image", help="a romfs.zip bundle, trailer.bin, factory/partition "
-                                     ".img, a -manifest.bin, or a .delta.gz")
+                                     ".img, a -manifest.bin, a -stub.bin, or a .delta.gz")
     p_ins.add_argument("--json", action="store_true", help="machine-readable dump")
     p_ins.set_defaults(func=cmd_inspect, _command="build inspect")
 
     p_ver = sub.add_parser("verify", help="verify an OTA artifact "
                                           "(image/manifest signature, or a delta)")
     p_ver.add_argument("image", help="a romfs.zip bundle, factory/partition .img, the "
-                                     "romfs.img body, a -manifest.bin, or a .delta.gz")
+                                     "romfs.img body, a -manifest.bin, a -stub.bin, or a "
+                                     ".delta.gz")
     p_ver.add_argument("trailer", nargs="?", help="trailer.bin (omit when image is a .zip)")
     p_ver.add_argument("--root-keys", default="keys/root_keys.json",
                        help="root_keys.json, the roots an image's or manifest's certificate "
@@ -338,7 +346,7 @@ def cmd_firmware(args: argparse.Namespace) -> int:
         results = firmware_mod.build_firmware(
             args.project, output=args.output, boards=args.board, firmware=args.firmware,
             jobs=args.jobs, incremental=args.incremental, keep_build_dir=args.keep_build_dir,
-            key_passphrase_file=args.key_passphrase_file,
+            key_passphrase_file=args.key_passphrase_file, allow_dev_key=args.allow_dev_key,
         )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)
@@ -359,13 +367,17 @@ def cmd_stub(args: argparse.Namespace) -> int:
 
     try:
         results = stub_mod.build_stub(args.project, output=args.output, boards=args.board,
-                                      firmware=args.firmware, jobs=args.jobs)
+                                      firmware=args.firmware, jobs=args.jobs,
+                                      factory_key=args.factory_key,
+                                      key_passphrase_file=args.key_passphrase_file,
+                                      allow_dev_key=args.allow_dev_key)
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
 
     for r in results:
-        print("Built %s  (%d bytes)" % (r.output.name, r.size))
+        print("Built %s  (%d bytes of stub in a %d-byte sector, footer signed by key 0x%04x)"
+              % (r.output.name, r.size, r.sector, r.key_id))
     return 0
 
 
@@ -461,6 +473,9 @@ def _load_artifact(path: Path):
         return "manifest", data
     if data[:4] == b"OCDL":
         return "delta", data
+    from openmv_ota.ota import stub_footer
+    if len(data) >= stub_footer.SIZE and data[-stub_footer.SIZE:][:4] == stub_footer.MAGIC:
+        return "stub", data                                # a sealed <board>-stub.bin
     if data[:2] == b"\x1f\x8b":                            # gzip -- maybe a gzipped delta
         import gzip
         try:
@@ -502,6 +517,36 @@ def _inspect_manifest(raw: bytes, as_json: bool) -> int:
     return 0
 
 
+def _inspect_stub(raw: bytes, as_json: bool) -> int:
+    """A sealed boot stub: its footer's header, the certificate, and the code it covers."""
+    from openmv_ota.ota import certificate as certificate_mod
+    from openmv_ota.ota import stub_footer
+    from openmv_ota.ota.errors import OtaError
+    try:
+        f = stub_footer.parse(stub_footer.footer_of(raw))
+        cert = certificate_mod.parse(f.certificate)
+    except OtaError as e:
+        print("error: not a valid stub footer: %s" % e, file=sys.stderr)
+        return 2
+    out = {
+        "kind": "stub", "stub_version": f.stub_version, "product_id": "0x%016x" % f.product_id,
+        "image_size": f.image_size, "sector_size": len(raw),
+        "image_sha256": f.image_sha256.hex(),
+        "certificate": {"key_id": "0x%08x" % cert.key_id, "kind": cert.kind,
+                        "root_id": cert.root_id, "epoch": cert.epoch},
+    }
+    if as_json:
+        print(json.dumps(out, indent=2))
+        return 0
+    print("boot stub v%d for product %s" % (f.stub_version, out["product_id"]))
+    print("  code: %d bytes in a %d-byte sector, sha256 %s"
+          % (f.image_size, len(raw), out["image_sha256"]))
+    print("  footer signed by key %s (kind %d, root %d, epoch %d)"
+          % (out["certificate"]["key_id"], cert.kind, cert.root_id, cert.epoch))
+    print("  (verify it: `openmv-ota build verify <this file>`)")
+    return 0
+
+
 def _inspect_delta(raw: bytes, as_json: bool) -> int:
     from openmv_ota.ota.delta import summarize
     from openmv_ota.ota.errors import OtaError
@@ -530,6 +575,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         return _inspect_manifest(raw, args.json)
     if kind == "delta":
         return _inspect_delta(raw, args.json)
+    if kind == "stub":
+        return _inspect_stub(raw, args.json)
     try:
         is_b = bundle.is_bundle(path)
         trailer_bytes = bundle.read_bundle(path)[1] if is_b else None
@@ -613,6 +660,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
     except OtaError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
+    if kind == "stub":                           # the boot stub's footer, under the same roots
+        from openmv_ota.ota import stub_footer
+        ok, reason = stub_footer.verify(raw, roots)
+        if ok:
+            print("verified: %s" % reason)
+            return 0
+        print("verification FAILED: %s" % reason, file=sys.stderr)
+        return 1
     if kind == "manifest":                       # same roots as an image: one trust chain
         ok, reason = verify_manifest(raw, roots)
         if ok:

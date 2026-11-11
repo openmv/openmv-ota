@@ -111,6 +111,7 @@ def build_firmware(
     incremental: bool = False,
     keep_build_dir: bool = False,
     key_passphrase_file: str | Path | None = None,
+    allow_dev_key: bool = False,
 ) -> list[FirmwareResult]:
     project = Path(project)
     try:
@@ -131,7 +132,8 @@ def build_firmware(
     payload = _payload_keys(p, names, key_passphrase_file)
     return [
         _build_one(p, repo, name, out_dir, jobs=jobs, incremental=incremental,
-                   keep_build_dir=keep_build_dir, payload_keys=payload.get(name, {}))
+                   keep_build_dir=keep_build_dir, payload_keys=payload.get(name, {}),
+                   key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
         for name in names
     ]
 
@@ -218,7 +220,8 @@ def _record_inputs(repo: Path, name: str, digest: str) -> None:
 
 
 def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
-               keep_build_dir, payload_keys=None) -> FirmwareResult:
+               keep_build_dir, payload_keys=None, key_passphrase_file=None,
+               allow_dev_key=False) -> FirmwareResult:
     ota = p.config.ota
     tmp: Path | None = None
     cmod: Path | None = None
@@ -250,7 +253,9 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
         outputs = _collect_outputs(repo, name, out_dir)
         outputs += _copy_wifi_blobs(repo, name, out_dir)
         from . import stub as stub_mod                  # a stub board's firmware ships with its stub
-        outputs += stub_mod.build_for_firmware(p, name, out_dir, jobs)
+        outputs += stub_mod.build_for_firmware(p, name, out_dir, jobs,
+                                               key_passphrase_file=key_passphrase_file,
+                                               allow_dev_key=allow_dev_key)
         return FirmwareResult(name, outputs, ota=ota,
                               build_dir=tmp if (ota and keep_build_dir) else None)
     finally:

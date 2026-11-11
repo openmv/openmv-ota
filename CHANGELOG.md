@@ -8,6 +8,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The boot stub carries a signature.** `build firmware` and `build stub` now write
+  `<board>-stub.bin` as the stub's whole sector: the code, 0xFF padding and a 512-byte footer
+  (`openmv_ota.ota.stub_footer`) that names the code's SHA-256, the stub version and the
+  product id, with the factory key's certificate and its signature over them -- the trailer's
+  two-step check, for the bootloader that will verify the stub under the project's root. The
+  stub never reads it. `build inspect` decodes a sealed stub and `build verify` checks it;
+  `build stub` takes `--factory-key`, and both builds take `--allow-dev-key` for a `--dev`
+  project's throwaway key. Format: `docs/design/firmware-updates.md`, "Stub image footer".
 - **The N6's ROMFS slots are ciphertext in its flash chip too.** The boot stub now keys the
   chip's memory cipher engine over the slot it boots as well as over the firmware area, so
   the app and the compressed firmware the slots carry are stored encrypted. The other slot is
