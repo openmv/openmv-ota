@@ -565,6 +565,12 @@ COVERAGE = {
     "stub: converted slot does not verify": "stub.failed",
     # A fault inside the stub: at the jump (stm32, where it is skipped and logged) or anywhere
     # (alif, mimxrt, whose handlers dump the frame). Either is a stub bug or a failing board.
+    # The slots' flash never answered: the stub boots from the install record alone, with no
+    # slot to fall back on. The Arduino H7 boards did this on about one reset in twenty until
+    # the controller's kernel clock was found dead after the reset (stm32/qspi.c
+    # kernel_clock_release); a boot that says so again fails whatever scenario it is in.
+    "stub: qspi reset timeout": "stub.failed",
+    "stub: qspi pll2 did not start": "stub.failed",
     "stub: stray fault": "stub.failed",
     "stub: fault pc": "stub.failed",
     "boot: slot read": "boot.read",                           # the XIP slot-read closure ran
@@ -928,6 +934,7 @@ STUB_FAULT_ONLY = {
     "stub: ospi no part": "the flash did not answer",
     "stub: qspi init failed": "the flash controller could not be set up",
     "stub: qspi addr4 failed": "the flash did not take 4-byte addressing",
+    "stub: qspi pll2 did not start": "the PLL that frees the controller's clock mux did not lock",
     # What stm32/qspi.c prints, once, when the part does not come out of its reset idle.
     "stub: qspi reset": "the flash did not answer its reset",
     "stub: qspi hal err": "the flash did not answer its reset",

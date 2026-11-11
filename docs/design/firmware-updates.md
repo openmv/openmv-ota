@@ -396,6 +396,19 @@ runs from AXI SRAM with the small buffers in DTCM; the D-cache stays off (the
 install reads back what it just programmed). The head disables the MPU and the
 caches before the copy to SRAM, since MCUboot does not hand over with them off.
 
+Before the controller's first use the stub runs PLL2 for a millisecond when it is off, then
+turns it off again and restores its registers. The firmware clocks the controller from PLL2.
+A system reset turns PLL2 off and sets the controller's kernel-clock selector
+(RCC `D1CCIPR.QSPISEL`) back to the bus clock at once, and the selector lets go of its old
+input only on that input's own edges. When none are left it never finishes the switch: the
+controller has no clock, an instruction never shifts out, `BUSY` stays set, and a peripheral
+reset changes nothing, although every register reads as it should. On the Portenta that
+happened on 4 of 65 resets of the running firmware. Of the recoveries tried on a wedged boot
+(the data pins as the firmware sets them, the sample shift, memory-mapped mode entered and
+aborted, a chip-select pulse, the controller off and on, another clock asked of the
+selector) only PLL2 running again brought the flash back, and it stayed back with PLL2 off.
+With the pulse: 0 of 120.
+
 Measured (stock firmware text): H7 Plus 1811 KB, Portenta/Giga ≈ 1760 KB, Nicla
 1722 KB with the OTA additions (76 KB: 45 KB of frozen Python, the ECDSA and
 key-store modules, the mbedtls speed options). All fit the two regions together;

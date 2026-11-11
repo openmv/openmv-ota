@@ -314,6 +314,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **An Arduino H7 camera no longer boots without its slots after a reset.** On the Portenta
+  and the Giga about one reset in twenty of the running firmware left the boot stub unable to
+  reach the QSPI flash that holds the slots (`qspi reset timeout`): it then booted from the
+  install record alone, with nothing to fall back on. The flash controller had no clock. The
+  firmware runs the controller from PLL2; a reset turns PLL2 off and puts the controller's
+  clock selector back on the bus clock in the same instant, and the selector finishes that
+  switch only on edges of the clock it is leaving. The stub now runs PLL2 for a millisecond
+  before it first uses the controller, and puts PLL2's registers back. Portenta bench, resets
+  of the running firmware: 4 of 65 without the change, 0 of 120 with it. The fleet now fails
+  any scenario in which a stub says the flash never answered.
 - **The STM32 boot stub's debug UART no longer garbles a line around a delay.** The stub slept
   with a character still in the transmitter; the STM32N6 gates a peripheral's clock while the
   core sleeps, so the end of one log line and the start of the next came out as junk each

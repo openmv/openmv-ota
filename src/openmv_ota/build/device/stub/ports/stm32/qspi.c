@@ -155,6 +155,71 @@ static int write_enable(void) {
 // HAL leaves its handle in the error state and the controller BUSY (an auto-poll that never
 // matched keeps polling until it is aborted), and every later call refuses. A peripheral reset
 // needs no cooperation from either, which the HAL's own abort would (and it drags in MDMA).
+// THE CONTROLLER'S KERNEL CLOCK CAN BE LEFT DEAD BY A RESET. The firmware clocks the controller
+// from PLL2 (RCC D1CCIPR.QSPISEL). A system reset turns PLL2 off and puts the selector back on
+// the bus clock in the same instant, and the selector is a glitch-free mux: it lets go of its
+// old input on that input's own edges. When the reset lands badly there are none left, the
+// mux never finishes the switch, and the controller has no clock although every register
+// reads as it should -- an instruction never shifts out, BUSY stays set for ever, and a
+// peripheral reset changes nothing because the fault is not in the peripheral. The firmware's
+// start-up turns PLL2 back on, which is why it always recovered in the same boot while the
+// stub, on the bus clock, never did. Measured on the Portenta: about one reset of the running
+// firmware in twenty; of the recoveries tried on a wedged boot (pins, sample shift, memory-map
+// entry and abort, a chip-select pulse, the controller off and on, another clock asked of
+// the mux) only PLL2 running again brought the part back, three times out of three, and it
+// stayed back with PLL2 off again.
+//
+// So before the controller's first use, give the mux the edges it may be waiting for: run
+// PLL2 for a millisecond when it is off, at whatever its input allows, and put its registers
+// back. Nothing is asked to use it.
+static void kernel_clock_release(void) {
+    if (RCC->CR & RCC_CR_PLL2ON) {
+        return;                                 // running: the mux has its edges
+    }
+    uint32_t ckselr = RCC->PLLCKSELR, cfgr = RCC->PLLCFGR, divr = RCC->PLL2DIVR;
+    uint32_t hz;
+    switch (ckselr & RCC_PLLCKSELR_PLLSRC) {
+        case RCC_PLLCKSELR_PLLSRC_HSE:
+            hz = HSE_VALUE;
+            break;
+        case RCC_PLLCKSELR_PLLSRC_CSI:
+            hz = CSI_VALUE;
+            break;
+        case RCC_PLLCKSELR_PLLSRC_HSI:
+            hz = HSI_VALUE >> ((RCC->CR & RCC_CR_HSIDIV) >> RCC_CR_HSIDIV_Pos);
+            break;
+        default:
+            return;                             // the PLLs have no input
+    }
+    // A 1-2 MHz reference into the medium-range VCO at x150: 150-300 MHz, halved on each output.
+    uint32_t divm = (hz + 1999999U) / 2000000U;
+    if (divm > 63U) {
+        divm = 63U;
+    }
+    MODIFY_REG(RCC->PLLCKSELR, RCC_PLLCKSELR_DIVM2, divm << RCC_PLLCKSELR_DIVM2_Pos);
+    MODIFY_REG(RCC->PLLCFGR,
+        RCC_PLLCFGR_PLL2FRACEN | RCC_PLLCFGR_PLL2VCOSEL | RCC_PLLCFGR_PLL2RGE
+        | RCC_PLLCFGR_DIVP2EN | RCC_PLLCFGR_DIVQ2EN | RCC_PLLCFGR_DIVR2EN,
+        RCC_PLLCFGR_PLL2VCOSEL | RCC_PLLCFGR_DIVP2EN | RCC_PLLCFGR_DIVQ2EN | RCC_PLLCFGR_DIVR2EN);
+    RCC->PLL2DIVR = (149U << RCC_PLL2DIVR_N2_Pos) | (1U << RCC_PLL2DIVR_P2_Pos)
+        | (1U << RCC_PLL2DIVR_Q2_Pos) | (1U << RCC_PLL2DIVR_R2_Pos);
+    SET_BIT(RCC->CR, RCC_CR_PLL2ON);
+    uint32_t t0 = port_ticks_ms();
+    while (!(RCC->CR & RCC_CR_PLL2RDY) && (port_ticks_ms() - t0) < 10) {
+    }
+    if (!(RCC->CR & RCC_CR_PLL2RDY)) {
+        log_line("qspi pll2 did not start");
+    }
+    port_delay_ms(1);
+    CLEAR_BIT(RCC->CR, RCC_CR_PLL2ON);
+    t0 = port_ticks_ms();
+    while ((RCC->CR & RCC_CR_PLL2RDY) && (port_ticks_ms() - t0) < 10) {
+    }
+    RCC->PLL2DIVR = divr;
+    RCC->PLLCFGR = cfgr;
+    RCC->PLLCKSELR = ckselr;
+}
+
 static int controller_init(void) {
     __HAL_RCC_QSPI_CLK_ENABLE();
     __HAL_RCC_QSPI_FORCE_RESET();
@@ -254,6 +319,7 @@ int qspi_flash_init(void) {
     }
     inherited_qspisel = __HAL_RCC_GET_QSPI_SOURCE();
     snapshot_inherited();
+    kernel_clock_release();
     if (controller_init() != 0) {
         return -1;
     }
