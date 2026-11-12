@@ -162,7 +162,10 @@ class Camera:
         (tmp_path / "stub_keys.h").write_text("")
         (tmp_path / "harness.c").write_text(_HARNESS_C)
         self.exe = tmp_path / "journal"
-        subprocess.run(["gcc", "-O1", "-Wall", "-Werror", "-I", str(tmp_path), "-I", str(COMMON),
+        # The stub places its buffers in named sections; a Mach-O host rejects those names, and
+        # no host needs them, so the attribute is compiled out of this build.
+        subprocess.run(["gcc", "-O1", "-Wall", "-Werror", "-Dsection(x)=aligned(32)",
+                        "-I", str(tmp_path), "-I", str(COMMON),
                         str(tmp_path / "harness.c"), str(COMMON / "journal.c"), "-o", str(self.exe)],
                        check=True)
 
