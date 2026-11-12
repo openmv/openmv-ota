@@ -161,9 +161,11 @@ WIRE_MAX = CARRY               # entries a check-in carries
 
 def from_wire(journal) -> list:
     """The entries of a check-in's ``stub.journal``. Whatever is not a well-formed entry is
-    left out: a camera is never refused over its journal."""
+    left out: a camera is never refused over its journal. An entry is its first six numbers;
+    anything a later stub adds after them is ignored here, not a reason to drop the entry."""
     out = []
     for item in (journal if isinstance(journal, list) else [])[-WIRE_MAX:]:
+        item = item[:6] if isinstance(item, list) else item
         if (isinstance(item, list) and len(item) == 6
                 and all(isinstance(x, int) and not isinstance(x, bool) for x in item)
                 and 0 <= item[0] <= 0xFFFF and all(0 <= x <= 0xFF for x in item[1:5])

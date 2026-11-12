@@ -8,6 +8,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The formats that leave the building are pinned.** `tests/ota/format_pins.json` holds a
+  sample of each format that crosses between the build, the server and a camera -- the image
+  trailer and its certificate, the update manifest, an encrypted artifact, a lockbox, a
+  delta patch, a registration record, the slot status sector, a boot journal entry -- and
+  `tests/ota/test_format_pins.py` fails when today's code stops producing or reading one.
+  A server test does the same for the check-in: a body with fields the server has never
+  heard of is served.
+
 - **The boot stub keeps a journal, and the server hears it.** What the stub decides at boot
   -- a slot refused and why, the firmware area repaired from the other slot, a flash chip
   that needed a second reset -- used to reach its UART and nothing else. The stub now
@@ -322,6 +330,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checks in under.
 
 ### Fixed
+
+- **A boot journal entry with more numbers than the server knows is kept.** The server took
+  an entry from a check-in only if it was exactly six numbers long, so a stub that later
+  added a seventh would have had every entry dropped without a word. The first six are the
+  entry; the rest is ignored.
 
 - **An Arduino H7 camera no longer boots without its slots after a reset.** On the Portenta
   and the Giga about one reset in twenty of the running firmware left the boot stub unable to
