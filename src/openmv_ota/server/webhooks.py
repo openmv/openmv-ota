@@ -26,6 +26,10 @@ from urllib.parse import urlsplit
 # The event catalogue: every audit action a subscriber may name, and what it means.
 # Actions not listed here still flow (a subscription to "*" or a family gets them) --
 # this is the documented, stable set.
+#
+# A site in front of this server that translates these descriptions holds its own copy of
+# the table, compared against this one by a test. A new event here needs its entry there
+# before that site takes this server, or its build fails.
 EVENTS = {
     "device.enrolled": "a camera checked in for the first time under the account",
     "device.refused": "a new camera was turned away at the account's device limit",
