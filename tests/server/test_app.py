@@ -354,6 +354,26 @@ def test_the_boot_journal_becomes_audit_events_once_each(tmp_path):
     assert store.get_device("dev1")["stub_reason"] == "normal"
 
 
+def test_a_checkin_with_fields_this_server_has_never_heard_of_is_served(tmp_path):
+    """The check-in is a frozen shape that grows: a camera running a later release sends what
+    this server knows plus more, and must be served, not refused, with what it knows kept."""
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+    body = {"device_id": "dev1", "product_id": BID, "account_id": "", "board": None,
+            "product": "p", "app_version": "1.0.0", "payload_version": 0x01000000,
+            "publish_seq": 0, "orders_by_seq": False, "slot": "A", "representation": "full",
+            "fallback_reason": None, "confirmed": True, "streams": [], "slots": [],
+            "stub": {"version": 1, "reason": 0, "journal": [[0, 0, 0, 0, 0, 256, 9]],
+                     "later": {"x": 1}},
+            "a_later_field": [1, 2, 3]}
+    r = camera.check(c, body)
+    assert r.status_code == 200
+    dev = store.get_device("dev1")
+    assert (dev["slot"], dev["stub_version"], dev["stub_reason"]) == ("A", 1, "normal")
+    boots = [e for e in store.read_audit(limit=100) if e["action"] == "device.boot"]
+    assert len(boots) == 1                       # the journal entry counted, its extra number ignored
+
+
 def test_a_malformed_stub_report_never_refuses_the_checkin(tmp_path):
     """The camera is the one party this endpoint must never refuse over a cosmetic field."""
     app, store, storage, v = _app(tmp_path)
