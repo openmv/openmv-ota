@@ -400,6 +400,43 @@ def test_no_slot_on_a_board_that_encrypts_expects_the_stubs_last_resort(monkeypa
     assert "stub.no_slot_boot" in ota_cycle.scenario_markers("OPENMV_N6", "delta")[1]
 
 
+def test_no_slot_secure_expects_the_usb_firmware_refused_not_booted():
+    """The same brick under a stub built for secure boot: the stub stops, boot.py never runs."""
+    n6 = ota_cycle.regression_scenarios("OPENMV_N6", ota_cycle.BOARDS["OPENMV_N6"]["network"])
+    assert n6[n6.index("no_slot") - 1] == "no_slot_secure"      # it leaves a plain app behind
+    assert n6[n6.index("no_slot_secure") - 1] == "reinstall"    # ...and inherits one
+    assert "no_slot_secure" not in ota_cycle.regression_scenarios("OPENMV_RT1060", "lan")
+    expect, forbid = ota_cycle.scenario_markers("OPENMV_N6", "no_slot_secure")
+    assert expect == {"stub.version", "stub.slot_rejected", "stub.unsigned_refused"}
+    assert {"stub.no_slot_boot", "boot.no_slot", "run.checkin"} <= forbid
+    # ...and the refusal is forbidden wherever the stub is built as usual
+    for key in ("no_slot", "delta", "fw_corrupt"):
+        assert "stub.unsigned_refused" in ota_cycle.scenario_markers("OPENMV_N6", key)[1]
+
+
+def test_set_secure_boot_edits_the_project_and_rebuilds_the_firmware(tmp_path, monkeypatch):
+    toml = tmp_path / "openmv-ota.toml"
+    toml.write_text('[product]\nname = "p"\n[ota]\nenabled = true\n')
+    monkeypatch.setitem(ota_cycle.CFG, "project", str(tmp_path))
+    monkeypatch.setitem(ota_cycle.CFG, "sdk", "/sdk")
+    runs = []
+    envs = []
+    monkeypatch.setattr(ota_cycle.subprocess, "run",
+                        lambda argv, **kw: (runs.append(argv), envs.append(kw["env"])))
+    ota_cycle.set_secure_boot("OPENMV_N6", True)
+    ota_cycle.set_secure_boot("OPENMV_N6", True)                # twice is still one line
+    assert toml.read_text().count('secure_boot = "always"\n') == 1
+    assert '[ota]\nsecure_boot = "always"\n' in toml.read_text()
+    ota_cycle.set_secure_boot("OPENMV_N6", False)
+    assert toml.read_text() == '[product]\nname = "p"\n[ota]\nenabled = true\n'
+    assert len(runs) == 3 and all(r[1:3] == ["build", "firmware"] and "OPENMV_N6" in r for r in runs)
+    # each build opens the stub's bench UART, or a stub with no slot to read one from is silent
+    assert all(e["STUB_DEBUG_UART"] == str(ota_cycle.BOARDS["OPENMV_N6"]["cov_uart"]) for e in envs)
+    toml.write_text('[product]\nname = "p"\n')
+    with pytest.raises(RuntimeError, match="no single"):
+        ota_cycle.set_secure_boot("OPENMV_N6", True)
+
+
 def test_the_dfu_brick_erases_both_slots_ends_then_flashes_the_firmware(bench, monkeypatch):
     ran = []
     monkeypatch.setattr(ota_cycle, "_has_stub", lambda b: b == BOARD)
@@ -421,3 +458,21 @@ def test_the_dfu_brick_erases_both_slots_ends_then_flashes_the_firmware(bench, m
     with pytest.raises(RuntimeError, match="not implemented for OPENMV_AE3"):
         monkeypatch.setattr(ota_cycle, "_has_stub", lambda b: False)
         ota_cycle._brick_slots_dfu("OPENMV_AE3")
+
+
+def test_a_camera_stopped_in_its_stub_is_flashed_through_the_bootloaders_window(monkeypatch):
+    calls = []
+    monkeypatch.setitem(ota_cycle.CFG, "project", "/proj")
+    monkeypatch.setitem(ota_cycle.CFG, "sdk", "/sdk")
+    monkeypatch.setitem(ota_cycle.CFG, "dfu", "/dfu")
+    monkeypatch.setattr(ota_cycle, "_register_args", lambda: [])
+    monkeypatch.setattr(ota_cycle, "_log_cli_tail", lambda rc, out: None)
+    monkeypatch.setattr(ota_cycle, "flash_golden", lambda board: calls.append(("usual", board)))
+    rcs = iter([0, 2])
+    monkeypatch.setattr(ota_cycle, "dfu_reset_catch",
+                        lambda board, argv, timeout: (calls.append(("catch", argv)), (next(rcs), ""))[1])
+    ota_cycle.flash_golden_in_bootloader("OPENMV_N6")
+    assert [c[0] for c in calls] == ["catch"]
+    assert calls[0][1][1:3] == ["flash", "factory"] and calls[0][1][-1] == "--in-bootloader"
+    ota_cycle.flash_golden_in_bootloader("OPENMV_N6")           # the window was missed
+    assert [c[0] for c in calls] == ["catch", "catch", "usual"]

@@ -83,6 +83,21 @@ def test_build_stub_names_the_sdk_toolchain_when_installed(make_project, monkeyp
     assert "CROSS_COMPILE=%s" % (str(gcc)[:-3]) in calls[-1]["args"]
 
 
+def test_build_stub_forces_the_secure_path_only_when_the_project_says_always(make_project, monkeypatch):
+    """[ota].secure_boot = "always" builds the stub that refuses unsigned firmware on any
+    chip; left alone, the stub asks the chip's fuses (where its port can read them)."""
+    calls = _fake_make(monkeypatch)
+    root, repo, _app = make_project(ota=True)
+    stub_mod.build_stub(root, firmware=repo)
+    assert not any(a.startswith("SECURE_BOOT_FORCE") for a in calls[-1]["args"])
+    cfg = root / "openmv-ota.toml"
+    text = cfg.read_text()
+    assert text.count("[ota]\n") == 1
+    cfg.write_text(text.replace("[ota]\n", '[ota]\nsecure_boot = "always"\n'))
+    stub_mod.build_stub(root, firmware=repo)
+    assert "SECURE_BOOT_FORCE=1" in calls[-1]["args"]
+
+
 def test_build_stub_honours_output_and_board_filters(make_project, monkeypatch):
     _fake_make(monkeypatch)
     root, repo, _app = make_project(ota=True)

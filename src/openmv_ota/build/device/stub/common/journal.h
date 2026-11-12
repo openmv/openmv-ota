@@ -66,6 +66,7 @@
 #define EVENT_MAP_RESTORE_FAILED    (7)
 #define EVENT_JOURNAL_RESTARTED     (8)
 #define EVENT_JOURNAL_FULL          (9)
+#define EVENT_UNSIGNED_REFUSED      (10)    // secure boot: firmware no verified slot vouches for was not booted
 
 void journal_load(const uint8_t *block);            // the record's block, as first read
 void journal_erased(void);                          // an install erased the block

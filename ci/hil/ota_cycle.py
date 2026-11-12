@@ -560,6 +560,9 @@ COVERAGE = {
     # encrypts (the USB download is in the clear, so its record cannot vouch for it), forbidden
     # everywhere else.
     "stub: no slot: booting the installed firmware": "stub.no_slot_boot",
+    # ...and the same camera when its stub acts as on a chip with a secure boot key: nothing
+    # signed vouches for that firmware, so it is not booted. Expected in no_slot_secure only.
+    "stub: secure boot: no verified slot, nothing boots": "stub.unsigned_refused",
     "stub: blob read failed": "stub.failed",
     "stub: flash cipher setup failed": "stub.failed",
     "stub: no hardware key": "stub.failed",
@@ -761,6 +764,18 @@ SCENARIOS = {
         # device's current version (its own anti-rollback), so the device's anti-rollback --
         # the real safety boundary -- can't otherwise be reached on hardware. The flag relaxes
         # only the server's OFFER; the device still rejects the downgrade (what we're testing).
+    },
+    "no_slot_secure": {
+        "desc": "both slots invalid under a stub built for secure boot -> the firmware over USB "
+                "is not booted",
+        # no_slot's brick, with the stub built as on a chip that holds a secure boot key
+        # ([ota].secure_boot = "always"; no fuse is burnt). No slot verifies, so nothing signed
+        # vouches for the firmware the USB download left: the stub must stop there instead of
+        # booting it. boot.py never runs. The scenario ends with a golden flash over USB, the
+        # way back, and fails if the camera does not come up from it.
+        "publish": "none", "app": "confirm", "end": "no_slot", "secure_boot": True,
+        "expect": [],
+        "forbid": ["boot.no_slot", "run.checkin", "install.start", "confirm.promoted"],
     },
     "no_slot": {
         "desc": "both romfs slots invalid -> boot finds nothing bootable (the brick floor)",
@@ -1003,8 +1018,8 @@ def _stub_marks(key, spec):
     (a different slot is never recorded) and jumps with reason trial. rollback exhausts the
     attempts, so the stub rejects the slot (trial-failed) and boots the other one reverted,
     installing it again on the way. Every install is an entry in the boot journal. no_slot bricks both slots: both rejected, nothing more."""
-    if key == "no_slot":
-        return {"stub.version", "stub.slot_rejected"}        # (+ stub.no_slot_boot, see scenario_markers)
+    if spec["end"] == "no_slot":
+        return {"stub.version", "stub.slot_rejected"}        # (+ how it ends, see scenario_markers)
     marks = {"stub.version", "stub.slot_ok", "stub.fast_path", "stub.boot_normal"}
     if "install.armed" in spec["expect"]:
         marks |= {"stub.slot_trial", "stub.attempt", "stub.install", "stub.record_written",
@@ -1116,7 +1131,7 @@ def scenario_markers(board, key, then=False):
     expect, forbid = resolve(s["expect"]), resolve(s.get("forbid", ()))
     if _has_stub(board):
         expect |= _stub_marks(key, s)
-        if key != "no_slot":
+        if s["end"] != "no_slot":
             forbid.add("stub.failed")
             forbid |= {"stub.blob_bad", "stub.install_failed", "stub.no_slot_boot",
                        "stub.boot_repaired"} - expect
@@ -1124,8 +1139,13 @@ def scenario_markers(board, key, then=False):
                 expect.add("stub.crypt")
                 if "install.armed" in expect:
                     expect.add("install.slot_cipher")    # the installer wrote its slot through the cipher
+        elif s.get("secure_boot"):
+            expect.add("stub.unsigned_refused")
+            forbid.add("stub.no_slot_boot")
         elif _stub_encrypts(board):
             expect.add("stub.no_slot_boot")
+        if not s.get("secure_boot"):
+            forbid.add("stub.unsigned_refused")
         if _stub_encrypts(board):
             # The factory slot is converted on the first boot after the golden flash, before any
             # window opens; inside a window nothing in the clear may turn up (a conversion or a
@@ -1208,6 +1228,13 @@ def regression_scenarios(board, network):
     # firmware downloaded over USB (see _flash_dfu_cli). That is the one way to the stub's last
     # resort -- no slot, no record that vouches, firmware in the clear -- and to boot.py's
     # no-slot path on this board.
+    # First, no_slot's brick under a stub built for secure boot, where the USB download must
+    # NOT boot. Before no_slot, not after it: the brick takes the REPL, which the firmware
+    # no_slot leaves running (in its recovery loop) does not give up. It ends with its own
+    # golden flash -- the proof that a camera stopped there comes back over USB -- so no_slot
+    # still inherits a plain app.
+    if _stub_encrypts(board):
+        scs.append("no_slot_secure")
     if BOARDS[board]["flash"] == "blhost_imx" or _stub_encrypts(board):
         scs.append("no_slot")
     # The deep-sleep-safe watchdog runs on every OTA board: the happy path (an armed WDT survives a
@@ -1755,6 +1782,44 @@ def set_version(v):
     floor = d.get("rollback_floor", "1.0.0")
     d["rollback_floor"] = v if _ver(v) < _ver(floor) else floor
     json.dump(d, open(p, "w"), indent=2)
+
+
+def set_secure_boot(board, forced):
+    """Build the board's stub as on a chip with a secure boot key (``[ota].secure_boot =
+    "always"``), or put the project back and build the stub the fuses decide for. Only the
+    stub differs; the firmware build it rides in is incremental."""
+    path = CFG["project"] + "/openmv-ota.toml"
+    text = open(path).read()
+    line = 'secure_boot = "always"\n'
+    text = text.replace(line, "")
+    if forced:
+        if text.count("[ota]\n") != 1:
+            raise RuntimeError("%s: no single [ota] table to set secure_boot in" % path)
+        text = text.replace("[ota]\n", "[ota]\n" + line)
+    open(path, "w").write(text)
+    log("build: firmware, stub %s" % ("forced to its secure boot path" if forced else "as the fuses say"))
+    # The stub's bench UART, as prepare() sets it for every other build of this project: with
+    # no slot that verifies there is no trailer to take a UART from, and the stub is silent.
+    penv = dict(os.environ, PATH=CFG["sdk"] + "/make:" + os.environ["PATH"],
+                STUB_DEBUG_UART=str(BOARDS[board]["cov_uart"]))
+    subprocess.run([ota("openmv-ota"), "build", "firmware", CFG["project"], "-b", board,
+                    "--allow-dev-key"], env=penv, check=True, timeout=900)
+
+
+def flash_golden_in_bootloader(board):
+    """The golden flash for a camera that is stopped in its stub: no USB console to ask for
+    the bootloader, so the bootloader's own DFU window is caught on a reset -- what a camera
+    in the field gets. Falls back to the usual golden flash, with all its recoveries."""
+    global _FLASH_MARK
+    _FLASH_MARK = len(_CAP.raw) if _CAP is not None else 0
+    argv = [ota("openmv-ota"), "flash", "factory", CFG["project"], "-b", board,
+            "--sdk-home", CFG["sdk"], "--dfu-util", CFG["dfu"], "--mpremote", ota("mpremote"),
+            *_register_args(), "--in-bootloader"]
+    log("flash factory -> %s (stopped in its stub -- via the bootloader's DFU window)" % board)
+    rc, out = dfu_reset_catch(board, argv, timeout=NOCDC_FLASH_TIMEOUT)
+    if rc != 0:
+        _log_cli_tail(rc, out)
+        flash_golden(board)
 
 
 def prepare(board, checkout, network, app="confirm"):
@@ -4217,11 +4282,20 @@ def main():
             # Seed the marker file BEFORE the window opens: it takes the REPL, which on this
             # board can drop USB and need an nRST, and that reset's boot would otherwise be read
             # as a forbidden run.checkin. None of it is what this scenario measures.
-            phase("seed_marker", lambda: seed_brick_marker(args.board))
+            if spec.get("secure_boot"):
+                # boot.py never runs here, so it has no marker file to find; what the brick
+                # downloads is the stub built for secure boot.
+                phase("build_secure", lambda: set_secure_boot(args.board, True))
+            else:
+                phase("seed_marker", lambda: seed_brick_marker(args.board))
             cap = UartCapture(CFG["uart"])
             cap.start(time.time())
-            phase("flash_brick", lambda: flash_golden(args.board, bad_romfs=True))
-            result = run_cycle_no_slot(cap, expect, args.timeout)
+            try:
+                phase("flash_brick", lambda: flash_golden(args.board, bad_romfs=True))
+                result = run_cycle_no_slot(cap, expect, args.timeout)
+            finally:
+                if spec.get("secure_boot"):     # the next golden flash carries the usual stub
+                    phase("build_usual", lambda: set_secure_boot(args.board, False))
         else:
             devid = None
             # Start listening BEFORE provisioning. Everything up to here talks to the board over the
@@ -4323,6 +4397,16 @@ def main():
             if not ok:
                 trace["passed"] = False
                 log("FAIL: the firmware is not ciphertext in the flash chip")
+        if spec.get("secure_boot"):
+            # The way back, whatever the score: the camera is stopped in its stub with no USB
+            # console, and a golden flash over USB (the usual stub with it) is the recovery a
+            # camera in the field would get. The window is closed, so its boot is not scored.
+            try:
+                phase("flash_recover", lambda: flash_golden_in_bootloader(args.board))
+                phase("verify_recover", lambda: verify_golden_uart(args.board, want_app=spec["app"]))
+            except Exception as e:
+                trace["passed"] = False
+                log("FAIL: the camera did not come back from a golden flash over USB -- %s" % e)
         if trace["passed"] and spec.get("he_boot"):
             ok, why = phase("he_boot", lambda: coproc_he_boot_check(args.board, _COPROC_NONCE))
             trace["he_boot"] = why

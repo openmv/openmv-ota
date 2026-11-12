@@ -276,6 +276,17 @@ int main(void) {
     // No slot verifies. Boot what is installed if the record vouches for it, or if it
     // at least looks like firmware (a USB-provisioned camera whose slots were wiped).
     (void) port_crypt_slot_select(NULL, 0, 0);     // no slot is mapped under a cipher
+    if (port_secure_boot()) {
+        // Not on a chip with a secure boot key: the record is not signed and the look of
+        // the firmware proves nothing, so neither boots it. A signed image over USB is
+        // the way back.
+        log_line("secure boot: no verified slot, nothing boots");
+        journal_event(EVENT_UNSIGNED_REFUSED);
+        journal_commit(slots, JOURNAL_SLOT_NONE, REASON_NOTHING);
+        while (1) {
+            port_led_blink(LED_STOP_MS);
+        }
+    }
     if (record.valid && record_area_ok(&record)) {
         journal_commit(slots, JOURNAL_SLOT_NONE, REASON_NO_SLOT);
         jump(record.hdr.reason);

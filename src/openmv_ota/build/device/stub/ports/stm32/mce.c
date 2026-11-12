@@ -79,6 +79,21 @@ static mce_area_t areas[2] = {
 static uint8_t device_key[16];
 static bool have_key = false;
 
+// A secure boot key is in the fuses: the hash of the key table the boot ROM checks the
+// bootloader against (fuse words 160-167), or the bits that make the ROM refuse a
+// bootloader that fails the check (fuse word 18, bits 3:0). Either one says the owner
+// has started closing the chip; read from the shadow registers the ROM loaded at reset.
+#ifndef STUB_SECURE_BOOT_FORCE
+bool port_secure_boot(void) {
+    LL_APB4_GRP2_EnableClock(LL_APB4_GRP2_PERIPH_BSEC);
+    uint32_t set = BSEC->FVRw[18] & 0xF;
+    for (uint32_t i = 160; i < 168; i++) {
+        set |= BSEC->FVRw[i];
+    }
+    return set != 0;
+}
+#endif
+
 int mce_init(void) {
     LL_APB4_GRP2_EnableClock(LL_APB4_GRP2_PERIPH_BSEC);
     if (!(BSEC->SR & BSEC_SR_HVALID)) {

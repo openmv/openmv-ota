@@ -35,6 +35,12 @@ ifdef STUB_DEBUG_UART
 CFLAGS += -DSTUB_DEBUG_UART=$(STUB_DEBUG_UART)
 endif
 
+# SECURE_BOOT_FORCE=1: the stub acts as on a chip with a secure boot key, fuses or not
+# (the project's [ota].secure_boot = "always").
+ifeq ($(SECURE_BOOT_FORCE), 1)
+CFLAGS += -DSTUB_SECURE_BOOT_FORCE
+endif
+
 CFLAGS += $(EXTRA_CFLAGS) -Icommon \
           -I$(PORT_DIR) \
           -Iboards/$(BOARD) \
