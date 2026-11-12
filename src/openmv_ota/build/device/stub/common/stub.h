@@ -107,6 +107,9 @@ typedef struct __attribute__((packed)) {
 #define REASON_TRIAL                (1)
 #define REASON_REVERTED             (2)
 #define REASON_REINSTALLED          (3)
+#define REASON_REPAIRED             (4)             // a newer slot verified but would not install
+#define REASON_NO_SLOT              (5)             // no slot verifies: the installed firmware runs
+#define REASON_NOTHING              (6)             // nothing to boot
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;

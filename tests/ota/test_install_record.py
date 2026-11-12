@@ -62,7 +62,6 @@ def _raw(**over):
     (_raw(comp_count=1), "truncated"),
     (_raw()[:-1] + b"\x00", "crc32 mismatch"),
     (_raw(slot=5), "names slot 5"),
-    (_raw(reason=7), "unknown install record reason"),
 ])
 def test_parse_rejects(data, msg):
     with pytest.raises(OtaError, match=msg):
@@ -70,4 +69,9 @@ def test_parse_rejects(data, msg):
 
 
 def test_reason_names():
-    assert R.REASONS == {0: "normal", 1: "trial", 2: "reverted", 3: "reinstalled"}
+    assert R.REASONS == {0: "normal", 1: "trial", 2: "reverted", 3: "reinstalled",
+                         4: "repaired", 5: "no-slot", 6: "nothing"}
+
+
+def test_a_reason_a_newer_stub_wrote_is_read_not_refused():
+    assert R.parse(_raw(reason=99)).reason == 99

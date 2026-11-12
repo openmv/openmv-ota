@@ -11,6 +11,7 @@
  */
 #include "stub.h"
 #include "slot_tweak.h"
+#include "journal.h"
 #include "port.h"
 #include "sha256.h"
 #include "LzmaDec.h"
@@ -57,9 +58,10 @@ void record_read(record_t *r) {
     if (port_flash_read(STUB_RECORD_ADDR, record_block, RECORD_BLOCK) != 0) {
         return;
     }
+    journal_load(record_block);                 // once: before an install can erase it
     const record_header_t *h = (const record_header_t *) record_block;
     if (h->magic != RECORD_MAGIC || h->record_version != RECORD_VERSION ||
-        h->comp_count > TRAILER_MAX_COMPONENTS || h->slot > 1 || h->reason > REASON_REINSTALLED) {
+        h->comp_count > TRAILER_MAX_COMPONENTS || h->slot > 1) {     // any reason: the list grows
         return;
     }
     uint32_t end = sizeof(record_header_t) + h->comp_count * sizeof(record_entry_t);
@@ -357,6 +359,9 @@ static int scrub_area(const slot_t *s) {
         }
     }
     log_kv("stale blocks erased", erased);
+    if (erased) {
+        journal_event(EVENT_AREA_SCRUBBED);
+    }
     return 0;
 }
 #endif
@@ -366,6 +371,7 @@ int install_slot(const slot_t *s, uint32_t reason) {
     for (uint32_t i = 0; i < s->hdr->comp_count; i++) {
         if (!verify_blob(s, &s->comps[i])) {
             log_line("blob hash mismatch");
+            journal_cause(s->index, CAUSE_BLOB);
             return -1;
         }
     }
@@ -389,6 +395,7 @@ int install_slot(const slot_t *s, uint32_t reason) {
     if (port_flash_erase(STUB_RECORD_ADDR & ~(STUB_FLASH_BLOCK - 1)) != 0) {
         goto done;
     }
+    journal_erased();
     for (uint32_t i = 0; i < s->hdr->comp_count; i++) {
         log_kv("installing component", i);
         if (install_component(s, &s->comps[i]) != 0) {
@@ -399,6 +406,7 @@ int install_slot(const slot_t *s, uint32_t reason) {
     #ifdef STUB_CRYPT_START
     if (scrub_area(s) != 0) {
         log_line("area scrub failed");
+        journal_event(EVENT_SCRUB_FAILED);
         goto done;
     }
     #endif
@@ -411,6 +419,7 @@ int install_slot(const slot_t *s, uint32_t reason) {
 done:
     if (port_flash_prog_end() != 0) {
         log_line("memory map restore failed");
+        journal_event(EVENT_MAP_RESTORE_FAILED);
         return -1;
     }
     return ret;
@@ -502,6 +511,7 @@ done:
         return -1;
     }
     log_line("slot converted");
+    journal_event(EVENT_SLOT_CONVERTED);
     return 0;
 }
 #endif

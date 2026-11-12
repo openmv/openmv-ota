@@ -30,6 +30,8 @@ EVENTS = {
     "device.enrolled": "a camera checked in for the first time under the account",
     "device.refused": "a new camera was turned away at the account's device limit",
     "device.fallback": "a camera booted its previous image after a failed update",
+    "device.boot": "a camera's boot stub recorded a boot that was not an ordinary one: an "
+                   "install, a slot refused, a repair from the other slot",
     "device.bind": "a camera was bound to the account by an operator",
     "device.forget": "a camera was removed from the fleet (its data with it)",
     "device.rename": "a camera's display name changed",

@@ -32,6 +32,7 @@ the URL, the subscription or the description, or switches the endpoint off and o
 | `device.enrolled` | a camera checks in for the first time under the account |
 | `device.refused` | a new camera is turned away at the account's device limit (when it registers, or checks in) |
 | `device.fallback` | a camera boots its previous image after a failed update |
+| `device.boot` | a camera's boot stub recorded a boot that was not an ordinary one: an install, a slot refused, a repair from the other slot. The event carries the slot booted, why, and why each slot was or was not used |
 | `install.failed` | a camera reports an install that failed |
 | `device.bind`, `device.forget`, `device.rename`, `device.pin` | operator actions on a camera |
 | `device.registered`, `device.rekeyed` | a camera's keys are registered to the account (it is claimed), or a registered camera's keys are replaced |

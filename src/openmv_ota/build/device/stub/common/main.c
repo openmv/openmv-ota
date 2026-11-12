@@ -11,6 +11,7 @@
  */
 #include "stub.h"
 #include "port.h"
+#include "journal.h"
 
 #define LED_VERIFY_MS   (50)
 #define LED_TRIAL_MS    (250)
@@ -44,9 +45,16 @@ static void jump(uint32_t reason) {
         case REASON_TRIAL: log_line("boot trial"); break;
         case REASON_REVERTED: log_line("boot reverted"); break;
         case REASON_REINSTALLED: log_line("boot reinstalled"); break;
+        case REASON_REPAIRED: log_line("boot repaired"); break;
         default: log_line("boot normal"); break;
     }
     port_jump(STUB_FIRMWARE_ADDR);
+}
+
+// Boot a slot: the journal hears of it first.
+static void boot(const slot_t *s, uint32_t reason) {
+    journal_commit(slots, (uint8_t) s->index, (uint8_t) reason);
+    jump(reason);
 }
 
 static void log_slot(const slot_t *s) {
@@ -148,6 +156,9 @@ int main(void) {
         const slot_t *o = &slots[1 - i];
         other_failed_trial[i] = (!o->ok && o->reject && strcmp(o->reject, "trial-failed") == 0);
     }
+    // A slot that verified and still could not be booted -- its body, its blobs, its install:
+    // the slot booted after it is a repair, not a choice.
+    bool damaged = false;
 
     for (uint32_t i = 0; i < 2; i++) {
         slot_t *s = order[i];
@@ -165,10 +176,12 @@ int main(void) {
                 log_line("slot body does not verify");
                 s->ok = false;
                 s->reject = "body";
+                damaged = true;
                 continue;
             }
             if (o->ok && slot_body_ok(o, false)) {
                 log_line("slot in the clear: erased");
+                journal_event(EVENT_CLEAR_SLOT_ERASED);
                 (void) erase_slot(s);
                 continue;
             }
@@ -177,6 +190,7 @@ int main(void) {
                 log_line("slot convert failed");
                 s->ok = false;
                 s->reject = "convert";
+                damaged = true;
                 continue;
             }
             // The copy, as the next boot would find it.
@@ -187,10 +201,13 @@ int main(void) {
             verify_slot(o, rollback_floor, epoch_floor);
             if (!o->ok || !slot_body_ok(o, false)) {
                 log_line("converted slot does not verify");
+                journal_cause(s->index, CAUSE_CONVERT);
+                damaged = true;
                 continue;
             }
             (void) erase_slot(s);
             log_line("clear slot erased");
+            journal_event(EVENT_CLEAR_SLOT_ERASED);
             s = o;
         }
         {
@@ -199,6 +216,7 @@ int main(void) {
             slot_t *o = &slots[1 - s->index];
             if (o->ok && slot_in_clear(o)) {
                 log_line("other slot in the clear: erased");
+                journal_event(EVENT_CLEAR_SLOT_ERASED);
                 (void) erase_slot(o);
             }
         }
@@ -209,12 +227,16 @@ int main(void) {
             // cannot be bounded, so it is not run.
             if (burn_attempt(s) != 0) {
                 log_line("attempt mark failed");
+                journal_cause(s->index, CAUSE_ATTEMPT_MARK);
+                damaged = true;
                 continue;
             }
             log_kv("attempt burned, used", s->attempts_used);
             reason = REASON_TRIAL;
         } else if (other_failed_trial[s->index]) {
             reason = REASON_REVERTED;
+        } else if (damaged) {
+            reason = REASON_REPAIRED;
         }
 
         bool recorded = record_matches(&record, s);
@@ -223,10 +245,11 @@ int main(void) {
             // Nothing to do: the firmware area holds this slot's components. The record
             // keeps the reason it was INSTALLED for; this boot's reason is only logged.
             log_line("firmware area verified");
-            jump(reason);
+            boot(s, reason);
         }
         if (recorded && record_area_in_clear(&record)) {
             log_line("firmware area in the clear: encrypting it");
+            journal_event(EVENT_AREA_ENCRYPTED);
         } else if (recorded) {
             log_line("firmware area does not match the record");
             reason = REASON_REINSTALLED;    // the record is right but the bytes are not
@@ -239,11 +262,14 @@ int main(void) {
             record_read(&record);
             if (record_matches(&record, s) && record_area_ok(&record)) {
                 log_line("installed area verified");
-                jump(reason);
+                boot(s, reason);
             }
             log_line("installed area does not verify");
+            journal_cause(s->index, CAUSE_INSTALL_VERIFY);
         }
         log_line("install failed");
+        journal_cause(s->index, CAUSE_INSTALL);     // unless the install said why itself
+        damaged = true;
         // Anything the install touched is unrecorded now; try the next slot.
     }
 
@@ -251,13 +277,16 @@ int main(void) {
     // at least looks like firmware (a USB-provisioned camera whose slots were wiped).
     (void) port_crypt_slot_select(NULL, 0, 0);     // no slot is mapped under a cipher
     if (record.valid && record_area_ok(&record)) {
+        journal_commit(slots, JOURNAL_SLOT_NONE, REASON_NO_SLOT);
         jump(record.hdr.reason);
     }
     if (vectors_plausible()) {
         log_line("no slot: booting the installed firmware");
+        journal_commit(slots, JOURNAL_SLOT_NONE, REASON_NO_SLOT);
         port_jump(STUB_FIRMWARE_ADDR);
     }
     log_line("nothing to boot");
+    journal_commit(slots, JOURNAL_SLOT_NONE, REASON_NOTHING);
     while (1) {
         port_led_blink(LED_STOP_MS);
     }

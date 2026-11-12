@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 from openmv_ota import __version__
 from openmv_ota.ota import checkin_sig
+from openmv_ota.ota import boot_journal
 from openmv_ota.ota.install_record import REASONS as STUB_REASONS
 
 from . import capability
@@ -477,13 +478,18 @@ class CheckIn(BaseModel):
     # stub versions forever (a stub never updates itself), and a stub installs only releases
     # whose ``min_stub`` it meets -- so this is what an operator reads to know which cameras a
     # release can reach. None (or absent) = no stub, or a boot the stub did not record.
+    # ``journal``, where the stub keeps one: the newest entries of its boot journal, oldest
+    # first, each ``[seq, slot, reason, cause_a, cause_b, events]`` (``ota.boot_journal``) --
+    # what the stub decided on the boots that were not ordinary ones. The camera sends them
+    # with every check-in; each one new to the server becomes a ``device.boot`` audit event.
     stub: dict | None = None
 
 
 def _stub_fields(stub) -> tuple[int | None, str | None]:
     """The device-row columns from a check-in's ``stub``: ``(version, reason)``, the reason
-    decoded to the install record's word (``normal``, ``trial``, ``reverted``, ``reinstalled``)
-    so a reader never has to know the codes. Anything that is not a well-formed report
+    decoded to the install record's word (``normal``, ``trial``, ``reverted``, ``reinstalled``,
+    ``repaired``; ``unknown-<n>`` for a code a newer stub wrote) so a reader never has to know
+    the codes. Anything that is not a well-formed report
     reads as "did not say" rather than failing the check-in -- the camera is the one party
     this endpoint must never refuse over a cosmetic field."""
     if not isinstance(stub, dict):
@@ -491,8 +497,14 @@ def _stub_fields(stub) -> tuple[int | None, str | None]:
     version, reason = stub.get("version"), stub.get("reason")
     if isinstance(version, bool) or not isinstance(version, int) or version < 0:
         return None, None
-    word = STUB_REASONS.get(reason) if isinstance(reason, int) else None
-    return version, word or "unknown"
+    if isinstance(reason, bool) or not isinstance(reason, int):
+        return version, "unknown"
+    return version, boot_journal.name(STUB_REASONS, reason)
+
+
+def _journal_entries(stub) -> list:
+    """The boot journal entries a check-in's ``stub`` carries (none when it carries none)."""
+    return boot_journal.from_wire(stub.get("journal")) if isinstance(stub, dict) else []
 
 
 class Feedback(BaseModel):
@@ -937,6 +949,16 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
                         data={"product_id": checkin.product_id, "reason": checkin.fallback_reason,
                               "version": checkin.app_version},
                         account_id=account_id, product_id=checkin.product_id)
+    # What the boot stub decided since the server last heard: one audit event per journal
+    # entry it has not seen, so a slot refused or a repair from the other slot reaches the
+    # audit trail (and the account's webhooks) instead of a UART nobody is reading.
+    journal = _journal_entries(checkin.stub)
+    for entry in boot_journal.after(journal, existing.get("journal_seq") if existing else None):
+        ms.append_audit(actor="checkin", action="device.boot", entity_type="device",
+                        entity_id=checkin.device_id,
+                        data={"product_id": checkin.product_id, "version": checkin.app_version,
+                              **boot_journal.describe(entry)},
+                        account_id=account_id, product_id=checkin.product_id)
     ms.upsert_device(
         device_id=checkin.device_id, product_id=checkin.product_id, board=checkin.board, cohort=cohort,
         current_version=checkin.app_version, current_payload_version=checkin.payload_version,
@@ -946,7 +968,7 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         body_sha256=running_body_sha256(checkin.slots),
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
         publish_seq=checkin.publish_seq, orders_by_seq=checkin.orders_by_seq,
-        stub=_stub_fields(checkin.stub),
+        stub=_stub_fields(checkin.stub), journal_seq=journal[-1].seq if journal else None,
         last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
         account_id=account_id)
     if manifest_url:

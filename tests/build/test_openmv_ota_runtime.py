@@ -240,6 +240,35 @@ def test_stub_state_reads_the_record_boot_py_followed():
     assert rt._stub_state(types.SimpleNamespace(last_stub=(3, 2))) == {"version": 3, "reason": 2}
 
 
+def test_stub_state_carries_the_boot_journals_newest_entries(monkeypatch):
+    import types
+
+    from openmv_ota.ota import boot_journal as bj
+    entries = [bj.Entry(slot=i % 2, reason=0, cause_a=0, cause_b=2, seq=i, events=i) for i in range(11)]
+    wire = [[e.seq, e.slot, e.reason, e.cause_a, e.cause_b, e.events] for e in entries]
+    for stride in (16, 32):                                   # the H7's internal flash steps by 32
+        half = bytearray(b"\xff" * 2048)
+        for i, e in enumerate(entries):
+            half[i * stride:i * stride + 16] = bj.pack(e)
+        half[11 * stride:11 * stride + 16] = b"\x01" + bytes(15)      # a torn entry: stepped over
+        assert rt._journal_parse(half) == wire[-rt._JOURNAL_KEEP:]
+        assert bj.from_wire(rt._journal_parse(half)) == bj.parse(half)[-bj.WIRE_MAX:]
+    assert rt._journal_parse(b"\xff" * 2048) == []
+    assert (rt._JOURNAL_OFFSET, rt._JOURNAL_OFFSET + rt._JOURNAL_SIZE, rt._JOURNAL_KEEP) == (
+        bj.OFFSET, bj.BLOCK, bj.WIRE_MAX)
+    # A board without a stub has none, and is asked once.
+    monkeypatch.setattr(rt, "_journal_cache", None)
+    assert rt._journal(types.SimpleNamespace()) == [] and rt._journal_cache == []
+    monkeypatch.setattr(rt, "_journal_cache", None)
+    monkeypatch.setattr(rt, "_journal_flash", lambda addr: bj.pack(entries[0]) + b"\xff" * 32)
+    assert rt._journal(types.SimpleNamespace(STUB_RECORD_ADDR=0x1000)) == wire[:1]
+    # With one, the entries ride in the stub's state -- with or without a record followed.
+    monkeypatch.setattr(rt, "_journal_cache", wire[-2:])
+    assert rt._stub_state(types.SimpleNamespace(last_stub=(3, 2))) == {
+        "version": 3, "reason": 2, "journal": wire[-2:]}
+    assert rt._stub_state(types.SimpleNamespace(last_stub=None)) == {"journal": wire[-2:]}
+
+
 def test_checkin_body_defaults_for_missing_fields():
     body = rt._checkin_body({}, {})
     assert body["device_id"] == "" and body["product_id"] == 0

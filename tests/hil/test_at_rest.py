@@ -314,9 +314,10 @@ def test_blob_corrupt_takes_an_update_then_expects_the_blob_refused_and_the_othe
     # phase 2 is the repair
     expect, forbid = ota_cycle.scenario_markers("OPENMV_N6", "blob_corrupt", then=True)
     assert {"stub.area_bad", "stub.blob_bad", "stub.install_failed", "stub.install",
-            "stub.record_written", "stub.install_verified", "stub.boot_normal", "stub.crypt",
-            "boot.ready", "run.checkin"} <= expect
-    assert "stub.boot_reinstalled" not in expect           # the other slot's is an ordinary install
+            "stub.record_written", "stub.install_verified", "stub.crypt",
+            "stub.boot_repaired", "stub.journal", "boot.ready", "run.checkin"} <= expect
+    assert "stub.boot_normal" not in expect                # every boot off the damaged slot is a repair
+    assert "stub.boot_reinstalled" not in expect           # the other slot's install is a repair
     assert "stub.failed" in forbid and not {"stub.blob_bad", "stub.install_failed"} & forbid
     assert "stub.slot_clear_dropped" in forbid             # nothing in the clear turns up
     # ...and everywhere else those two lines stay forbidden

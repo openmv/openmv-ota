@@ -14,6 +14,7 @@
 #include STM32_HAL_H
 #include "stub.h"
 #include "port.h"
+#include "journal.h"
 #include "port_stm32.h"
 
 #if defined(STM32H7)
@@ -355,6 +356,7 @@ int qspi_flash_init(void) {
         step = chip_reset();
         if (step == 0) {
             log_line("qspi reset retry ok");
+            journal_event(EVENT_FLASH_RESET_RETRY);
         }
     }
     log_kv("qspi jedec", read_id());
