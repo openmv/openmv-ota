@@ -271,12 +271,6 @@ def test_fw_corrupt_expects_the_stubs_repair_and_runs_where_the_harness_can_dama
             "stub.boot_reinstalled", "stub.fast_path", "stub.boot_normal", "boot.ready"} <= expect
     assert "stub.failed" in forbid and "install.start" in forbid
     n6 = ota_cycle.regression_scenarios("OPENMV_N6", ota_cycle.BOARDS["OPENMV_N6"]["network"])
-    # The N6's stub keeps the slots encrypted: a blob damaged by a DFU download of the factory
-    # image is a slot in the clear, erased rather than installed from, so blob_corrupt is off the
-    # list there until it damages a ciphered slot from the device.
-    assert n6[-1:] == ["fw_corrupt"] and "blob_corrupt" not in n6
-    monkeypatch.setattr(ota_cycle, "_stub_encrypts", lambda board: False)
-    n6 = ota_cycle.regression_scenarios("OPENMV_N6", ota_cycle.BOARDS["OPENMV_N6"]["network"])
     assert n6[-2:] == ["fw_corrupt", "blob_corrupt"]
     for board in ota_cycle.BOARDS:
         if board not in ota_cycle.FW_CORRUPT_BOARDS:
@@ -309,50 +303,88 @@ def test_the_damage_is_the_stub_as_it_is_then_garbage_over_the_first_firmware_bl
         ota_cycle.corrupt_firmware_area(BOARD)
 
 
-def test_blob_corrupt_expects_the_blob_refused_and_the_other_slot_installed():
+def test_blob_corrupt_takes_an_update_then_expects_the_blob_refused_and_the_other_slot_installed():
+    spec = ota_cycle.SCENARIOS["blob_corrupt"]
+    assert spec["publish"] == "delta" and spec["end"] == "promoted"      # two slots that verify
+    then = spec["then"]
+    assert then["publish"] == "none" and then["corrupt_firmware"] and then["corrupt_blob"]
+    # phase 1 is an ordinary update: the two lines stay forbidden there
     expect, forbid = ota_cycle.scenario_markers("OPENMV_N6", "blob_corrupt")
+    assert "confirm.promoted" in expect and {"stub.blob_bad", "stub.install_failed"} <= forbid
+    # phase 2 is the repair
+    expect, forbid = ota_cycle.scenario_markers("OPENMV_N6", "blob_corrupt", then=True)
     assert {"stub.area_bad", "stub.blob_bad", "stub.install_failed", "stub.install",
-            "stub.record_written", "stub.install_verified", "stub.boot_normal"} <= expect
+            "stub.record_written", "stub.install_verified", "stub.boot_normal", "stub.crypt",
+            "boot.ready", "run.checkin"} <= expect
     assert "stub.boot_reinstalled" not in expect           # the other slot's is an ordinary install
     assert "stub.failed" in forbid and not {"stub.blob_bad", "stub.install_failed"} & forbid
+    assert "stub.slot_clear_dropped" in forbid             # nothing in the clear turns up
     # ...and everywhere else those two lines stay forbidden
     for name in ("delta", "rollback", "fw_corrupt", "bad_sig"):
         assert {"stub.blob_bad", "stub.install_failed"} <= ota_cycle.scenario_markers("OPENMV_N6", name)[1]
     assert "stub.blob_bad" not in ota_cycle.scenario_markers("OPENMV_N6", "no_slot")[1]
 
 
-def test_the_blob_damage_rewrites_slot_a_up_to_one_flipped_block_of_its_blob(bench, monkeypatch, tmp_path):
+def _two_slots(tmp_path, monkeypatch, blob=(0x130000, 900000)):
+    import gzip
     import openmv_ota.ota.trailer as trailer_mod
     from types import SimpleNamespace
     slot = 4 * 1024 * 1024
-    image = bytes(random.Random(3).choices(range(256), k=2 * slot))
-    (tmp_path / "build" / ("%s-factory-romfs.img" % BOARD)).write_bytes(image)
-    seen = {}
+    rnd = random.Random(3)
+    update = bytes(rnd.choices(range(256), k=slot))
+    factory = bytes(rnd.choices(range(256), k=2 * slot))
+    with gzip.open(tmp_path / "build" / ("%s-ota.img.gz" % BOARD), "wb") as f:
+        f.write(update)
+    (tmp_path / "build" / ("%s-factory-romfs.img" % BOARD)).write_bytes(factory)
+    monkeypatch.setattr(trailer_mod, "parse_trailer", lambda data: SimpleNamespace(
+        components=[SimpleNamespace(offset=blob[0], size=blob[1])]))
+    return slot, update, factory
 
-    def parse(data):
-        seen["trailer"] = data
-        return SimpleNamespace(components=[SimpleNamespace(offset=0x130000, size=900000)])
 
-    monkeypatch.setattr(trailer_mod, "parse_trailer", parse)
-    prefix, off = ota_cycle._damaged_slot_prefix(BOARD)
-    assert seen["trailer"] == image[slot - 4096:slot] and off == 0x130000
-    at = 0x130000 + 4096
-    assert len(prefix) == 0x140000 and len(prefix) % 65536 == 0      # whole blocks, past the flip
-    assert prefix[:at] == image[:at] and prefix[at + 16:] == image[at + 16:len(prefix)]
-    assert bytes(b ^ 0xFF for b in prefix[at:at + 16]) == image[at:at + 16]
+def test_the_blob_damage_erases_one_block_of_the_blob_in_the_slot_that_holds_the_update(
+        bench, monkeypatch, tmp_path):
+    slot, update, factory = _two_slots(tmp_path, monkeypatch)
+    ran = []
 
-    wrote = []
+    def device_exec(code, **k):
+        ran.append(code)
+        if "TRAILER" in code:                   # the update is in slot B; A holds the factory image
+            return 0, "noise\nTRAILER 0 %d %s\nTRAILER 1 %d %s\n" % (
+                slot, factory[slot - 4096:slot].hex(), slot, update[slot - 4096:].hex())
+        return 0, "ERASED 0\n"
 
-    def sh(argv, **k):
-        with open(argv[-1], "rb") as f:
-            wrote.append((argv, len(f.read())))
-        return 0, ""
+    monkeypatch.setattr(ota_cycle, "device_exec", device_exec)
+    index, at = ota_cycle.damage_booted_blob(BOARD)
+    assert index == 1 and at == 0x190000                     # mid-blob, on an erase block
+    assert 0x130000 <= at and at + 65536 <= 0x130000 + 900000
+    assert "rom_ioctl(3, 0, %d, 4096)" % (slot + at) in ran[1]
 
-    monkeypatch.setattr(ota_cycle, "sh", sh)
+
+def test_the_blob_damage_stops_when_it_cannot_be_done_right(bench, monkeypatch, tmp_path):
+    with pytest.raises(RuntimeError, match="no published update"):
+        ota_cycle.damage_booted_blob(BOARD)
+    slot, update, factory = _two_slots(tmp_path, monkeypatch)
+    trailers = "TRAILER 0 %d %s\n" % (slot, update[slot - 4096:].hex())
+    monkeypatch.setattr(ota_cycle, "device_exec", lambda code, **k: (0, "TRAILER 0 %d %s\n" % (
+        slot, factory[slot - 4096:slot].hex())))
+    with pytest.raises(RuntimeError, match="neither slot holds the published update"):
+        ota_cycle.damage_booted_blob(BOARD)
+    monkeypatch.setattr(ota_cycle, "device_exec", lambda code, **k: (
+        (0, trailers) if "TRAILER" in code else (1, "OSError")))
+    with pytest.raises(RuntimeError, match="could not erase a block"):
+        ota_cycle.damage_booted_blob(BOARD)
+    _two_slots(tmp_path, monkeypatch, blob=(0x130000, 60000))
+    with pytest.raises(RuntimeError, match="too small to damage safely"):
+        ota_cycle.damage_booted_blob(BOARD)
+
+
+def test_blob_corrupt_damages_the_blob_before_the_firmware_area(bench, monkeypatch):
+    order = []
+    monkeypatch.setattr(ota_cycle, "damage_booted_blob", lambda board: order.append("blob"))
+    monkeypatch.setattr(ota_cycle, "sh", lambda argv, **k: (order.append(argv), (0, ""))[1])
     ota_cycle.corrupt_firmware_area(BOARD, blob=True)
-    (a_argv, a_len), (b_argv, b_len) = wrote
-    assert a_argv[a_argv.index("-a") + 1] == "3" and "--reset" not in a_argv and a_len == 0x140000
-    assert b_argv[b_argv.index("-a") + 1] == "1" and "--reset" in b_argv and b_len == START + 65536
+    assert order[0] == "blob" and len(order) == 2            # then one download, to the firmware
+    assert order[1][order[1].index("-a") + 1] == "1" and "--reset" in order[1]
 
 
 def test_no_slot_on_a_board_that_encrypts_expects_the_stubs_last_resort(monkeypatch):
