@@ -8,6 +8,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The boot stub keeps a journal, and the server hears it.** What the stub decides at boot
+  -- a slot refused and why, the firmware area repaired from the other slot, a flash chip
+  that needed a second reset -- used to reach its UART and nothing else. The stub now
+  appends a 16-byte entry to the second half of its install record's block on every boot
+  that was not an ordinary one. The firmware sends the newest entries with its check-in
+  (`stub.journal`) and the server writes one `device.boot` audit event for each entry it has
+  not seen, which webhooks can subscribe to. A slot installed because a newer one verified
+  but would not install is now recorded and logged as `repaired`. Format:
+  `docs/design/firmware-updates.md`, "Boot journal".
 - **The boot stub carries a signature.** `build firmware` and `build stub` now write
   `<board>-stub.bin` as the stub's whole sector: the code, 0xFF padding and a 512-byte footer
   (`openmv_ota.ota.stub_footer`) that names the code's SHA-256, the stub version and the

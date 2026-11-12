@@ -477,9 +477,63 @@ def _stub_state(cfg):
     without a stub or when no record was followed. The fleet carries mixed stub versions
     forever, so the server needs this to know which releases (``min_stub``) a camera can take."""
     last = getattr(cfg, "last_stub", None)
-    if not last:
-        return None
-    return {"version": int(last[0]), "reason": int(last[1])}
+    state = {"version": int(last[0]), "reason": int(last[1])} if last else None
+    journal = _journal(cfg)
+    if journal:
+        # What the stub decided on the boots that were not ordinary ones: the newest
+        # entries, each [seq, slot, reason, cause_a, cause_b, events]. The server keeps the
+        # last seq it saw, so sending them again costs it nothing.
+        state = state or {}
+        state["journal"] = journal
+    return state
+
+
+_JOURNAL_OFFSET = 2048         # of the journal in the install record's block
+_JOURNAL_SIZE = 2048
+_JOURNAL_KEEP = 8              # entries a check-in carries
+_journal_cache = None
+
+
+def _journal_parse(data):
+    """The newest ``_JOURNAL_KEEP`` entries of the stub's boot journal (mirror of
+    ``openmv_ota.ota.boot_journal.parse``), oldest first. Steps by 16 bytes and ends at the
+    second erased step in a row, which reads a journal written a 16-byte or a 32-byte word
+    at a time. RAM: one 16-byte window at a time, at most ``_JOURNAL_KEEP`` short lists
+    kept. Pure."""
+    import binascii
+    out = []
+    blanks = 0
+    for at in range(0, len(data) - 15, 16):
+        raw = bytes(data[at:at + 16])
+        if raw == b"\xff" * 16:
+            blanks += 1
+            if blanks == 2:
+                break
+            continue
+        blanks = 0
+        tag, slot, reason, cause_a, cause_b, _r, seq, events, crc = struct.unpack("<BBBBBBHII", raw)
+        if tag != 1 or (binascii.crc32(raw[:12]) & 0xFFFFFFFF) != crc:
+            continue
+        out.append([seq, slot, reason, cause_a, cause_b, events])
+        if len(out) > _JOURNAL_KEEP:
+            out.pop(0)
+    return out
+
+
+def _journal(cfg):
+    """The boot journal's newest entries, read once: only the stub writes it, before the
+    firmware starts. Empty on a board without a stub."""
+    global _journal_cache
+    if _journal_cache is None:
+        addr = getattr(cfg, "STUB_RECORD_ADDR", None)
+        _journal_cache = _journal_parse(_journal_flash(addr)) if addr else []
+    return _journal_cache
+
+
+def _journal_flash(addr):  # pragma: no cover  (device: XIP flash)  # hil-residual-fn: boards with a boot stub only; the parse it feeds is host-tested
+    """The journal half of the record's block, aliased, not copied."""
+    import uctypes
+    return uctypes.bytearray_at(addr + _JOURNAL_OFFSET, _JOURNAL_SIZE)
 
 
 def _slot_names(cfg):

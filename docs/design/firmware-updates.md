@@ -231,7 +231,7 @@ Last 4 KiB of the firmware area, written after all components are installed.
 | 8 | `stub_version:u32` | the stub that wrote this record; the firmware reports it in the check-in, and the tool compares `min_stub` against the fleet's oldest |
 | 12 | `slot:u32` | which slot's components are installed (0 = A, 1 = B) |
 | 16 | `comp_count:u32` | number of hashes that follow |
-| 20 | `reason:u32` | why the stub installed: 0 normal, 1 trial, 2 reverted (the other slot failed its trial), 3 reinstalled (the firmware area was corrupt). Written once per install -- a later boot that takes the fast path leaves it; per-boot facts come from the status sectors |
+| 20 | `reason:u32` | why the stub installed: 0 normal, 1 trial, 2 reverted (the other slot failed its trial), 3 reinstalled (the firmware area was corrupt), 4 repaired (a newer slot verified but its body, a blob or its install did not, so this slot was installed in its place). The list only grows; a reader names a number it does not know `unknown-<n>` and still follows the record. Written once per install -- a later boot that takes the fast path leaves it; per-boot facts come from the status sectors and the boot journal |
 | 24 | `reserved:u64` | 0 |
 | 32 | `entries[comp_count]`, 40 bytes each: `dest:u32`, `installed_size:u32`, `installed_sha256:32s` | the installed components, in trailer order: where, how much, and what the installed bytes hash to |
 | 32 + 40·n | `crc32:u32` | over everything before it |
@@ -261,6 +261,66 @@ Last 4 KiB of the firmware area, written after all components are installed.
   (`"firmware": {"version", "commit"}`) for the host and the server. The stub's
   own version comes from the record's `stub_version`: Python reads the record and
   never the stub binary.
+
+
+## Boot journal
+
+The install record says what is installed. The boot journal says what the stub decided on
+the boots since: a slot refused, the firmware area repaired from the other slot, a flash
+chip that needed a second reset. Without it those lines reach the stub's UART and nothing
+else.
+
+The journal is the second half of the install record's 4 KiB block, offset 2048 to the
+end. The stub appends one 16-byte entry at the jump, and only when the boot was worth one:
+
+- it installed, or
+- an event happened (the table below), or
+- the slot booted, the reason, or either slot's cause differs from the last entry.
+
+A boot that finds what the last entry describes and does nothing writes nothing.
+
+| Offset | Field | Meaning |
+|---|---|---|
+| 0 | `tag:u8` | `0x01`, this layout. An entry with any other tag is skipped |
+| 1 | `slot:u8` | the slot booted (0 = A, 1 = B), `0xFF` when the stub booted none |
+| 2 | `reason:u8` | why it booted: the install record's list, plus 5 (no slot verifies: the installed firmware runs) and 6 (nothing to boot) |
+| 3 | `cause_a:u8` | why slot A was not the one booted; 0 when it verified |
+| 4 | `cause_b:u8` | the same for slot B |
+| 5 | `reserved:u8` | 0 |
+| 6 | `seq:u16` | counts entries over the camera's life, wrapping |
+| 8 | `events:u32` | one bit per thing that happened and is not one slot's fate |
+| 12 | `crc32:u32` | over bytes 0–11. An entry that fails it is a torn write, and is skipped |
+
+Causes: 0 ok, 1 read, 2 magic (an empty slot), 3 crc, 4 framing, 5 version, 6 size,
+7 board, 8 components, 9 comp-bounds, 10 comp-window, 11 comp-overlap, 12 cert,
+13 cert-alg, 14 cert-sig, 15 root, 16 sig, 17 epoch, 18 min-stub, 19 rollback, 20 status,
+21 trial-failed, 22 body, 23 convert, 24 erased, 25 attempt-mark, 26 blob, 27 install,
+28 install-verify.
+
+Event bits: 0 area-encrypted, 1 slot-converted, 2 clear-slot-erased, 3 area-scrubbed,
+4 flash-reset-retry, 5 stray-fault (reserved: no stub sets it), 6 scrub-failed,
+7 map-restore-failed, 8 journal-restarted, 9 journal-full.
+
+- **The numbers are permanent.** A reason, a cause or an event bit is given once and never
+  moved or reused; a new one takes the next free number. Nothing is keyed on the stub's
+  version. A reader that meets a number it does not know names it `unknown-<n>`.
+  `tests/build/test_boot_journal_c.py` holds the stub's C and the Python list together.
+- **Step.** An entry takes a whole write unit: 16 bytes, or 32 on the H7's internal flash
+  (a flash word is written once), where 16 bytes after each entry stay erased. That is 128
+  entries, or 64. The journal ends at the first erased entry; a reader that does not know
+  the step walks by 16 and stops at the second erased step in a row.
+- **Installs erase it.** The block is erased by each install, with the record. The stub
+  reads the journal before that and, at the jump, writes its last 8 entries back ahead of
+  the install's own. A power cut between the erase and that write loses them: the next
+  entry starts again at `seq` 0 with `journal-restarted` set.
+- **Full.** The last entry that fits carries `journal-full`; later boots are not recorded
+  until the next install makes room.
+- **A journal that cannot be written never stops a boot.**
+- **To the server.** The firmware reads the newest 8 entries once per boot and sends them
+  in every check-in as `stub.journal`, each `[seq, slot, reason, cause_a, cause_b, events]`.
+  The server keeps the last `seq` it has seen for the camera and writes one `device.boot`
+  audit event for each entry after it, or for all of them when that `seq` is no longer
+  among them. Audit events reach the account's webhooks.
 
 ## Stub image footer
 

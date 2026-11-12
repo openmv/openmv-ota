@@ -313,10 +313,45 @@ def test_stub_is_recorded_decoded_and_cleared_when_the_camera_stops_reporting_on
     dev = store.get_device("dev1")
     assert (dev["stub_version"], dev["stub_reason"]) == (2, "trial")
     camera.check(c, _checkin(stub={"version": 2, "reason": 9}))         # a code this server lacks
-    assert store.get_device("dev1")["stub_reason"] == "unknown"
+    assert store.get_device("dev1")["stub_reason"] == "unknown-9"
+    camera.check(c, _checkin(stub={"version": 2, "reason": 4}))
+    assert store.get_device("dev1")["stub_reason"] == "repaired"
     camera.check(c, _checkin())
     dev = store.get_device("dev1")
     assert (dev["stub_version"], dev["stub_reason"]) == (None, None)
+
+
+def test_the_boot_journal_becomes_audit_events_once_each(tmp_path):
+    """The stub's journal rides in ``stub.journal``; each entry the server has not seen is a
+    ``device.boot`` audit event, in words. The camera sends its newest entries every time."""
+    app, store, storage, v = _app(tmp_path)
+    c = TestClient(app)
+
+    def boots():
+        return [e["data"] for e in store.read_audit(limit=100) if e["action"] == "device.boot"]
+
+    first = [[0, 0, 1, 0, 2, 1 << 8], [1, 0, 0, 0, 2, 0]]
+    camera.check(c, _checkin(stub={"version": 1, "reason": 1, "journal": first}))
+    assert [(b["seq"], b["slot"], b["reason"], b["slot_a"], b["slot_b"], b["events"]) for b in boots()] == [
+        (0, "A", "trial", "ok", "magic", ["journal-restarted"]), (1, "A", "normal", "ok", "magic", [])]
+    assert store.get_device("dev1")["journal_seq"] == 1
+    camera.check(c, _checkin(stub={"version": 1, "reason": 1, "journal": first}))     # again: nothing new
+    camera.check(c, _checkin())                                                       # no journal: nothing lost
+    assert len(boots()) == 2 and store.get_device("dev1")["journal_seq"] == 1
+    # A repair from the other slot, and a boot a newer stub describes in numbers we lack.
+    camera.check(c, _checkin(stub={"journal": first + [[2, 1, 4, 26, 0, 1 << 4], [3, 0xFF, 77, 99, 0, 1 << 30]]}))
+    assert [(b["seq"], b["slot"], b["reason"], b["slot_a"], b["events"]) for b in boots()[2:]] == [
+        (2, "B", "repaired", "blob", ["flash-reset-retry"]), (3, None, "unknown-77", "unknown-99", ["unknown-30"])]
+    # The one the server saw is gone from what the camera sends (a journal that restarted,
+    # or more boots than a check-in carries): everything sent is new.
+    camera.check(c, _checkin(stub={"journal": [[0, 1, 0, 0, 0, 1 << 8]]}))
+    assert len(boots()) == 5 and store.get_device("dev1")["journal_seq"] == 0
+    # Whatever is not an entry is left out, and the check-in still answers.
+    for bad in ("x", [1], [[1, 2, 3]], [[True, 0, 0, 0, 0, 0]], [[9, 0, 0, 0, 0, -1]], [[70000, 0, 0, 0, 0, 0]],
+                [[9, 300, 0, 0, 0, 0]], [["9", 0, 0, 0, 0, 0]]):
+        camera.check(c, _checkin(stub={"version": 1, "reason": 0, "journal": bad}))
+    assert len(boots()) == 5
+    assert store.get_device("dev1")["stub_reason"] == "normal"
 
 
 def test_a_malformed_stub_report_never_refuses_the_checkin(tmp_path):
@@ -327,6 +362,8 @@ def test_a_malformed_stub_report_never_refuses_the_checkin(tmp_path):
         camera.check(c, _checkin(stub=bad))
         dev = store.get_device("dev1")
         assert (dev["stub_version"], dev["stub_reason"]) == (None, None), bad
+    camera.check(c, _checkin(stub={"version": 3, "reason": True}))
+    assert store.get_device("dev1")["stub_reason"] == "unknown"
     camera.check(c, _checkin(stub={"version": 3}))                     # a version with no reason
     assert (store.get_device("dev1")["stub_version"],
             store.get_device("dev1")["stub_reason"]) == (3, "unknown")

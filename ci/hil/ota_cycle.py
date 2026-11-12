@@ -539,6 +539,9 @@ COVERAGE = {
     "stub: boot reverted": "stub.boot_reverted",              # jumping: the other slot failed its trial
     "stub: firmware area does not match the record": "stub.area_bad",   # the record is right, the bytes are not
     "stub: boot reinstalled": "stub.boot_reinstalled",        # jumping: the firmware area was installed again
+    "stub: boot repaired": "stub.boot_repaired",              # jumping: a newer slot verified but would not install
+    "stub: journal entry": "stub.journal",                    # a boot worth an entry in the boot journal
+    "stub: journal write failed": "stub.failed",
     # Every way the stub gives up on a slot or a boot. Forbidden in every stub-board scenario
     # but no_slot, where giving up on both slots is the point.
     "stub: component install failed": "stub.failed",
@@ -934,6 +937,7 @@ STUB_FAULT_ONLY = {
     "stub: component install failed": "an erase, a program or its read-back failed",
     "stub: area scrub failed": "a read or an erase of the encrypted area failed",
     "stub: record write failed": "the install record could not be programmed",
+    "stub: journal write failed": "the boot journal's entry could not be programmed",
     "stub: memory map restore failed": "the flash would not go back to memory-mapped mode",
     "stub: attempt mark failed": "the trial's attempt mark could not be programmed",
     "stub: installed area does not verify": "flash that read back right while programming "
@@ -998,21 +1002,27 @@ def _stub_marks(key, spec):
     reboots into the pending slot: the stub pays the attempt, installs that slot's components
     (a different slot is never recorded) and jumps with reason trial. rollback exhausts the
     attempts, so the stub rejects the slot (trial-failed) and boots the other one reverted,
-    installing it again on the way. no_slot bricks both slots: both rejected, nothing more."""
+    installing it again on the way. Every install is an entry in the boot journal. no_slot bricks both slots: both rejected, nothing more."""
     if key == "no_slot":
         return {"stub.version", "stub.slot_rejected"}        # (+ stub.no_slot_boot, see scenario_markers)
     marks = {"stub.version", "stub.slot_ok", "stub.fast_path", "stub.boot_normal"}
     if "install.armed" in spec["expect"]:
         marks |= {"stub.slot_trial", "stub.attempt", "stub.install", "stub.record_written",
-                  "stub.install_verified", "stub.boot_trial"}
+                  "stub.install_verified", "stub.boot_trial", "stub.journal"}
     if key == "rollback":
         marks |= {"stub.slot_rejected", "stub.boot_reverted"}
     if spec.get("corrupt_firmware"):
-        marks |= {"stub.area_bad", "stub.install", "stub.record_written", "stub.install_verified"}
+        marks |= {"stub.area_bad", "stub.install", "stub.record_written", "stub.install_verified",
+                  "stub.journal"}
         # Repaired from the same slot it reads "reinstalled"; from the other slot, after this
-        # one's blob was refused, it is that slot's ordinary install.
-        marks |= ({"stub.blob_bad", "stub.install_failed"} if spec.get("corrupt_blob")
-                  else {"stub.boot_reinstalled"})
+        # one's blob was refused, it reads "repaired".
+        marks |= ({"stub.blob_bad", "stub.install_failed", "stub.boot_repaired"}
+                  if spec.get("corrupt_blob") else {"stub.boot_reinstalled"})
+        if spec.get("corrupt_blob"):
+            # The damaged slot is still the newer one that verifies, so every boot until it is
+            # written again tries it first, refuses its blob and reads "repaired": the window's
+            # own boot is never a "normal" one.
+            marks.discard("stub.boot_normal")
     return marks
 
 
@@ -1108,7 +1118,8 @@ def scenario_markers(board, key, then=False):
         expect |= _stub_marks(key, s)
         if key != "no_slot":
             forbid.add("stub.failed")
-            forbid |= {"stub.blob_bad", "stub.install_failed", "stub.no_slot_boot"} - expect
+            forbid |= {"stub.blob_bad", "stub.install_failed", "stub.no_slot_boot",
+                       "stub.boot_repaired"} - expect
             if _stub_encrypts(board):
                 expect.add("stub.crypt")
                 if "install.armed" in expect:

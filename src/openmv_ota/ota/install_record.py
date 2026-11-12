@@ -26,7 +26,12 @@ no slot verifies at all (a camera whose slots were wiped).
 never rewritten -- its block is erased only by the next install): 0 a confirmed slot's
 components were put in place, 1 a trial (the stub burned the slot's attempt), 2 a revert
 (the other slot failed its trial), 3 a reinstall (the firmware area did not hold what the
-record said). Per-boot facts -- is this boot a trial, did the other slot just fail -- come
+record said), 4 a repair (a newer slot verified but its body, a blob or its install did
+not, so this one was installed in its place). The list only grows, and a stub newer than
+this reader may write a number it does not know: ``parse`` accepts any, and a reader names
+it ``unknown-<n>``. 5 (no slot verifies: the installed firmware runs) and 6 (nothing to
+boot) are boots that install nothing; they are never in a record, only in the boot journal
+(``boot_journal``), which shares this list. Per-boot facts -- is this boot a trial, did the other slot just fail -- come
 from the slots' status sectors, which ``boot.py`` reads itself. ``slot``: 0 = A, 1 = B.
 """
 
@@ -53,8 +58,12 @@ REASON_NORMAL = 0
 REASON_TRIAL = 1
 REASON_REVERTED = 2
 REASON_REINSTALLED = 3
+REASON_REPAIRED = 4
+REASON_NO_SLOT = 5             # the journal's only: a boot with no slot installs nothing
+REASON_NOTHING = 6             # the journal's only
 REASONS = {REASON_NORMAL: "normal", REASON_TRIAL: "trial", REASON_REVERTED: "reverted",
-           REASON_REINSTALLED: "reinstalled"}
+           REASON_REINSTALLED: "reinstalled", REASON_REPAIRED: "repaired",
+           REASON_NO_SLOT: "no-slot", REASON_NOTHING: "nothing"}
 SLOTS = ("A", "B")
 
 
@@ -90,7 +99,7 @@ def pack(r: InstallRecord) -> bytes:
 
 def parse(data) -> InstallRecord:
     """Decode a record block. Raises ``OtaError`` for anything that is not a complete, CRC-valid
-    record of a known version -- which is what an erased sector, a torn write, or a record a
+    record of a known version (whatever its reason: the list grows) -- which is what an erased sector, a torn write, or a record a
     newer stub wrote all look like to a reader that should then ignore it."""
     if len(data) < FIXED_SIZE:
         raise OtaError("install record too small")
@@ -110,8 +119,6 @@ def parse(data) -> InstallRecord:
         raise OtaError("install record crc32 mismatch")
     if slot not in (0, 1):
         raise OtaError("install record names slot %d" % slot)
-    if reason not in REASONS:
-        raise OtaError("unknown install record reason %d" % reason)
     components = []
     for i in range(comp_count):
         dest, size, h = struct.unpack_from(ENTRY_STRUCT, data, FIXED_SIZE + i * ENTRY_SIZE)

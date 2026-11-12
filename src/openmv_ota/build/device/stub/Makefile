@@ -47,6 +47,7 @@ SRC_C := common/main.c \
          common/verify.c \
          common/slot_tweak.c \
          common/install.c \
+         common/journal.c \
          common/log.c \
          lib/lzma/LzmaDec.c \
          lib/p256-m/p256-m.c \

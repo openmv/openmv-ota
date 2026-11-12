@@ -543,6 +543,11 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE desk_keys ADD COLUMN cert TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE desk_keys ADD COLUMN issuer_cert TEXT NOT NULL DEFAULT ''",
     ],
+    [   # v39 -- the boot stub's journal. A camera sends the newest entries with every check-in;
+        # this is the sequence number of the last one the server has written to the audit
+        # trail, which is all the deduplication there is. NULL = none seen.
+        "ALTER TABLE devices ADD COLUMN journal_seq INTEGER",
+    ],
 ]
 
 # The most unclaimed boards remembered per account (see migration v35).
@@ -1017,7 +1022,8 @@ class SqlMetadataStore:
                       representation=None, fallback_reason=None, confirmed=None,
                       last_offered_release_id=None, registrar_ref=None, account_id="",
                       streams=None, fallback_payload_version=None, body_sha256=None,
-                      publish_seq=0, orders_by_seq=False, stub=(None, None)) -> None:
+                      publish_seq=0, orders_by_seq=False, stub=(None, None),
+                      journal_seq=None) -> None:
         # One statement, not select-then-insert: the store's lock covers a statement, not a
         # handler, so two first check-ins of the same new device (a retry racing the request it
         # retried) both saw no row and the second INSERT died on the primary key -- a 500 to the
@@ -1027,6 +1033,7 @@ class SqlMetadataStore:
         # us, rather than having its fallback silently blanked. The stub columns are NOT
         # coalesced: a camera reflashed with stock firmware stops reporting a stub, and the
         # row must say so, or an operator plans a stub-gated release around a stub that is gone.
+        # journal_seq IS coalesced: a check-in with no journal has seen nothing new.
         now = _now_iso()
         stub_version, stub_reason = stub
         self.execute(
@@ -1034,8 +1041,8 @@ class SqlMetadataStore:
             "current_payload_version, slot, representation, fallback_reason, confirmed, "
             "last_offered_release_id, registrar_ref, account_id, streams, "
             "fallback_payload_version, body_sha256, publish_seq, orders_by_seq, "
-            "stub_version, stub_reason, first_seen, last_seen) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "stub_version, stub_reason, journal_seq, first_seen, last_seen) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (device_id) DO UPDATE SET "
             "product_id = excluded.product_id, board = excluded.board, "
             "current_version = excluded.current_version, "
@@ -1052,12 +1059,13 @@ class SqlMetadataStore:
             "body_sha256 = COALESCE(excluded.body_sha256, devices.body_sha256), "
             "publish_seq = excluded.publish_seq, orders_by_seq = excluded.orders_by_seq, "
             "stub_version = excluded.stub_version, stub_reason = excluded.stub_reason, "
+            "journal_seq = COALESCE(excluded.journal_seq, devices.journal_seq), "
             "last_seen = excluded.last_seen",
             (device_id, product_id, board, cohort, current_version, current_payload_version,
              slot, representation, fallback_reason, confirmed, last_offered_release_id,
              registrar_ref, account_id, ",".join(streams or ()), fallback_payload_version,
              body_sha256, int(publish_seq or 0), 1 if orders_by_seq else 0,
-             stub_version, stub_reason, now, now,
+             stub_version, stub_reason, journal_seq, now, now,
              ",".join(streams) if streams else None))
 
     def count_on_payload(self, account_id: str, product_id: int, payload_version: int) -> int:
