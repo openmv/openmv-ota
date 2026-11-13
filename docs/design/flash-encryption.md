@@ -288,7 +288,10 @@ it first and logs the same two lines before it boots the other slot. `no_slot`
 erases both slots' first and trailer blocks from the camera and downloads the firmware over
 USB, in the clear: both slots are rejected, no record vouches for a plaintext area, and the
 stub boots what looks like firmware with the engine off (`no slot: booting the installed
-firmware`).
+firmware`). `no_slot_secure` is the same brick with the stub built as on a chip that holds a
+secure boot key (`[ota].secure_boot = "always"`): the stub logs `secure boot: no verified
+slot, nothing boots` and stops, and the golden flash over USB that ends the scenario brings
+the camera back.
 
 ## The ROMFS slots, ciphertext at rest (2026-11-07)
 

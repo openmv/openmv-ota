@@ -61,6 +61,7 @@ SRC_C += $(addprefix $(HAL_DIR)/src/, \
 ifeq ($(HAL_SERIES),n6)
 CFLAGS += -DHAL_IWDG_MODULE_ENABLED      # the N6 HAL config leaves the IWDG module out
 CFLAGS += -DHAL_CRYP_MODULE_ENABLED      # ...and CRYP: SAES derives the flash key (mce.c)
+CFLAGS += -DSTUB_SECURE_BOOT_FUSES       # the secure boot fuses are readable (mce.c)
 CFLAGS += -Ilib/aes
 SRC_C += $(PORT_DIR)/xspi.c \
          $(PORT_DIR)/mce.c \

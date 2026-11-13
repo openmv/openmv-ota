@@ -8,6 +8,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **On a chip with a secure boot key, the boot stub boots only signed firmware.** With no
+  slot that verifies, the stub used to fall back to whatever its install record named, or
+  to anything at the firmware address that looked like a vector table -- firmware a USB
+  download could have put there. It still does on an open chip. Where the port reports a
+  secure boot key (the N6: fuse words 160-167 or the `secure_boot` bits of word 18) it
+  stops instead, with event `unsigned-refused` in the boot journal; a signed factory image
+  over USB is the way back. `[ota].secure_boot = "always"` builds that stub for any board,
+  and the fleet's new `no_slot_secure` leg runs it on the N6.
+
 - **The formats that leave the building are pinned.** `tests/ota/format_pins.json` holds a
   sample of each format that crosses between the build, the server and a camera -- the image
   trailer and its certificate, the update manifest, an encrypted artifact, a lockbox, a

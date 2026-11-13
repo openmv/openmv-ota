@@ -244,3 +244,15 @@ def test_max_attempts_defaults_and_validates():
     for bad in ("0", "-1", "65", '"three"'):
         with pytest.raises(ProjectError, match="max_attempts"):
             cfg.parse_config('[product]\n' + base + "max_attempts = %s\n" % bad, "p")
+
+
+def test_secure_boot_is_left_to_the_fuses_unless_forced():
+    """The boot stub's secure path is the chip's fuses' to switch on; "always" forces it for a
+    bench that cannot burn them. Anything else is a typo, refused at build time."""
+    base = 'name = "p"\n[targets]\nboards = ["OPENMV_N6"]\n[ota]\nenabled = true\n'
+    assert cfg.parse_config('[product]\n' + base, "p").secure_boot == "fuses"
+    forced = cfg.parse_config('[product]\n' + base + 'secure_boot = "always"\n', "p")
+    assert forced.secure_boot == "always"
+    for bad in ('"never"', "true", "1"):
+        with pytest.raises(ProjectError, match="secure_boot"):
+            cfg.parse_config('[product]\n' + base + "secure_boot = %s\n" % bad, "p")

@@ -59,6 +59,22 @@ static inline int port_crypt_slot_select(const uint8_t *tweak, uint32_t start, u
 }
 #endif
 
+// Does the chip hold a secure boot key (STUB_SECURE_BOOT_FUSES: a port that can tell)?
+// Then every stage is signed, and the stub boots nothing that did not come from a slot it
+// verified. STUB_SECURE_BOOT_FORCE answers yes on any board: the same path, for a bench
+// that cannot burn fuses.
+#if defined(STUB_SECURE_BOOT_FORCE)
+static inline bool port_secure_boot(void) {
+    return true;
+}
+#elif defined(STUB_SECURE_BOOT_FUSES)
+bool port_secure_boot(void);
+#else
+static inline bool port_secure_boot(void) {
+    return false;
+}
+#endif
+
 int port_uart_init(uint32_t id, uint32_t baud);                     // -1: unknown id
 void port_uart_putc(char c);
 int port_wdt_start(uint32_t id, uint32_t timeout_ms);               // -1: unknown id

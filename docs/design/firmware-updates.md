@@ -244,6 +244,17 @@ Last 4 KiB of the firmware area, written after all components are installed.
   boots what the record vouches for, or, with no record either, whatever sits at the
   firmware address if it looks like a vector table — what the plain bootloader does
   today. Recovery is over USB either way.
+- **On a chip with a secure boot key, neither of those boots.** The record carries a CRC,
+  not a signature, and the look of a vector table proves nothing, so firmware that no
+  verified slot vouches for is firmware anyone with a USB cable could have written. The
+  stub logs `secure boot: no verified slot, nothing boots`, journals the event
+  (`unsigned-refused`) and stops with its LED blinking. The way back is a signed factory
+  image over USB: its slots verify, and the stub installs from them. "A secure boot key"
+  is the port's to read (`port_secure_boot`): on the N6, the key-table hash in fuse words
+  160-167 or the `secure_boot` bits in fuse word 18. Ports that cannot tell answer no.
+  `[ota].secure_boot = "always"` builds a stub that answers yes on any board, for a bench
+  that cannot burn fuses; the fleet's `no_slot_secure` leg runs the N6 that way and ends
+  with that golden flash.
 - `boot.py` reads `slot` to know which slot to mount, and `reason` for why the
   install happened, instead of a RAM handoff. The record is derived from
   verified bytes and needs no signature. A record is followed whenever the slot
@@ -299,7 +310,8 @@ Causes: 0 ok, 1 read, 2 magic (an empty slot), 3 crc, 4 framing, 5 version, 6 si
 
 Event bits: 0 area-encrypted, 1 slot-converted, 2 clear-slot-erased, 3 area-scrubbed,
 4 flash-reset-retry, 5 stray-fault (reserved: no stub sets it), 6 scrub-failed,
-7 map-restore-failed, 8 journal-restarted, 9 journal-full.
+7 map-restore-failed, 8 journal-restarted, 9 journal-full, 10 unsigned-refused (secure boot:
+no verified slot, so the installed firmware was not booted).
 
 - **The numbers are permanent.** A reason, a cause or an event bit is given once and never
   moved or reused; a new one takes the next free number. Nothing is keyed on the stub's

@@ -94,6 +94,7 @@ EVENTS = {
     7: "map-restore-failed",   # the flash's memory map could not be put back
     8: "journal-restarted",    # the sequence number was lost; this entry is new whatever it says
     9: "journal-full",         # the last entry that fitted: later boots were not recorded
+    10: "unsigned-refused",    # secure boot: no verified slot, so the installed firmware was not booted
 }
 
 

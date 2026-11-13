@@ -49,6 +49,11 @@ class OtaConfig:
     # failure (a sensor that fails to initialise on a long cable is already documented in this
     # project) at the cost of one reboot per extra attempt on an image that is genuinely bad.
     max_attempts: int = 3
+    # What makes the boot stub act as on a chip with a secure boot key (it then boots nothing
+    # that did not come from a slot it verified). "fuses": the chip's own fuses decide, on a
+    # board whose stub can read them. "always": every board does, fuses or not -- for a bench
+    # that cannot burn them.
+    secure_boot: str = "fuses"
     # PLATFORM MODE. A fleet whose cameras are built with product_id 0 can move them
     # between product lines, so their images cannot be ordered by a per-product version
     # -- they are ordered by the account's publish counter, which every build has to take
@@ -105,6 +110,14 @@ def _max_attempts(ota: dict) -> int:
     return value
 
 
+def _secure_boot(ota: dict) -> str:
+    """``[ota].secure_boot``, validated: ``fuses`` (the default) or ``always``."""
+    value = ota.get("secure_boot", "fuses")
+    if value not in ("fuses", "always"):
+        raise ProjectError('[ota].secure_boot must be "fuses" or "always", got %r' % (value,))
+    return value
+
+
 def parse_config(text: str, default_name: str) -> OtaConfig:
     """Parse config TOML text. Used by ``load_config`` and at ``new`` time, so the
     object the digest/resolve see is exactly what was rendered to disk."""
@@ -131,6 +144,7 @@ def parse_config(text: str, default_name: str) -> OtaConfig:
         ca=str(ota.get("ca") or ""),
         single_image=bool(ota.get("single_image", False)),
         max_attempts=_max_attempts(ota),
+        secure_boot=_secure_boot(ota),
         platform=bool(ota.get("platform", False)),
         per_camera_encryption=bool(ota.get("per_camera_encryption", False)),
         keykeeper_pin=str(ota.get("keykeeper_pin") or ""),
@@ -246,6 +260,10 @@ def render_config(
             "#                           at the cost of one reboot per extra attempt on an image\n"
             "#                           that is genuinely bad. Retries only help a failure that\n"
             "#                           RESETS -- a hang just hangs this many times.\n"
+            "\n"
+            "# secure_boot = \"always\"  # the boot stub boots only firmware a signed slot vouches\n"
+            "#                           for, as it does by itself on a chip with a secure boot\n"
+            "#                           key. For testing that path on a chip without one.\n"
             "\n"
             "# platform = true         # you build for cameras whose product_id is 0, so they can\n"
             "#                           be moved between product lines. Their images are ordered\n"

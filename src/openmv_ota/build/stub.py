@@ -197,6 +197,8 @@ def _build_one(p, name: str, roots, out_dir: Path, jobs, signer) -> StubResult:
         ]
         # The firmware's own Makefile puts the SDK toolchain on its PATH; the stub's does
         # not, so name it -- the project's SDK is the toolchain the firmware was built with.
+        if p.config.secure_boot == "always":
+            args.append("SECURE_BOOT_FORCE=1")
         cross = _cross_compile(p.sdk_home)
         if cross is not None:
             args.append("CROSS_COMPILE=%s" % cross)
