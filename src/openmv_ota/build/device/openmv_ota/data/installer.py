@@ -735,6 +735,11 @@ def _select_rep(body, delta_capable, base_payload_version, base_body_sha):
                 continue
         elif fmt != "full":
             continue
+        # An artifact under a cipher this installer does not have is one it cannot use: skip
+        # it, as an unknown format is skipped, so a release can carry a copy under a newer
+        # cipher beside the one every camera in the field can open.
+        if rep.get("enc") and rep["enc"].get("alg") != "aes-256-cbc":
+            continue
         if best is None or rep.get("size", 1 << 62) < best.get("size", 1 << 62):
             best = rep
     return best
@@ -1781,7 +1786,8 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
     alt = None
     if fmt == _DELTA_FORMAT:
         for r in body_dict.get("representations", []):
-            if r.get("format") == "full":
+            if r.get("format") == "full" and (
+                    not r.get("enc") or r["enc"].get("alg") == "aes-256-cbc"):   # one it can open
                 alt = (_resolve_url(manifest_url, r["url"]), r.get("wbits") or 0, r.get("enc"))
                 break
     # wbits: the deflate window the artifact was compressed with (small-heap boards

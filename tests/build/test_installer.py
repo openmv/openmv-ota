@@ -1203,6 +1203,25 @@ def test_select_rep_mirrors_host(capable, golden, sha):
             == select_representation(body, capable, golden, sha))
 
 
+def test_select_rep_skips_an_artifact_under_a_cipher_it_does_not_have():
+    """A later release may carry a copy under a newer cipher beside the one every camera can
+    open. A camera that only has today's must pass over the newer one, however small it is,
+    and both pickers must agree."""
+    from openmv_ota.ota import payload
+    from openmv_ota.ota.manifest import PAYLOAD_ALG, select_representation
+    assert PAYLOAD_ALG == payload.ALG
+    ours = {"format": "full", "url": "https://x/f.gz", "size": 900,
+            "enc": {"alg": "aes-256-cbc", "iv": "00" * 16, "size": 10, "wraps": {}}}
+    newer = {"format": "full", "url": "https://x/n.gz", "size": 5,
+             "enc": {"alg": "something-newer", "iv": "00" * 16, "size": 10}}
+    clear = {"format": "full", "url": "https://x/c.gz", "size": 950}
+    for reps, want in (([newer, ours], ours), ([newer, clear], clear), ([newer], None),
+                       ([clear, ours], ours)):
+        body = {"representations": reps}
+        assert inst("_select_rep")(body, False, 0, "") == want
+        assert select_representation(body, False, 0, "") == want
+
+
 def test_select_rep_none_when_nothing_usable():
     body = {"representations": [
         {"format": "ocdl", "url": "https://x/d.gz", "size": 40, "base_payload_version": 1,
@@ -1332,6 +1351,13 @@ def test_vet_manifest_hands_back_the_full_fallback_when_a_delta_is_chosen():
     assert (url, fmt) == ("/sd/fw/d.gz", inst("_DELTA_FORMAT"))
     # resolved like the chosen rep, and carrying how to decrypt it -- a demote that lost
     # the enc block would download the full image and inflate ciphertext
+    assert alt == ("/sd/fw/img.gz", 13, None)
+    # ...and the fallback is a full image this camera can open: one under a cipher it does
+    # not have is passed over for the next
+    body["representations"].insert(0, {"format": "full", "url": "newer.gz", "size": 2000,
+                                       "enc": {"alg": "something-newer"}})
+    alt = inst("_vet_manifest")("/sd/fw/m.bin", _host_manifest(body=body), _vet_cfg(),
+                                lambda *a: True, 0, base_pv, True, base_sha)[4]
     assert alt == ("/sd/fw/img.gz", 13, None)
 
 
