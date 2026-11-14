@@ -68,6 +68,7 @@ MAGIC = b"OMVM"            # OTA update manifest (cf. OMVR image / OMVF firmware
 HEADER_VERSION = 2         # v2: the signing key's certificate follows the header (v1 named a key id)
 SCHEMA = 1
 DELTA_FORMAT = "ocdl"      # representation["format"] for an openmv_ota.ota.delta patch
+PAYLOAD_ALG = "aes-256-cbc"  # representation["enc"]["alg"] a camera can open (== payload.ALG)
 
 # magic, header_version, body_size, sig_size, cert_size, sig_alg (the lone signed "i").
 HEADER_STRUCT = "<4sIIIIi"
@@ -256,6 +257,8 @@ def select_representation(body, delta_capable, golden_payload_version, base_body
                 continue
         elif fmt != "full":
             continue                                    # unknown transport -- skip
+        if rep.get("enc") and rep["enc"].get("alg") != PAYLOAD_ALG:
+            continue                                    # unknown cipher -- skip
         if best is None or rep.get("size", 1 << 62) < best.get("size", 1 << 62):
             best = rep
     return best

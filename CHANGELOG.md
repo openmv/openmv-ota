@@ -340,6 +340,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A camera passes over an update artifact under a cipher it does not have.** The installer
+  chose the smallest copy of an update it could use by format alone, so a release that one
+  day carried a copy under a newer cipher would have been picked by every camera in the
+  field and failed. Copies whose `enc.alg` the installer does not know are skipped, as an
+  unknown format always was -- in the choice, and in the full image a failed delta falls
+  back to.
+
 - **A boot journal entry with more numbers than the server knows is kept.** The server took
   an entry from a check-in only if it was exactly six numbers long, so a stub that later
   added a seventh would have had every entry dropped without a word. The first six are the
