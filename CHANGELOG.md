@@ -8,6 +8,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The RT1062's firmware and app are ciphertext at rest.** The i.MX RT1062 joins the N6: its
+  boot stub keeps the firmware area and the booted slot encrypted, deciphered by the chip's bus
+  encryption engine as they are read; the stub and the installer encrypt what they write, and
+  the first boot after a factory flash ciphers the factory slot (about two minutes, once).
+  **On a chip that is not closed the key is one anyone can compute**: NXP's parts release their
+  fused master key only once closed, so until then the flash is the real data path without the
+  secrecy. Closing the chip makes the key the camera's own, and the camera is flashed once more.
+  See `docs/design/flash-encryption.md`, "The RT1062, as built".
+
 - **On a chip with a secure boot key, the boot stub boots only signed firmware.** With no
   slot that verifies, the stub used to fall back to whatever its install record named, or
   to anything at the firmware address that looked like a vector table -- firmware a USB
@@ -339,6 +348,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checks in under.
 
 ### Fixed
+
+- **A slot conversion copies the whole of a slot's control data.** The boot stub copied the
+  last erase block of a clear slot as its status sector and trailer. That is both on a 64 KiB
+  block; on 4 KiB blocks it was the trailer alone, and the converted slot was refused for its
+  blank status sector. The control data is the last 8 KiB, whatever the block size.
 
 - **A camera passes over an update artifact under a cipher it does not have.** The installer
   chose the smallest copy of an update it could use by format alone, so a release that one

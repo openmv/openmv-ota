@@ -594,6 +594,9 @@ class IdentityStep:
 
 
 _IDENTITY_WAIT_S = 60     # the camera back on USB, running the firmware just flashed
+_CRYPT_BOOT_WAIT_S = 300  # ...where the stub keeps flash encrypted: that first boot ciphers the factory
+#                           slot into the other one, erases the clear one and installs the firmware
+#                           before USB comes up (about 150 s on the RT1062, 30 s on the N6)
 _IDENTITY_POLL_S = 0.1    # fast: the camera listens for the request only briefly at boot
 _CONSOLE_OPEN_S = 5       # a port just back on USB, until udev lets this user open it
 _IDENTITY_ANSWER_S = 15   # from the port appearing to the camera's answer
@@ -726,7 +729,8 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
             steps.append(IdentityStep("register", ["register its keys, signed by the desk key"]))
         return steps
     raw = flash_config(board).raw
-    deadline = time.monotonic() + _IDENTITY_WAIT_S
+    stub = get_board(board).stub
+    deadline = time.monotonic() + (_CRYPT_BOOT_WAIT_S if stub and stub.encrypted else _IDENTITY_WAIT_S)
     while (cam := device.select(raw, serial)) is None:
         if time.monotonic() > deadline:
             raise FlashError("the camera did not come back on USB after flashing; its keys were "
