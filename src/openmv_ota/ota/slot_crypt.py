@@ -77,3 +77,26 @@ def keystream_xor(key: bytes, tweak: bytes, addr: int, data: bytes) -> bytes:
         pos += n
         addr += n
     return bytes(out)
+
+
+def bee_keystream_xor(key: bytes, tweak: bytes, addr: int, data: bytes) -> bytes:
+    """The same for the i.MX RT1062's bus encryption engine (the stub's ``bee_stream.c``):
+    AES-128 over ``tweak || 00 00 || BE32(addr >> 4)``, the block's bytes in address order.
+    For tests, with a key they choose."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    if len(key) != 16 or len(tweak) != TWEAK_SIZE:
+        raise ValueError("key must be 16 bytes and the tweak 10")
+    out = bytearray(data)
+    pos = 0
+    while pos < len(out):
+        ctr = tweak + b"\x00\x00" + struct.pack(">I", addr >> 4)
+        ks = Cipher(algorithms.AES(key), modes.CTR(ctr)).encryptor().update(bytes(16))
+        off = addr & 15
+        n = min(16 - off, len(out) - pos)
+        for i in range(n):
+            out[pos + i] ^= ks[off + i]
+        pos += n
+        addr += n
+    return bytes(out)
+

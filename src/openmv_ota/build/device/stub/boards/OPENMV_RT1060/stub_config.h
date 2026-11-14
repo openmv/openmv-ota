@@ -34,6 +34,10 @@
 #define STUB_INSTALL_START          0x60050000      // dest window
 #define STUB_INSTALL_END            0x603FF000
 #define STUB_RECORD_ADDR            0x603FF000      // the install record's sector
+#define STUB_CRYPT_START            STUB_INSTALL_START  // ciphertext at rest: the install window,
+#define STUB_CRYPT_END              STUB_INSTALL_END    //   and not the record after it (bee.c)
+#define STUB_SLOT_CRYPT             1               // and the booted slot's body (verify.c, install.c)
+#define STUB_CRYPT_GRAIN            0x1000          // a ciphered range ends on a 4 KiB boundary
 #define STUB_FIRMWARE_ADDR          (STUB_INSTALL_START + 0x2000)   // the firmware's FLASH_ISR
 #define STUB_ROMFS_ORIGIN           0x60800000
 #define STUB_ROMFS_LENGTH           0x00800000

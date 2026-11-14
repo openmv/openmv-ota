@@ -89,8 +89,8 @@ region must therefore already be ciphertext under the engine's key and counter s
   HUK-derived key (`KEYSEL` = DHUK, normal mode, output readable) and loads the result into
   the MCE's write-only key registers. The same key comes out on every boot, the host never
   knows it, nothing is burned and nothing is provisioned. `key_store.c` already uses this
-  exact path to seal the device identity keys. (RT1062 and Alif: the survey rows stand;
-  nothing is settled for them.)
+  exact path to seal the device identity keys. (The RT1062's key is in "The RT1062, as
+  built"; nothing is settled for Alif.)
 - **Fuses are deferred, deliberately.** Encryption at rest is on by default from the first
   N6 build of this phase, so every bench and HIL board runs the real data path from day one.
   What it does *not* buy yet is protection against a probe: until the device is closed and
@@ -372,12 +372,80 @@ range's end rounded *down* to an erase block, inside the last block the copy had
 stub's own blob hash caught it on the next boot (`blob hash mismatch`), before anything was
 installed from the copy.
 
+## The RT1062, as built (2026-11-14)
+
+The i.MX RT1062 gets the N6's design: the firmware area and the booted slot are ciphertext at
+rest and deciphered by the chip as it reads them; the stub and the installer encrypt what they
+write. What differs is the engine, and where the key comes from.
+
+**Not secret until the chip is closed.** The key is derived in the chip from the master key NXP
+fuses into every part, and the chip releases that master key only once it is closed (HAB). On
+an open part, which is every camera until it is closed, the derivation runs on sixteen zero
+bytes instead: the key is the same on every board, and anyone can compute it. So an open
+RT1062's flash is ciphertext that a flash dump and this repository decrypt. Everything else is
+the real path: closing the chip changes nothing about how a camera behaves, and makes the key
+its own. It also changes the key, so what was installed no longer reads; a closed camera is
+flashed again over USB, once.
+
+- **The engine (BEE).** It deciphers reads of the FlexSPI memory map, in the address ranges
+  `IOMUXC_GPR` names, and does nothing for a write. Two regions, each with its own key and
+  nonce: region 1 is a window (`REGION1_BOT`..`REGION1_TOP`), region 0 everywhere else. The
+  firmware area (0x60050000..0x603FF000) reads through region 0, the booted slot's body through
+  region 1, under one key and two tweaks. Outside those two ranges flash reads as it is stored:
+  the stub, the install record, `/flash`, the other slot, and every slot's status sector and
+  trailer.
+- **The cipher, measured.** AES-128 in counter mode. The counter is the three high nonce words,
+  big-endian, then the flash address shifted right by four:
+  `BE32(W3) || BE32(W2) || BE32(W1) || BE32(addr >> 4)`. The key the engine uses is the bytes
+  written to its key registers, reversed. The low nonce word is left at zero: its bits do not
+  add to the counter, they rearrange the address field, and nothing documents how. The 80-bit
+  tweak is the first ten counter bytes. Six reads of erased flash through the engine, under
+  three nonces, match this model (`tests/build/test_bee_stream_c.py` holds the stub's C to
+  them).
+- **Three things the bench showed.** A range's top register takes the range's END address
+  (end minus 8 leaves the last 16 bytes as stored). The data cache keeps what it read before a
+  range changed, so the stub drops it on every change. And the DCP's status reads zero for a
+  moment after its clock is switched on, so the stub waits for the fuse key to show.
+- **The key.** One AES-128-ECB block of the label `omv-flash-key-v1` in the DCP under its
+  unique key (key select 0xFE). Derived on every boot, stored nowhere, never handed to Python.
+  On the fleet's open board the result is `AES(00..00, label)`: the OTP key, the unique key and
+  a zero key encrypt alike, and a non-zero key does not.
+- **Writes.** The stub's `bee_stream.c` is the counter mode in software; `port_flash_write`
+  encrypts a copy of whatever lands in a ciphered range before it programs the page. The
+  installer does the same through the `flash_crypt` module, built from that source.
+- **The installer's address.** The keystream runs on flash addresses. The RT1062's app
+  partition reaches the firmware as a block device, which has none to give, so the firmware
+  build bakes the partition's address into `_ota_config.SLOT_CRYPT_BASE` (0x60800000).
+- **The lock.** At the jump the stub sets the lock bits of the two ranges' registers: they
+  cannot be moved until a reset. The key registers were never readable.
+- **Control data.** A slot's status sector and trailer are its last 8 KiB: one erase block on
+  the N6 (64 KiB), two on the RT1062 (4 KiB). The conversion copies both, the trailer's block
+  last, so a copy does not verify until it is whole.
+
+Measured on the fleet's OPENMV_RT1060 (bench, 2026-11-14; timestamps from the debug UART):
+
+| Step | Time |
+|---|---|
+| Factory slot copied into the other slot through the cipher | 28.5 s |
+| The clear slot erased | 26 s |
+| Firmware installed, encrypted (first boot) | 62 s |
+| `delta` (an update written through `flash_crypt`, trial boot, promoted) | PASS, 492 s |
+| `rollback` | PASS, 538 s |
+
+The first boot after a factory flash is about two minutes before USB comes up, so `flash
+factory` waits five for a board whose stub encrypts.
+
+Read back from the running camera after a conversion: the slot the engine does not cover holds
+exactly the bytes the model predicts for the factory image under that slot's tweak, and the
+slot the build wrote holds the image in the clear until it is erased.
+
+The fleet's read-back from outside the chip (`check_at_rest`) is a DFU upload, which this board
+does not have: on the RT1062 the stored firmware area has not been read back from outside.
+
 ## Open questions to verify against documentation
 
-- i.MX RT1062: BEE region alignment, CTR nonce scheme (the BEE "PRDB" protection region
-  descriptor block the ROM parses when booting an encrypted image), which key source
-  (SW_GP2 vs OTPMK) leaves a software-readable key for encrypt-on-install, and how our SBL
-  at 0x60000000 interacts with "encrypted XIP" boot.
+- i.MX RT1062: what closing the chip (HAB) does to the stub's use of the DCP unique key and
+  the BEE, on a board that can be closed.
 - Alif E3: does the OSPI controller decrypt XIP in hardware, and is that usable for the
   ROMFS mounted by MicroPython's `VfsRom` over the memory map?
 - STM32H743/H747: RDP2 interaction with the Arduino bootloader (not ours) and with DFU

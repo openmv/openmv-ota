@@ -426,11 +426,28 @@ done:
 }
 
 #ifdef STUB_SLOT_CRYPT
-// Erase a slot that verified, control block first so it stops verifying at once, then
+// A slot's control data -- the status sector, then the trailer -- is its last 8 KiB: one
+// erase block where blocks are that big or bigger, two where they are 4 KiB.
+#define SLOT_CONTROL_SIZE           ((STUB_FLASH_BLOCK > 2 * TRAILER_BLOCK) ? STUB_FLASH_BLOCK : 2 * TRAILER_BLOCK)
+_Static_assert((SLOT_CONTROL_SIZE % STUB_FLASH_BLOCK) == 0, "a slot's control data is whole erase blocks");
+
+// Erase a slot's control blocks, the one that holds the trailer first: the slot stops
+// verifying at once.
+static int erase_slot_control(const slot_t *s) {
+    uint32_t end = s->start + s->size;
+    for (uint32_t off = STUB_FLASH_BLOCK; off <= SLOT_CONTROL_SIZE; off += STUB_FLASH_BLOCK) {
+        if (port_flash_erase(end - off) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+// Erase a slot that verified, control blocks first so it stops verifying at once, then
 // every block of its body that is not blank. Programming mode must be on.
 static int erase_slot_blocks(const slot_t *s) {
-    uint32_t last = s->start + s->size - STUB_FLASH_BLOCK;
-    if (port_flash_erase(last) != 0) {
+    uint32_t last = s->start + s->size - SLOT_CONTROL_SIZE;
+    if (erase_slot_control(s) != 0) {
         return -1;
     }
     for (uint32_t addr = s->start; addr < s->start + s->crypt_size && addr < last; addr += STUB_FLASH_BLOCK) {
@@ -458,11 +475,12 @@ int erase_slot(slot_t *s) {
 }
 
 // A slot stored in the clear becomes the other slot, ciphered: the body block by block
-// through the other slot's stream, then the control block (status sector and trailer,
-// verbatim, in the clear), then the copy is verified through the engine, and only then is
-// the clear slot erased. The other slot's control block goes first, so the copy does not
-// verify until it is complete; a power cut anywhere leaves a clear slot that verifies and
-// a copy that does not, and the next boot does this again, skipping the blocks that match.
+// through the other slot's stream, then the control blocks (status sector and trailer,
+// verbatim, in the clear, the trailer's block last), then the copy is verified through the
+// engine, and only then is the clear slot erased. The other slot's control blocks go first,
+// so the copy does not verify until it is complete; a power cut anywhere leaves a clear
+// slot that verifies and a copy that does not, and the next boot does this again, skipping
+// the blocks that match.
 int convert_slot(slot_t *src, slot_t *dst) {
     uint8_t tweak[10];
     slot_tweak_derive(dst->index, src->trailer_sha256, tweak);
@@ -473,8 +491,8 @@ int convert_slot(slot_t *src, slot_t *dst) {
         return -1;
     }
     int ret = -1;
-    uint32_t last = dst->start + dst->size - STUB_FLASH_BLOCK;
-    if (port_flash_erase(last) != 0) {
+    uint32_t last = dst->start + dst->size - SLOT_CONTROL_SIZE;
+    if (erase_slot_control(dst) != 0) {
         goto done;
     }
     for (uint32_t off = 0; off < src->crypt_size; off += STUB_FLASH_BLOCK) {
@@ -482,8 +500,8 @@ int convert_slot(slot_t *src, slot_t *dst) {
         if (n > STUB_FLASH_BLOCK) {
             n = STUB_FLASH_BLOCK;
         }
-        if (dst->start + off == last) {
-            break;                              // the control block carries the tail
+        if (dst->start + off >= last) {
+            break;                              // the control blocks carry the tail
         }
         if (port_flash_read(src->start + off, out_block, n) != 0 || flush_block(dst->start + off, out_block, n) != 0) {
             goto done;
@@ -501,9 +519,11 @@ int convert_slot(slot_t *src, slot_t *dst) {
             }
         }
     }
-    if (port_flash_read(src->start + src->size - STUB_FLASH_BLOCK, out_block, STUB_FLASH_BLOCK) != 0 ||
-        flush_block(last, out_block, STUB_FLASH_BLOCK) != 0) {
-        goto done;
+    for (uint32_t off = 0; off < SLOT_CONTROL_SIZE; off += STUB_FLASH_BLOCK) {
+        if (port_flash_read(src->start + src->size - SLOT_CONTROL_SIZE + off, out_block, STUB_FLASH_BLOCK) != 0 ||
+            flush_block(last + off, out_block, STUB_FLASH_BLOCK) != 0) {
+            goto done;
+        }
     }
     ret = 0;
 done:

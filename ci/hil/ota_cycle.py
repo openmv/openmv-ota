@@ -1041,6 +1041,12 @@ def _stub_marks(key, spec):
     return marks
 
 
+def _usb_firmware(board):
+    """True when the harness can put firmware on this board over USB in the clear, behind
+    the stub's back: the DFU boards. (The RT1062's firmware only ever arrives in a slot.)"""
+    return BOARDS[board]["flash"] == "dfu_cli"
+
+
 def _enable_stub_uart(project, board):
     """Point the project's openmv_log at the marker UART on a boot-stub board.
 
@@ -1142,7 +1148,10 @@ def scenario_markers(board, key, then=False):
         elif s.get("secure_boot"):
             expect.add("stub.unsigned_refused")
             forbid.add("stub.no_slot_boot")
-        elif _stub_encrypts(board):
+        elif _stub_encrypts(board) and _usb_firmware(board):
+            # ...where the brick downloads the firmware over USB, in the clear. A board bricked
+            # by erasing its slots alone keeps the area the stub installed, and its record
+            # still vouches for it.
             expect.add("stub.no_slot_boot")
         if not s.get("secure_boot"):
             forbid.add("stub.unsigned_refused")
@@ -1233,7 +1242,7 @@ def regression_scenarios(board, network):
     # no_slot leaves running (in its recovery loop) does not give up. It ends with its own
     # golden flash -- the proof that a camera stopped there comes back over USB -- so no_slot
     # still inherits a plain app.
-    if _stub_encrypts(board):
+    if _stub_encrypts(board) and _usb_firmware(board):
         scs.append("no_slot_secure")
     if BOARDS[board]["flash"] == "blhost_imx" or _stub_encrypts(board):
         scs.append("no_slot")
@@ -4391,7 +4400,8 @@ def main():
         # update -- by now the stub has stored the factory flash's plaintext download and then
         # installed the update -- read the firmware back through the bootloader and require
         # ciphertext (check_at_rest). The scored window is over, so taking the REPL costs nothing.
-        if trace["passed"] and args.scenario == "delta" and _stub_encrypts(args.board):
+        if (trace["passed"] and args.scenario == "delta" and _stub_encrypts(args.board)
+                and _usb_firmware(args.board)):        # the read-back is a DFU upload
             ok, report = phase("at_rest", lambda: check_at_rest(args.board))
             trace["at_rest"] = report
             if not ok:

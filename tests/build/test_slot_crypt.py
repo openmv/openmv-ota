@@ -61,8 +61,29 @@ def test_the_manifest_names_the_ciphers_inputs(make_project):
 
 def test_slot_crypt_is_stamped_for_an_encrypting_board_only():
     assert fw._slot_crypt("OPENMV_N6") is True
+    assert fw._slot_crypt("OPENMV_RT1060") is True
     assert fw._slot_crypt("OPENMV4") is False                      # a stub, in the clear
     assert fw._slot_crypt("ARDUINO_NANO_RP2040_CONNECT") is False  # no stub at all
+
+
+def test_the_partitions_flash_address_is_stamped_where_the_installer_cannot_ask_for_it():
+    """The keystream runs on flash addresses. A memory-mapped partition has one the installer
+    can take; the RT1062's is a block device, so the build bakes in where it sits."""
+    assert fw._slot_crypt_base("OPENMV_RT1060") == 0x60800000
+    assert fw._slot_crypt_base("OPENMV_N6") is None                # mapped: the installer asks the map
+    assert fw._slot_crypt_base("OPENMV4") is None                  # not encrypted
+
+
+def test_the_crypt_module_carries_the_boards_own_engine_stream(tmp_path):
+    repo = tmp_path / "fw"
+    repo.mkdir()
+    text = fw._install_crypt_module(repo, "OPENMV_RT1060").read_text()
+    assert "void bee_stream_xor(" in text and "void mce_stream_xor(" not in text
+    assert '#include "bee_stream.h"' not in text and "MP_REGISTER_MODULE(MP_QSTR_flash_crypt" in text
+    assert text.index("bee_stream_xor(const bee_stream_t") < text.index("omv_flash_crypt_xor(")
+    assert fw._stub_port("OPENMV_N6") == "stm32" and fw._stub_port("OPENMV_RT1060") == "mimxrt"
+    with pytest.raises(fw.BuildError, match="no slot cipher"):
+        fw._stub_port("OPENMV_AE3")                                # a stub port with no engine stream
 
 
 def test_install_crypt_module_is_for_encrypting_boards(tmp_path):

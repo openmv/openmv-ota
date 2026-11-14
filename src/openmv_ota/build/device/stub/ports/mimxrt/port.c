@@ -14,6 +14,7 @@
 #include "port.h"
 #include "port_mimxrt.h"
 #include "fsl_romapi.h"
+#include "bee.h"
 #include "system_MIMXRT1062.h"
 
 static volatile uint32_t ticks_ms;
@@ -184,9 +185,52 @@ int port_flash_read(uint32_t addr, uint8_t *buf, uint32_t size) {
     if (!in_flash(addr, size)) {
         return -1;
     }
-    memcpy(buf, (const void *) addr, size);
+    memcpy(buf, (const void *) addr, size);     // through the cipher engine, where a range is on
     return 0;
 }
+
+#ifdef STUB_CRYPT_START
+static uint8_t crypt_chunk[STUB_FLASH_PAGE] __attribute__((aligned(4)));
+
+int port_crypt_init(void) {
+    return bee_init();
+}
+
+// A range just changed under the data cache: what it holds was read the other way.
+static void crypt_changed(void) {
+    SCB_CleanInvalidateDCache();
+    SCB_InvalidateICache();
+}
+
+int port_crypt_select(const uint8_t *tweak) {
+    int ret = bee_select(tweak);
+    crypt_changed();
+    return ret;
+}
+
+int port_crypt_slot_select(const uint8_t *tweak, uint32_t start, uint32_t end) {
+    int ret = bee_slot_select(tweak, start, end);
+    crypt_changed();
+    return ret;
+}
+
+void port_crypt_lock(void) {
+    bee_lock();
+}
+
+// The bytes as the part holds them: the engine's ranges off for the length of the copy.
+int port_flash_read_stored(uint32_t addr, uint8_t *buf, uint32_t size) {
+    if (!in_flash(addr, size)) {
+        return -1;
+    }
+    uint32_t state = bee_pause();
+    crypt_changed();
+    memcpy(buf, (const void *) addr, size);
+    bee_resume(state);
+    crypt_changed();
+    return 0;
+}
+#endif
 
 int port_flash_prog_begin(void) {
     // The fast path never gets here: the ROM driver is brought up on the first install or
@@ -228,6 +272,15 @@ int port_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size) {
         uint32_t off = addr % STUB_FLASH_PAGE;
         uint32_t n = (size < STUB_FLASH_PAGE - off) ? size : STUB_FLASH_PAGE - off;
         memset(page_buf, 0xFF, sizeof(page_buf));
+        #ifdef STUB_CRYPT_START
+        if (bee_covers(addr, n)) {
+            // What is stored there is ciphertext: the engine deciphers reads only, so the
+            // bytes are encrypted here, a copy of them, before they reach the page image.
+            memcpy(crypt_chunk, buf, n);
+            bee_xor(addr, crypt_chunk, n);
+            memcpy((uint8_t *) page_buf + off, crypt_chunk, n);
+        } else
+        #endif
         memcpy((uint8_t *) page_buf + off, buf, n);
         uint32_t primask = __get_PRIMASK();
         __disable_irq();
@@ -331,6 +384,9 @@ __attribute__((naked, noreturn)) static void jump_to(uint32_t vectors) {
 
 void port_jump(uint32_t addr) {
     port_flash_prog_end();
+    #ifdef STUB_CRYPT_START
+    port_crypt_lock();                          // the ciphered ranges are the stub's to set
+    #endif
     NVIC_DisableIRQ(SysTick_IRQn);
     NVIC_ClearPendingIRQ(SysTick_IRQn);
     SysTick->CTRL &= ~SysTick_CTRL_ENABLE_Msk;
