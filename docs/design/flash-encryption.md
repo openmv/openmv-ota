@@ -418,6 +418,8 @@ flashed again over USB, once.
   unique key (key select 0xFE). Derived on every boot, stored nowhere, never handed to Python.
   On the fleet's open board the result is `AES(00..00, label)`: the OTP key, the unique key and
   a zero key encrypt alike, and a non-zero key does not.
+  NXP's AN12901 ("DCP - How to do Key Management") says as much: "If the device is in the
+  Non-secure state, SNVS Master key reset to all 0."
 - **Writes.** The stub's `bee_stream.c` is the counter mode in software; `port_flash_write`
   encrypts a copy of whatever lands in a ciphered range before it programs the page. The
   installer does the same through the `flash_crypt` module, built from that source.
