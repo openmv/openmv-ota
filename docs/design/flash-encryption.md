@@ -402,6 +402,14 @@ flashed again over USB, once.
   tweak is the first ten counter bytes. Six reads of erased flash through the engine, under
   three nonces, match this model (`tests/build/test_bee_stream_c.py` holds the stub's C to
   them).
+- **Who may read.** Each region has a security level, and it is an access filter, not a cipher
+  setting. At level 3, the vendor driver's default, only the core's own reads are deciphered:
+  another bus master reading a ciphered range gets a bus error (the DCP reading the firmware
+  area failed with a source error; the engine's status showed a read violation). At levels 2,
+  1 and 0 the same read returned plaintext. The firmware hands flash to bus masters as a
+  matter of course -- the Wi-Fi chip's firmware is a constant in the image, sent to the radio
+  by the SDIO controller's DMA straight from flash -- and the first build, at level 3, could
+  not start its radio. The stub sets level 0: the engine deciphers for every master.
 - **Three things the bench showed.** A range's top register takes the range's END address
   (end minus 8 leaves the last 16 bytes as stored). The data cache keeps what it read before a
   range changed, so the stub drops it on every change. And the DCP's status reads zero for a

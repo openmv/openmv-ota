@@ -38,9 +38,15 @@ static const uint8_t key_label[16] = { 'o', 'm', 'v', '-', 'f', 'l', 'a', 's', '
 #define DCP_UNIQUE_KEY              (0xFEU)
 #define DCP_TIMEOUT_MS              (100)
 #define BEE_KEY_TIMEOUT_MS          (100)
-// Security level 3 and counter mode for both regions; the endian swap stays on (bit 7 clear).
-#define BEE_CTRL_MODES              (BEE_CTRL_SECURITY_LEVEL_R0(3) | BEE_CTRL_CTRL_AES_MODE_R0(1) | \
-                                     BEE_CTRL_SECURITY_LEVEL_R1(3) | BEE_CTRL_CTRL_AES_MODE_R1(1))
+// Counter mode for both regions, at security level 0; the endian swap stays on (bit 7 clear).
+// THE LEVEL IS WHO MAY READ, not how well it is ciphered: at level 3 (the vendor driver's
+// default) only the core's own reads are deciphered and every other bus master is refused
+// with a bus error (measured: the DCP reading the firmware area fails with a source error
+// at 3 and reads plaintext at 2, 1 and 0). The firmware hands flash to bus masters all the
+// time -- the Wi-Fi chip's firmware goes to the SDIO controller's DMA straight from the
+// image, and at level 3 the radio never started -- so the engine serves them all.
+#define BEE_CTRL_MODES              (BEE_CTRL_SECURITY_LEVEL_R0(0) | BEE_CTRL_CTRL_AES_MODE_R0(1) | \
+                                     BEE_CTRL_SECURITY_LEVEL_R1(0) | BEE_CTRL_CTRL_AES_MODE_R1(1))
 #define BEE_RANGE_EN(i)             (1U << (IOMUXC_GPR_GPR11_BEE_DE_RX_EN_SHIFT + (i)))
 
 typedef struct {
