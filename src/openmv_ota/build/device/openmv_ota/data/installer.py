@@ -2271,8 +2271,12 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     crypt_size = 0
     if getattr(cfg, "SLOT_CRYPT", False):
         import flash_crypt   # hil-residual: the firmware's C module (openmv-ota build firmware drops it on an encrypting board)
-        if xip_base is None:  # hil-residual: an encrypting board is always XIP-mapped; the guard is for a port that is not
-            raise OSError("slot cipher needs an XIP-mapped partition")  # hil-residual: unreachable on the fleet's one encrypting board (XIP)
+        if xip_base is None:  # hil-residual: a block-device partition on an encrypting board (the RT1062)
+            # A block-device partition has no address of its own: the firmware build bakes in
+            # where it sits in flash, which is what the keystream runs on.
+            xip_base = getattr(cfg, "SLOT_CRYPT_BASE", None)  # hil-residual: witnessed by install.slot_cipher and the stub's `slot ok` on the RT1062's trial boot
+        if xip_base is None:  # hil-residual: every encrypting board is mapped or has its base baked in; the guard is for a port with neither
+            raise OSError("slot cipher needs the partition's flash address")  # hil-residual: unreachable on the fleet's encrypting boards
 
         def crypt(off, buf, _slot=1 if target == "B" else 0):   # hil-residual: a def line; its body is witnessed by the stub's `slot ok` on the trial boot
             flash_crypt.xor(xip_base + target_off + off, buf, _tweak[_slot])  # hil-residual: witnessed by the stub's `slot ok` on the trial boot

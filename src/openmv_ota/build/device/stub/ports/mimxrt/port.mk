@@ -41,7 +41,11 @@ LDFLAGS += -mthumb \
            -Wl,-T$(BUILD)/stub.lds \
            -Wl,-Map=$(BUILD)/stub.map
 
+CFLAGS += -Ilib/aes
 SRC_C += $(PORT_DIR)/port.c \
+         $(PORT_DIR)/bee.c \
+         $(PORT_DIR)/bee_stream.c \
+         lib/aes/aes128.c \
          $(HAL_DIR)/drivers/fsl_romapi.c \
          $(CMSIS_DIR)/src/mimxrt/system_$(MCU_SERIES).c
 SRC_S += common/start.s

@@ -394,9 +394,13 @@ def test_no_slot_on_a_board_that_encrypts_expects_the_stubs_last_resort(monkeypa
     expect, forbid = ota_cycle.scenario_markers("OPENMV_N6", "no_slot")
     assert {"stub.version", "stub.slot_rejected", "stub.no_slot_boot", "boot.no_slot"} <= expect
     assert "stub.failed" not in forbid
-    # a stub that does not encrypt is not asked for the line, and nowhere else may it appear
+    # a board bricked by erasing its slots alone (no firmware over USB) keeps the area its stub
+    # installed: it is not asked for the line, and nowhere else may the line appear
     monkeypatch.setattr(ota_cycle, "_has_stub", lambda b: b in ("OPENMV_N6", "OPENMV_RT1060"))
+    assert ota_cycle._stub_encrypts("OPENMV_RT1060") and not ota_cycle._usb_firmware("OPENMV_RT1060")
     assert "stub.no_slot_boot" not in ota_cycle.scenario_markers("OPENMV_RT1060", "no_slot")[0]
+    assert "stub.crypt" in ota_cycle.scenario_markers("OPENMV_RT1060", "delta")[0]
+    assert "no_slot_secure" not in ota_cycle.regression_scenarios("OPENMV_RT1060", "lan")
     assert "stub.no_slot_boot" in ota_cycle.scenario_markers("OPENMV_N6", "delta")[1]
 
 

@@ -270,13 +270,13 @@ def test_update_capability_needs_a_main_partition_with_a_known_erase_block(monke
     assert B.update_capability("OPENMV_N6").firmware
 
 
-def test_only_the_n6_stub_keeps_the_firmware_area_encrypted():
+def test_the_stubs_that_keep_the_firmware_area_encrypted_say_so_in_both_places():
     """``stub.encrypted`` is what the tool and the fleet harness read; the stub's own switch is
     ``STUB_CRYPT_START`` in the board's stub_config.h. The two must say the same thing."""
     from openmv_ota.build import stub as stub_mod
     from openmv_ota.romfs import boards as B
     encrypted = {name for name, b in B.load_boards().items() if b.stub and b.stub.encrypted}
-    assert encrypted == {"OPENMV_N6"}
+    assert encrypted == {"OPENMV_N6", "OPENMV_RT1060"}     # the boards with a cipher engine in the read path
     for name, b in B.load_boards().items():
         cfg = stub_mod.STUB_DIR / "boards" / name / "stub_config.h"
         if b.stub is None or not cfg.is_file():
