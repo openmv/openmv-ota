@@ -12,7 +12,6 @@ import shutil
 import subprocess
 
 import pytest
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from openmv_ota.build import stub as stub_mod
 from openmv_ota.build.device import boot
@@ -89,8 +88,7 @@ int main(int argc, char **argv) {
 def _engine_read(service_key, stored):
     """What the engine reads out of one stored block, keyed with ``service_key`` through the
     Secure Enclave: both the key and the block go through AES reversed."""
-    d = Cipher(algorithms.AES(service_key[::-1]), modes.ECB()).decryptor()
-    return d.update(stored[::-1])[::-1]
+    return slot_crypt.aes_block(service_key[::-1], stored[::-1], encrypt=False)[::-1]
 
 
 def test_the_block_layout_reproduces_the_silicon():
@@ -98,6 +96,17 @@ def test_the_block_layout_reproduces_the_silicon():
         assert _engine_read(service_key, b"\xff" * 16).hex() == read
         # the host twin: the slot key is the service's key reversed
         assert slot_crypt.ecb_decrypt(service_key[::-1], b"\xff" * 16).hex() == read
+
+
+def test_the_one_block_operation_is_aes():
+    # FIPS-197 appendix C.1
+    key, plain = bytes(range(16)), bytes.fromhex("00112233445566778899aabbccddeeff")
+    stored = slot_crypt.aes_block(key, plain)
+    assert stored.hex() == "69c4e0d86a7b0430d8cdb78070b4c55a"
+    assert slot_crypt.aes_block(key, stored, encrypt=False) == plain
+    for k, b in ((key[:15], plain), (key, plain + plain)):
+        with pytest.raises(ValueError, match="16 bytes"):
+            slot_crypt.aes_block(k, b)
 
 
 def test_the_host_twins():
@@ -109,7 +118,7 @@ def test_the_host_twins():
     assert slot_crypt.ecb_encrypt(key, data[:16] * 3) == stored[:16] * 3
     tweak = bytes(range(10))
     k = slot_crypt.ecb_slot_key(key, tweak)
-    assert k == Cipher(algorithms.AES(key), modes.ECB()).encryptor().update(tweak + b"omvslt")
+    assert k.hex() == "4b6121773c31bb7eb9f52c3869e31f0c"
     assert slot_crypt.ecb_slot_key(key, bytes(10)) != k
     for bad in (lambda: slot_crypt.ecb_encrypt(b"short", data), lambda: slot_crypt.ecb_encrypt(key, data[:15]),
                 lambda: slot_crypt.ecb_slot_key(b"short", tweak), lambda: slot_crypt.ecb_slot_key(key, b"x")):

@@ -110,25 +110,30 @@ FLASH_KEY_PLACE = 64                    # bytes per place in the key area's firs
 FLASH_KEY_PLACES = 4
 
 
+def aes_block(key: bytes, block: bytes, encrypt: bool = True) -> bytes:
+    """One AES-128 block operation and nothing else: the primitive the AE3's engine is, and a
+    key derivation's one block. (A single block through CBC with a zero IV is that operation;
+    each call starts a new one, so nothing chains.)"""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    if len(key) != 16 or len(block) != 16:
+        raise ValueError("key and block must be 16 bytes")
+    c = Cipher(algorithms.AES(key), modes.CBC(bytes(16)))
+    return (c.encryptor() if encrypt else c.decryptor()).update(block)
+
+
 def ecb_slot_key(flash_key: bytes, tweak: bytes) -> bytes:
     """The key a slot image is ciphered under on the AE3 (the stub's ``ecb_slot.c``): one AES
     block under the camera's flash key, ``tweak || "omvslt"``."""
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
     if len(flash_key) != 16 or len(tweak) != TWEAK_SIZE:
         raise ValueError("flash key must be 16 bytes and the tweak 10")
-    c = Cipher(algorithms.AES(flash_key), modes.ECB())  # noqa: S305 - one block, a key derivation
-    return c.encryptor().update(tweak + ECB_SLOT_KEY_LABEL)
+    return aes_block(flash_key, tweak + ECB_SLOT_KEY_LABEL)
 
 
 def _ecb(key: bytes, data: bytes, encrypt: bool) -> bytes:
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
     if len(key) != 16 or len(data) % 16:
         raise ValueError("key must be 16 bytes and the data whole 16-byte blocks")
-    c = Cipher(algorithms.AES(key), modes.ECB())  # noqa: S305 - the engine's cipher
-    op = c.encryptor() if encrypt else c.decryptor()
-    return b"".join(op.update(data[i:i + 16][::-1])[::-1] for i in range(0, len(data), 16))
+    return b"".join(aes_block(key, data[i:i + 16][::-1], encrypt)[::-1] for i in range(0, len(data), 16))
 
 
 def ecb_encrypt(key: bytes, data: bytes) -> bytes:
