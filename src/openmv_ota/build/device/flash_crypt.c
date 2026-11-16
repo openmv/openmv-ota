@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
 // flash_crypt -- the slot cipher for the OTA installer, on a board whose boot stub keeps
-// the ROMFS slots ciphertext at rest (the STM32N6, the i.MX RT1062).
+// the ROMFS slots ciphertext at rest (the STM32N6, the i.MX RT1062; the Alif Ensemble's
+// module, which also has to switch the chip's engine on, is the second half of this file).
 //
 // Exposes to MicroPython:
 //
@@ -40,6 +41,8 @@
 #define FLASH_CRYPT_MCE         (1)
 #elif defined(BEE) && defined(DCP)
 #define FLASH_CRYPT_BEE         (1)
+#elif defined(CORE_M55_HP)
+#define FLASH_CRYPT_ECB         (1)                 // the Alif Ensemble: see the end of this file
 #endif
 
 #if defined(FLASH_CRYPT_MCE) || defined(FLASH_CRYPT_BEE)
@@ -219,3 +222,251 @@ MP_REGISTER_MODULE(MP_QSTR_flash_crypt, flash_crypt_module);
 #endif // !OMV_FLASH_CRYPT_HOST_TEST (MicroPython binding)
 
 #endif // FLASH_CRYPT_MCE || FLASH_CRYPT_BEE
+
+#if defined(FLASH_CRYPT_ECB)
+
+// ---- The Alif Ensemble (the OpenMV AE3) -------------------------------------------------
+//
+// Exposes to MicroPython:
+//
+//   flash_crypt.keyed() -> bool            does the camera have its flash key?
+//   flash_crypt.enabled() -> bool          is the engine deciphering, under a key this
+//                                          module gave it?
+//   flash_crypt.disable() -> None          switch the engine off. A reset that restarts
+//                                          the firmware does not always reset the engine
+//                                          (measured: the reset pin leaves it on, keyed):
+//                                          boot.py calls this before it reads anything.
+//   flash_crypt.enable(tweak) -> None      key the engine for the slot image with this
+//                                          tweak and switch it on. The engine takes a key
+//                                          only while it is off.
+//   flash_crypt.raw(addr, buf) -> None     fill buf with the bytes stored at the address
+//                                          addr (the memory-mapped view), whatever the
+//                                          engine is doing
+//   flash_crypt.encrypt(addr, buf, tweak)  cipher buf in place, whole 16-byte blocks, as
+//                                          the slot image with this tweak is stored
+//
+// The chip's engine sits on the OSPI part's memory map and, once on, deciphers EVERY
+// block read through it under ONE key -- the booted slot's body, which is what it is for,
+// and also everything else on the part: the other slot, each slot's status sector and
+// trailer, and /flash, none of which is stored under that key. The engine cannot be
+// switched off for those reads (a bus master reading the slot meanwhile -- the NPU, on a
+// model mapped in place -- would get ciphertext), so they are undone instead: what the
+// map returns is run back through the cipher in software, which gives the stored bytes
+// exactly. `raw` does that for Python, and `ospi_flash_read`, the one function /flash and
+// the USB drive read through, is wrapped at link time to do it for them
+// (-Wl,--wrap=ospi_flash_read, added by `openmv-ota build firmware`).
+//
+// The key is the camera's own (ecb_slot.h): made by boot.py on the first boot, kept in
+// the key area in MRAM, read here and never handed to Python. `openmv-ota build firmware`
+// writes this file with OMV_KEY_AREA_ADDR defined at its top and the stub's aes128 and
+// ecb_slot sources pasted above it.
+
+#ifndef OMV_KEY_AREA_ADDR
+#error "flash_crypt: OMV_KEY_AREA_ADDR not defined (openmv-ota build firmware defines it)"
+#endif
+
+#include "py/runtime.h"
+#include "py/obj.h"
+#include "py/mperrno.h"
+#include "services_lib_api.h"
+#include "peripheral_types.h"
+#include "global_map.h"
+
+#define FLASH_CRYPT_TWEAK_SIZE  (ECB_SLOT_TWEAK_SIZE)
+#define FLASH_CRYPT_SE_HANDLE   (0)                 // se_services.c: MHU_SESS_MHU0, channel 0
+#define FLASH_CRYPT_AES         ((AES_Type *) AES0_BASE)
+#define FLASH_CRYPT_XIP_BASE    (OSPI0_XIP_BASE)
+#define FLASH_CRYPT_XIP_SIZE    (OSPI0_XIP_SIZE)
+#define FLASH_CRYPT_PART_SIZE   (0x02000000UL)      // the 32 MiB part behind the map
+
+// Not cleared by a soft reset: the engine stays on across one, and so does what it is keyed with.
+// A reset that clears these and leaves the engine on is what flash_crypt.disable() is for.
+static ecb_slot_t flash_crypt_boot;                 // the engine's key: what `raw` undoes
+static bool flash_crypt_on = false;
+static ecb_slot_t flash_crypt_slot;                 // the last key `encrypt` was asked for
+static uint8_t flash_crypt_slot_tweak[FLASH_CRYPT_TWEAK_SIZE];
+static bool flash_crypt_slot_set = false;
+
+static bool flash_crypt_engine_on(void) {
+    return (FLASH_CRYPT_AES->AES_CONTROL & AES_CONTROL_DECRYPT_EN) != 0;
+}
+
+// The stored bytes of [addr, addr + len) of the map into dst: a plain copy with the engine
+// off, and with it on, what the map returns ciphered back. Blocks are 16 bytes of the part.
+static void flash_crypt_copy_stored(uint32_t addr, uint8_t *dst, size_t len) {
+    if (!flash_crypt_on || !flash_crypt_engine_on()) {
+        memcpy(dst, (const void *)addr, len);
+        return;
+    }
+    // With the engine on, the map keeps answering a block it has just read from what it
+    // read then, even after the part was programmed there; a read somewhere else on the
+    // part makes it fetch again (measured: a mark written and read back came back blank
+    // until another address was read). So one is made first, 1 MiB away, past the cache.
+    uint32_t far = FLASH_CRYPT_XIP_BASE + (((addr - FLASH_CRYPT_XIP_BASE) + 0x100000) % FLASH_CRYPT_PART_SIZE);
+    far &= ~(uint32_t)31;
+    SCB_InvalidateDCache_by_Addr((void *)far, 32);
+    (void)*(volatile const uint32_t *)far;
+    while (len) {
+        uint32_t off = addr % 16;
+        size_t n;
+        if (off != 0 || len < 16) {
+            uint8_t block[16];
+            memcpy(block, (const void *)(addr - off), 16);
+            ecb_slot_encrypt(&flash_crypt_boot, block, 16);
+            n = (16 - off < len) ? 16 - off : len;
+            memcpy(dst, block + off, n);
+        } else {
+            n = len & ~(size_t)15;
+            memcpy(dst, (const void *)addr, n);
+            ecb_slot_encrypt(&flash_crypt_boot, dst, (uint32_t)n);
+        }
+        addr += n;
+        dst += n;
+        len -= n;
+    }
+}
+
+// Off, and nothing of what was read through it left in the caches.
+static void flash_crypt_switch_off(void) {
+    mp_uint_t state = MICROPY_BEGIN_ATOMIC_SECTION();
+    FLASH_CRYPT_AES->AES_CONTROL &= ~AES_CONTROL_DECRYPT_EN;
+    flash_crypt_on = false;
+    SCB_CleanInvalidateDCache();
+    SCB_InvalidateICache();
+    MICROPY_END_ATOMIC_SECTION(state);
+}
+
+// /flash and the USB drive: MicroPython's ospi_flash_read(addr, len, dest) copies out of the
+// map, addr relative to the part.
+int __real_ospi_flash_read(uint32_t addr, uint32_t len, uint8_t *dest);
+int __wrap_ospi_flash_read(uint32_t addr, uint32_t len, uint8_t *dest) {
+    if (!flash_crypt_on) {
+        // On, and not by this module: left on by the boot before a reset that did not reset
+        // it. /flash is mounted before boot.py runs, so this is where it is first met.
+        if (flash_crypt_engine_on()) {
+            flash_crypt_switch_off();
+        }
+        return __real_ospi_flash_read(addr, len, dest);
+    }
+    flash_crypt_copy_stored(FLASH_CRYPT_XIP_BASE + addr, dest, len);
+    return 0;
+}
+
+static mp_obj_t mod_flash_crypt_keyed(void) {
+    uint8_t key[16];
+    bool keyed = ecb_flash_key((const uint8_t *)OMV_KEY_AREA_ADDR, key);
+    memset(key, 0, sizeof(key));
+    return mp_obj_new_bool(keyed);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(flash_crypt_keyed_obj, mod_flash_crypt_keyed);
+
+static mp_obj_t mod_flash_crypt_enabled(void) {
+    return mp_obj_new_bool(flash_crypt_on && flash_crypt_engine_on());
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(flash_crypt_enabled_obj, mod_flash_crypt_enabled);
+
+static void flash_crypt_tweak_key(mp_obj_t tweak_in, uint8_t key[16]) {
+    mp_buffer_info_t tweak;
+    mp_get_buffer_raise(tweak_in, &tweak, MP_BUFFER_READ);
+    if (tweak.len != FLASH_CRYPT_TWEAK_SIZE) {
+        mp_raise_ValueError(MP_ERROR_TEXT("tweak must be 10 bytes"));
+    }
+    uint8_t flash_key[16];
+    if (!ecb_flash_key((const uint8_t *)OMV_KEY_AREA_ADDR, flash_key)) {
+        mp_raise_OSError(MP_EACCES);                // the camera has no flash key
+    }
+    ecb_slot_key(flash_key, (const uint8_t *)tweak.buf, key);
+    memset(flash_key, 0, sizeof(flash_key));
+}
+
+static mp_obj_t mod_flash_crypt_disable(void) {
+    if (flash_crypt_on || flash_crypt_engine_on()) {
+        flash_crypt_switch_off();
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(flash_crypt_disable_obj, mod_flash_crypt_disable);
+
+static mp_obj_t mod_flash_crypt_enable(mp_obj_t tweak_in) {
+    uint8_t key[16], engine_key[16];
+    flash_crypt_tweak_key(tweak_in, key);
+    if (flash_crypt_on || flash_crypt_engine_on()) {
+        flash_crypt_switch_off();                   // it takes a key only while it is off
+    }
+    ecb_slot_engine_key(key, engine_key);
+    uint32_t err = 0xFFFFFFFF;
+    uint32_t ret = SERVICES_application_ospi_write_key(FLASH_CRYPT_SE_HANDLE, OSPI_WRITE_EXTERNAL_KEY_OSPI0,
+                                                       engine_key, &err);
+    memset(engine_key, 0, sizeof(engine_key));
+    if (ret != 0 || err != OSPI_WRITE_KEY_SUCCESS) {
+        memset(key, 0, sizeof(key));
+        mp_raise_OSError(MP_EIO);
+    }
+    ecb_slot_init(&flash_crypt_boot, key);
+    memset(key, 0, sizeof(key));
+    // Nothing may read the part between the switch and the caches being emptied of what
+    // they hold of it from before.
+    mp_uint_t state = MICROPY_BEGIN_ATOMIC_SECTION();
+    FLASH_CRYPT_AES->AES_CONTROL |= AES_CONTROL_LD_KEY | AES_CONTROL_DECRYPT_EN;
+    flash_crypt_on = true;
+    SCB_CleanInvalidateDCache();
+    SCB_InvalidateICache();
+    MICROPY_END_ATOMIC_SECTION(state);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(flash_crypt_enable_obj, mod_flash_crypt_enable);
+
+static mp_obj_t mod_flash_crypt_raw(mp_obj_t addr_in, mp_obj_t buf_in) {
+    mp_buffer_info_t buf;
+    mp_get_buffer_raise(buf_in, &buf, MP_BUFFER_WRITE);
+    uint32_t addr = mp_obj_get_int_truncated(addr_in);
+    if (addr < FLASH_CRYPT_XIP_BASE || buf.len > FLASH_CRYPT_XIP_SIZE
+        || addr - FLASH_CRYPT_XIP_BASE > FLASH_CRYPT_XIP_SIZE - buf.len) {
+        memcpy(buf.buf, (const void *)addr, buf.len);   // not the part (MRAM): nothing to undo
+        return mp_const_none;
+    }
+    flash_crypt_copy_stored(addr, (uint8_t *)buf.buf, buf.len);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(flash_crypt_raw_obj, mod_flash_crypt_raw);
+
+static mp_obj_t mod_flash_crypt_encrypt(mp_obj_t addr_in, mp_obj_t buf_in, mp_obj_t tweak_in) {
+    mp_buffer_info_t buf, tweak;
+    mp_get_buffer_raise(buf_in, &buf, MP_BUFFER_RW);
+    mp_get_buffer_raise(tweak_in, &tweak, MP_BUFFER_READ);
+    if ((mp_obj_get_int_truncated(addr_in) % 16) != 0 || (buf.len % 16) != 0) {
+        mp_raise_ValueError(MP_ERROR_TEXT("whole 16-byte blocks only"));
+    }
+    if (!flash_crypt_slot_set || tweak.len != FLASH_CRYPT_TWEAK_SIZE
+        || memcmp(tweak.buf, flash_crypt_slot_tweak, FLASH_CRYPT_TWEAK_SIZE) != 0) {
+        uint8_t key[16];
+        flash_crypt_slot_set = false;
+        flash_crypt_tweak_key(tweak_in, key);
+        ecb_slot_init(&flash_crypt_slot, key);
+        memset(key, 0, sizeof(key));
+        memcpy(flash_crypt_slot_tweak, tweak.buf, FLASH_CRYPT_TWEAK_SIZE);
+        flash_crypt_slot_set = true;
+    }
+    ecb_slot_encrypt(&flash_crypt_slot, (uint8_t *)buf.buf, (uint32_t)buf.len);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(flash_crypt_encrypt_obj, mod_flash_crypt_encrypt);
+
+static const mp_rom_map_elem_t flash_crypt_globals_table[] = {
+    { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_flash_crypt) },
+    { MP_ROM_QSTR(MP_QSTR_keyed),    MP_ROM_PTR(&flash_crypt_keyed_obj) },
+    { MP_ROM_QSTR(MP_QSTR_enabled),  MP_ROM_PTR(&flash_crypt_enabled_obj) },
+    { MP_ROM_QSTR(MP_QSTR_enable),   MP_ROM_PTR(&flash_crypt_enable_obj) },
+    { MP_ROM_QSTR(MP_QSTR_disable),  MP_ROM_PTR(&flash_crypt_disable_obj) },
+    { MP_ROM_QSTR(MP_QSTR_raw),      MP_ROM_PTR(&flash_crypt_raw_obj) },
+    { MP_ROM_QSTR(MP_QSTR_encrypt),  MP_ROM_PTR(&flash_crypt_encrypt_obj) },
+};
+static MP_DEFINE_CONST_DICT(flash_crypt_globals, flash_crypt_globals_table);
+
+const mp_obj_module_t flash_crypt_module = {
+    .base = { &mp_type_module },
+    .globals = (mp_obj_dict_t *)&flash_crypt_globals,
+};
+MP_REGISTER_MODULE(MP_QSTR_flash_crypt, flash_crypt_module);
+
+#endif // FLASH_CRYPT_ECB

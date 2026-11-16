@@ -452,12 +452,94 @@ slot the build wrote holds the image in the clear until it is erased.
 The fleet's read-back from outside the chip (`check_at_rest`) is a DFU upload, which this board
 does not have: on the RT1062 the stored firmware area has not been read back from outside.
 
+## The AE3, as built (2026-11-16)
+
+On the Alif Ensemble E3 the firmware lives in the chip's own MRAM and the two ROMFS slots on
+an OSPI flash part beside it. Only the part can be read off the board, so only the slots are
+ciphered: the booted slot's body is ciphertext at rest, and the firmware area is in the clear,
+by design.
+
+- **The engine.** It sits on the OSPI controller's memory-mapped read path. Switched on, it
+  deciphers every 16-byte block the map returns, anywhere on the part, under one key. It does
+  nothing for a write, and the stub never uses the map at all (it reads the part through the
+  controller, one command at a time), so the stub runs the cipher in software, both ways.
+- **The cipher, measured.** AES-128, one block at a time, with no address in it: the block's
+  bytes are reversed going into AES and coming out. The key the engine uses is the sixteen
+  bytes handed to the Secure Enclave's key service, reversed. Two reads of erased flash through
+  the engine, under two keys, match this model (`tests/build/test_ecb_slot_c.py` holds the
+  stub's C to them). Equal plaintext blocks of one image are equal in flash; what keeps images
+  apart is the key.
+- **The keys.** Each slot image has its own: one AES block under the camera's flash key,
+  `tweak || "omvslt"`, the tweak being the same 80 bits the other boards use (slot index and
+  the trailer's signed-region hash). The flash key is sixteen random bytes the firmware makes
+  on the camera's first boot and keeps in the chip's MRAM, in the first 256 bytes of the key
+  area beside the identity keys: four 64-byte places, each a key word (the key, then its
+  complement) and a commit word written last. The first whole place is the key; a write a
+  power cut stopped is a place that never counts.
+- **The first boot.** A camera with no flash key cannot cipher anything: the stub boots the
+  slot as it was flashed, in the clear, and says so. boot.py makes the key and resets. On the
+  boot after that the stub copies the slot into the other one through the cipher, erases the
+  clear one, and installs the firmware from the copy, as on the other boards. `flash
+  bootloader` blanks the key area; `flash factory` does not, so a camera that already has its
+  key ciphers a newly flashed slot on its first boot.
+- **Who switches the engine on.** The firmware, not the stub: the key goes in through the
+  Secure Enclave's service, which the stub does not carry. boot.py works out the tweak of the
+  slot the stub's install record names, from that slot's trailer, and hands it to the
+  `flash_crypt` module, which derives the key, loads it and switches the engine on, before the
+  slot is read.
+- **Everything else on the part.** The engine cannot be told where to stop, and it cannot be
+  switched off around a read either: a bus master reading the slot in that moment (the NPU,
+  on a model mapped in place) would get ciphertext. So what is not stored under the engine's
+  key -- the other slot, every slot's status sector and trailer, the pad after a slot's
+  image, `/flash` -- is read through the map and ciphered back in software, which gives the
+  stored bytes exactly. Python does it through `flash_crypt.raw`; `/flash` and the USB drive
+  do it through `ospi_flash_read`, the one function they read with, which the firmware build
+  replaces at link time (`-Wl,--wrap=ospi_flash_read`, added through the board overlay).
+- **Three things the bench showed.**
+  - The reset pin restarts the firmware and leaves the engine on, keyed for the slot it last
+    booted. `/flash` is mounted before boot.py runs, so the first build read it through a
+    cipher it knew nothing about. The stub now switches the engine off on every boot, the
+    read hook does the same if it ever meets it on, and boot.py does before it reads anything.
+  - The engine takes a key only while it is off. Switched off, keyed and switched on again it
+    uses the new key, with no reset in between.
+  - With the engine on, the map keeps answering a block it has just read from what it read
+    then, even after the part was programmed there: an install counter written and read back
+    came back blank. A read somewhere else on the part makes it fetch again, so the module
+    makes one, 1 MiB away, before every read of stored bytes.
+- **The installer.** It ciphers the slot it writes through `flash_crypt.encrypt`, and reads
+  what it wrote, and whether a block is blank, through `flash_crypt.raw`. A delta's base is
+  the running slot as mapped as far as its image reaches, and as stored past that.
+- **What this does not protect.** The firmware in MRAM is in the clear, and so is the flash
+  key beside it: both are inside the chip, and are as private as the chip's debug port. On an
+  open camera that is not private. Device lockdown, which closes the port, is not built.
+
+Measured on an OpenMV AE3 over Wi-Fi, each scenario from a factory flash (2026-11-16):
+
+| Scenario | Result | Time |
+|---|---|---|
+| `delta` | pass | 1154 s |
+| `rollback` | pass | 750 s |
+| `watchdog` | pass | 740 s |
+| `watchdog_recover` | pass | 748 s |
+| `coproc` | pass | 662 s |
+| `coproc_skip` | pass | 599 s |
+| `full` | pass | 713 s |
+| `corrupt` | pass | 734 s |
+| `bad_sig` | pass | 635 s |
+| `reinstall` | pass | 784 s |
+
+The first boot with a flash key copies the slot through the cipher in 26 s and erases the
+clear one in 15 s, once. After `delta`, the part read back as stored:
+
+```
+at rest: slot A: 0 of 144896 blocks stored as built, 0 image samples found, 8.000 bits/byte, 0 bytes not blank before its status sector
+at rest: slot B: 0 of 144896 blocks stored as built, 0 image samples found, 8.000 bits/byte, 0 bytes not blank before its status sector
+```
+
 ## Open questions to verify against documentation
 
 - i.MX RT1062: what closing the chip (HAB) does to the stub's use of the DCP unique key and
   the BEE, on a board that can be closed.
-- Alif E3: does the OSPI controller decrypt XIP in hardware, and is that usable for the
-  ROMFS mounted by MicroPython's `VfsRom` over the memory map?
 - STM32H743/H747: RDP2 interaction with the Arduino bootloader (not ours) and with DFU
   recovery; whether "decrypt the active ROMFS slot into SDRAM" fits the boards' SDRAM
   budget next to the frame buffers.

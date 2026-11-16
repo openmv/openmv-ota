@@ -62,6 +62,7 @@ def test_the_manifest_names_the_ciphers_inputs(make_project):
 def test_slot_crypt_is_stamped_for_an_encrypting_board_only():
     assert fw._slot_crypt("OPENMV_N6") is True
     assert fw._slot_crypt("OPENMV_RT1060") is True
+    assert fw._slot_crypt("OPENMV_AE3") is True                    # its slots, not its firmware
     assert fw._slot_crypt("OPENMV4") is False                      # a stub, in the clear
     assert fw._slot_crypt("ARDUINO_NANO_RP2040_CONNECT") is False  # no stub at all
 
@@ -71,6 +72,7 @@ def test_the_partitions_flash_address_is_stamped_where_the_installer_cannot_ask_
     can take; the RT1062's is a block device, so the build bakes in where it sits."""
     assert fw._slot_crypt_base("OPENMV_RT1060") == 0x60800000
     assert fw._slot_crypt_base("OPENMV_N6") is None                # mapped: the installer asks the map
+    assert fw._slot_crypt_base("OPENMV_AE3") is None               # mapped too
     assert fw._slot_crypt_base("OPENMV4") is None                  # not encrypted
 
 
@@ -82,8 +84,32 @@ def test_the_crypt_module_carries_the_boards_own_engine_stream(tmp_path):
     assert '#include "bee_stream.h"' not in text and "MP_REGISTER_MODULE(MP_QSTR_flash_crypt" in text
     assert text.index("bee_stream_xor(const bee_stream_t") < text.index("omv_flash_crypt_xor(")
     assert fw._stub_port("OPENMV_N6") == "stm32" and fw._stub_port("OPENMV_RT1060") == "mimxrt"
+    assert "OMV_KEY_AREA_ADDR" not in text.split("\n")[1]          # only the AE3's module reads the key area
+
+
+def test_a_stub_port_with_no_engine_has_no_crypt_module(monkeypatch):
+    monkeypatch.setattr(fw, "_CRYPT_STREAMS", {"stm32": fw._CRYPT_STREAMS["stm32"]})
     with pytest.raises(fw.BuildError, match="no slot cipher"):
-        fw._stub_port("OPENMV_AE3")                                # a stub port with no engine stream
+        fw._stub_port("OPENMV_AE3")
+
+
+def test_the_ae3s_crypt_module_is_the_block_cipher_and_knows_the_key_area(tmp_path, monkeypatch):
+    """The AE3's engine is a block cipher keyed by the firmware: its module is the stub's
+    ecb_slot sources, the address of the key area the camera's flash key lives in, and the
+    replacement for the one function /flash reads through."""
+    repo = tmp_path / "fw"
+    repo.mkdir()
+    text = fw._install_crypt_module(repo, "OPENMV_AE3").read_text()
+    assert fw._stub_port("OPENMV_AE3") == "alif"
+    assert text.split("\n")[1] == "#define OMV_KEY_AREA_ADDR (0x8001F000UL)"
+    assert "void ecb_slot_encrypt(" in text and "void aes128_decrypt(" in text
+    assert "void mce_stream_xor(" not in text and '#include "ecb_slot.h"' not in text
+    assert "int __wrap_ospi_flash_read(" in text and "MP_REGISTER_MODULE(MP_QSTR_flash_crypt" in text
+    assert text.index("void ecb_slot_encrypt(") < text.index("__wrap_ospi_flash_read(")
+    # the key area is board data: a table without one cannot build the module
+    monkeypatch.setattr(fw, "_soft_key_store", lambda name: None)
+    with pytest.raises(fw.BuildError, match="gives it none"):
+        fw._flash_crypt_sources("OPENMV_AE3")
 
 
 def test_install_crypt_module_is_for_encrypting_boards(tmp_path):
@@ -201,3 +227,18 @@ def test_the_host_twin_of_the_tweak_is_what_the_manifest_leads_to():
     t = _trailer()
     h = slot_crypt.trailer_sha256(t)
     assert INST._slot_tweak(1, h) == slot_crypt.slot_tweak(1, binascii.unhexlify(h.hex()))
+
+
+def test_the_installers_cipher_reach_is_the_hosts():
+    """A delta's base is ciphered only as far as its image reaches; past that the AE3 reads
+    the flash as stored. The installer works the reach out from the base's own trailer."""
+    raw = b""
+    for comps, body in (([], 5000), ([(8192, 6000)], 5000), ([(4096, 100), (20000, 9000)], 4096)):
+        components = [T.Component(dest=0x80028000, offset=off, size=size, installed_size=size,
+                                  sha256=bytes(32), installed_sha256=bytes(32)) for off, size in comps]
+        raw = trust.trailer(trust.ROOT_PRIV, bytes(body), components=components)
+        assert INST._trailer_crypt_size(raw, 1 << 20) == slot_crypt.crypt_size(T.parse_trailer(raw))
+        assert INST._trailer_crypt_size(raw, 4096) == 4096           # never past the status sector
+    assert INST._trailer_crypt_size(b"\xff" * 4096, 1 << 20) == 0   # blank
+    assert INST._trailer_crypt_size(raw[:40], 1 << 20) == 0         # cut short
+    assert INST._trailer_crypt_size(raw[:100], 1 << 20) == 0        # its components cut off

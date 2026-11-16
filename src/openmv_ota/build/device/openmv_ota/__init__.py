@@ -364,11 +364,29 @@ def _status_offset(cfg, slot):
     return off + size - 2 * cfg.CONTROL_BLOCK
 
 
+def _stored_view(addr, size):  # pragma: no cover
+    """``size`` bytes at flash address ``addr`` as the part holds them: an alias over the
+    memory map -- except on a board whose cipher engine deciphers every read of the map (the
+    AE3, ``flash_crypt.raw``), where a slot's control data is not stored under the engine's
+    key and comes back as a copy with the engine undone. Control data only: a few KB."""
+    import uctypes  # hil-residual: an import; the callers' markers (read.slot_alias, status.slot_read) witness the function
+    try:  # hil-residual: an import guard, witnessed by the same markers on boards with and without the module
+        import flash_crypt  # hil-residual: same
+        raw = getattr(flash_crypt, "raw", None)  # hil-residual: same
+    except ImportError:  # hil-residual: same
+        raw = None  # hil-residual: same
+    if raw is None:  # hil-residual: same
+        return uctypes.bytearray_at(addr, size)  # hil-residual: bare return of the alias (every board but the AE3)
+    buf = bytearray(size)  # hil-residual: the AE3's copy; witnessed by the marks and floors every confirm reads back through it
+    raw(addr, buf)  # hil-residual: same
+    return buf  # hil-residual: same
+
+
 def _read_at(part_index, off, size):  # pragma: no cover
     import uctypes
     import vfs
     base = uctypes.addressof(vfs.rom_ioctl(2, part_index))
-    view = uctypes.bytearray_at(base + off, size)     # the XIP alias -- witnessed below
+    view = _stored_view(base + off, size)             # the XIP alias -- witnessed below
     log.debug("read: slot alias")                     # HIL path witness (status/verify read each boot)
     return view  # hil-residual: bare return of the aliased view
 
@@ -579,10 +597,8 @@ def slots():  # pragma: no cover
     out = []
     for name in _slot_names(_ota_config):
         off, size = _slot_bounds(_ota_config, name)
-        sector = uctypes.bytearray_at(base + off + size - 2 * _ota_config.CONTROL_BLOCK,
-                                      _SLOT_READ)
-        trailer = uctypes.bytearray_at(base + off + size - _ota_config.CONTROL_BLOCK,
-                                       _TRAILER_READ)
+        sector = _stored_view(base + off + size - 2 * _ota_config.CONTROL_BLOCK, _SLOT_READ)
+        trailer = _stored_view(base + off + size - _ota_config.CONTROL_BLOCK, _TRAILER_READ)
         out.append(_slot_report(name, running, sector, _trailer_version(trailer),
                                 _trailer_body_sha(trailer)))
         log.debug("status: slot read")                 # bounded: once per slot (at most twice)
@@ -1739,7 +1755,7 @@ def _advance_rollback(cfg, slot, key, start=None, end=None):  # pragma: no cover
     base = uctypes.addressof(vfs.rom_ioctl(2, 0))
     soff, size = _slot_bounds(cfg, slot)
     off = soff + size - 2 * cfg.CONTROL_BLOCK            # this slot's status sector (absolute)
-    sector = uctypes.bytearray_at(base + off, cfg.CONTROL_BLOCK)
+    sector = _stored_view(base + off, cfg.CONTROL_BLOCK)
     start = _FLOOR_OFF if start is None else start
     region = sector[start:_EPOCH_OFF if end is None else end]
     if _rollback_floor_of(region) >= key:

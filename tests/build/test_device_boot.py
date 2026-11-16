@@ -10,6 +10,7 @@ signature against the uncompressed public point. Importing the module is inert
 from __future__ import annotations
 
 import hashlib
+import os
 import struct
 
 import pytest
@@ -999,3 +1000,126 @@ def test_the_key_window_waits_for_a_host_that_has_the_console_open():
 def test_the_key_window_answers_a_host_that_opened_the_console():
     con = _Console(B._KEYS_REQUEST + CH.hex() + "\n")
     assert B.keys_challenge(con, con.poll, con.elapsed, attended=lambda: True) == CH
+
+
+# --- the slot cipher engine the firmware keys itself (the AE3) -----------------------------
+
+class _Crypt:
+    """The AE3's ``flash_crypt`` as boot.py sees it."""
+
+    def __init__(self, keyed=True, enabled=False, fail=None):
+        self._keyed, self._enabled, self.fail, self.tweaks = keyed, enabled, fail, []
+
+    def keyed(self):
+        return self._keyed
+
+    def enabled(self):
+        return self._enabled
+
+    def disable(self):
+        self.disabled = getattr(self, "disabled", 0) + 1
+        self._enabled = False
+
+    def enable(self, tweak):
+        if self.fail is not None:
+            raise self.fail
+        self.tweaks.append(bytes(tweak))
+        self._enabled = True
+
+
+class _Log:
+    def __init__(self):
+        self.lines = []
+
+    def _say(self, msg):
+        self.lines.append(msg)
+
+    debug = info = warning = error = _say
+
+
+class _KeyStore:
+    BLANK = 0
+
+    def __init__(self, crypt=None, full=False):
+        self.area = bytearray(b"\x01" * 256 if full else 256)
+        self.crypt = crypt
+
+    def read(self, off, n):
+        return bytes(self.area[off:off + n])
+
+    def write(self, off, data):
+        self.area[off:off + len(data)] = data
+        if self.crypt is not None and off % 64 == 0:
+            self.crypt._keyed = True                     # the commit word: the C side now finds it
+
+
+def _engine_ob(body=b"\x9c\x01\x02" + b"bbb" * 39, record_slot=1):
+    priv, _pub = _key()
+    sb = _counter(bytearray(_status(True, True, True)), 2)
+    back = _back(priv, 0x100, body, sb, components=[_comp(0xBB)])
+    front = _front(priv, 0x100, body, sb, components=[_comp(0xBB)])
+    dev = _Dev(_partition(front, back))
+    rec = _record(record_slot, [(0x70090000, 200, bytes([0xBB]) * 32)]) if record_slot is not None else None
+    ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,
+                   BLOCK, PRODUCT_ID, trust.ROOTS, record=rec, slot_crypt=True)
+    return ob, dev
+
+
+def test_the_booted_slots_tweak_is_the_hosts():
+    from openmv_ota.ota import slot_crypt
+    from openmv_ota.ota import trailer as T
+    ob, dev = _engine_ob()
+    trailer_b = bytes(dev.read(PARTITION_SIZE - BLOCK, BLOCK))
+    want = slot_crypt.slot_tweak(1, hashlib.sha256(T.signed_region(trailer_b)).digest())
+    assert ob.booted_tweak() == want == B.slot_tweak(1, trailer_b)
+    assert B.slot_tweak(0, trailer_b) != want                      # the slot is in it
+    assert B.slot_tweak(1, b"\xff" * BLOCK) is None                # a blank trailer
+    # the other slot's, when the record names it
+    ob, dev = _engine_ob(record_slot=0)
+    assert ob.booted_tweak() == B.slot_tweak(0, bytes(dev.read(FRONT_SIZE - BLOCK, BLOCK)))
+    # no record, or a slot stored in the clear (flashed, not yet ciphered by the stub): none
+    assert _engine_ob(record_slot=None)[0].booted_tweak() is None
+    assert _engine_ob(body=b"\xd2\xcd1" + b"bbb" * 39)[0].booted_tweak() is None
+    # a record naming a slot this layout does not have
+    ob, _dev = _engine_ob()
+    ob.front_size = 0                                              # single-slot: only A
+    assert ob.booted_tweak() is None
+
+
+def test_start_slot_engine_keys_the_engine_for_the_booted_slot():
+    ob, _dev = _engine_ob()
+    crypt, log, resets = _Crypt(), _Log(), []
+    B.start_slot_engine(crypt, ob, _KeyStore(), os.urandom, lambda: resets.append(1), log)
+    assert crypt.tweaks == [ob.booted_tweak()] and crypt.enabled() and not resets
+    assert log.lines == ["boot: slot engine on"]
+    assert crypt.disabled == 1          # whatever a reset left of the engine is off before the first read
+    # a soft reset: still on, still keyed -- nothing to do
+    log = _Log()
+    B.start_slot_engine(crypt, ob, _KeyStore(), os.urandom, lambda: resets.append(1), log)
+    assert len(crypt.tweaks) == 1 and log.lines == ["boot: slot engine already on"]
+    # a slot in the clear with a key present (a stub that does not cipher): left off
+    crypt, log = _Crypt(), _Log()
+    B.start_slot_engine(crypt, _engine_ob(body=b"\xd2\xcd1" + b"b" * 117)[0], _KeyStore(), os.urandom,
+                        lambda: resets.append(1), log)
+    assert not crypt.enabled() and log.lines == ["boot: slot engine off (no ciphered slot)"]
+
+
+def test_start_slot_engine_makes_the_key_on_the_first_boot_and_resets():
+    ob, _dev = _engine_ob(body=b"\xd2\xcd1" + b"b" * 117)
+    crypt, log, resets = _Crypt(keyed=False), _Log(), []
+    store = _KeyStore(crypt)
+    B.start_slot_engine(crypt, ob, store, os.urandom, lambda: resets.append(1), log)
+    assert resets == [1] and not crypt.enabled() and crypt.tweaks == []
+    assert store.area[:5] == b"OMVF\x01" and log.lines == ["boot: flash key made, restarting"]
+    # no blank place, or a write the chip does not then find: no reset loop, the boot goes on
+    for store in (_KeyStore(crypt=None, full=True), _KeyStore(crypt=None)):
+        crypt, log, resets = _Crypt(keyed=False), _Log(), []
+        B.start_slot_engine(crypt, ob, store, os.urandom, resets.append, log)
+        assert not resets and log.lines == ["boot: no flash key, and none could be made"]
+
+
+def test_start_slot_engine_never_stops_the_boot():
+    ob, _dev = _engine_ob()
+    crypt, log = _Crypt(fail=OSError(5)), _Log()
+    B.start_slot_engine(crypt, ob, _KeyStore(), os.urandom, lambda: None, log)
+    assert not crypt.enabled() and log.lines == ["boot: slot engine failed: OSError(5)"]

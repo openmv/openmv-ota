@@ -925,6 +925,8 @@ def test_ae3_ota_build_relinks_the_hp_core_behind_the_stub(make_project, monkeyp
     assert "#define OMV_FLASH_LENGTH                0x0015E000      /* 1.4MB */\n" in seen["h"]
     assert "OMV_FIRM_ADDR=0x80028000\n" in seen["mk"] and "OMV_BOOT_ADDR=0x80000000\n" in seen["mk"]
     assert "\nOMV_BOOT_CFLAGS += -UOMV_BOOT_JUMP -DOMV_BOOT_JUMP=0x80020000\n" in seen["mk"]
+    # the slot cipher's module replaces the main core's /flash read at link time
+    assert seen["mk"].endswith("ifeq ($(MCU_CORE),M55_HP)\nLIBS += -Wl,--wrap=ospi_flash_read\nendif\n")
     names = sorted(o.name for o in r.outputs)
     assert names == ["OPENMV_AE3-firmware-M55_HE.bin", "OPENMV_AE3-firmware-M55_HP.bin", "OPENMV_AE3-stub.bin"]
     assert fw._stub_record_addr("OPENMV_AE3") == 0x8047D000

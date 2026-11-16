@@ -49,7 +49,11 @@ LDFLAGS += -mthumb \
            -Wl,-Map=$(BUILD)/stub.map
 
 SRC_C += $(PORT_DIR)/port.c \
-         $(PORT_DIR)/alif_ospi.c
+         $(PORT_DIR)/alif_ospi.c \
+         $(PORT_DIR)/ecb_slot.c \
+         lib/aes/aes128.c
+
+CFLAGS += -Ilib/aes
 
 SRC_S += common/start.s
 

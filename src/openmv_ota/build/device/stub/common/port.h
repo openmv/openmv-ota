@@ -34,19 +34,24 @@ int port_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size);   // 16-
 // install the area holds (install.c derives it), and NULL shows the area as it is stored.
 #define PORT_CRYPT_TWEAK_SIZE   (10)
 #ifdef STUB_CRYPT_START
-int port_crypt_init(void);                          // the chip's key: 0, or -1 if it has none to give
 int port_crypt_select(const uint8_t *tweak);        // 0, or -1 (the area must then not be trusted)
-// A board that also keeps the booted slot encrypted (STUB_SLOT_CRYPT): the second ciphered
-// range, [start, end) of the slot, under the slot's tweak; NULL maps nothing there.
+#else
+static inline int port_crypt_select(const uint8_t *tweak) {
+    (void) tweak;
+    return 0;
+}
+#endif
+// A board that keeps the booted slot encrypted (STUB_SLOT_CRYPT), with the firmware area or
+// without it (the AE3: its firmware is in the chip's own MRAM, its slots on a part beside
+// it): the ciphered range [start, end) of the slot, under the slot's tweak; NULL maps
+// nothing there.
+#if defined(STUB_CRYPT_START) || defined(STUB_SLOT_CRYPT)
+int port_crypt_init(void);                          // the chip's key: 0, or -1 if it has none to give
 int port_crypt_slot_select(const uint8_t *tweak, uint32_t start, uint32_t end);
 void port_crypt_lock(void);                         // nothing may change it until the next reset
 int port_flash_read_stored(uint32_t addr, uint8_t *buf, uint32_t size);   // programming mode: the bytes as the part holds them
 #else
 static inline int port_crypt_init(void) {
-    return 0;
-}
-static inline int port_crypt_select(const uint8_t *tweak) {
-    (void) tweak;
     return 0;
 }
 static inline void port_crypt_lock(void) {
@@ -56,6 +61,16 @@ static inline int port_crypt_slot_select(const uint8_t *tweak, uint32_t start, u
     (void) start;
     (void) end;
     return 0;
+}
+#endif
+// A board whose key is not the chip's but the camera's own, made by the firmware on its
+// first boot (STUB_CRYPT_KEY_LATE): until it exists nothing can be ciphered, and the slots
+// run as they were flashed.
+#ifdef STUB_CRYPT_KEY_LATE
+bool port_crypt_keyed(void);
+#else
+static inline bool port_crypt_keyed(void) {
+    return true;
 }
 #endif
 

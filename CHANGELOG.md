@@ -8,6 +8,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The AE3's app is ciphertext at rest.** On the Alif Ensemble E3 the two ROMFS slots live on
+  an OSPI flash part beside the chip, and the booted slot is now stored encrypted there,
+  deciphered by the OSPI controller's AES engine as it is read. The key is the camera's own:
+  sixteen random bytes made on its first boot and kept in the chip's MRAM, with a key per slot
+  image derived from it. The boot stub and the installer cipher what they write in software;
+  the first boot after a factory flash makes the key, resets, and ciphers the factory slot
+  (under a minute, once). The firmware itself is in the chip's MRAM and stays in the clear.
+  The cipher is AES-128 one block at a time, which is what the engine does: equal blocks of
+  one image are equal in flash. See `docs/design/flash-encryption.md`, "The AE3, as built".
+
 - **The RT1062's firmware and app are ciphertext at rest.** The i.MX RT1062 joins the N6: its
   boot stub keeps the firmware area and the booted slot encrypted, deciphered by the chip's bus
   encryption engine as they are read; the stub and the installer encrypt what they write, and

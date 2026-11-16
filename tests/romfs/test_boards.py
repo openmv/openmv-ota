@@ -282,6 +282,15 @@ def test_the_stubs_that_keep_the_firmware_area_encrypted_say_so_in_both_places()
         if b.stub is None or not cfg.is_file():
             continue
         assert ("#define STUB_CRYPT_START" in cfg.read_text()) == b.stub.encrypted, name
+        assert ("#define STUB_SLOT_CRYPT" in cfg.read_text()) == b.stub.slot_crypt, name
+        assert ("#define STUB_CRYPT_KEY_LATE" in cfg.read_text()) == b.stub.slots_encrypted, name
+    # the AE3 keeps its slots encrypted and its firmware, in the chip's own MRAM, in the clear
+    slots_only = {name for name, b in B.load_boards().items() if b.stub and b.stub.slots_encrypted}
+    assert slots_only == {"OPENMV_AE3"}
+    ae3 = B.get_board("OPENMV_AE3")
+    cfg = (stub_mod.STUB_DIR / "boards" / "OPENMV_AE3" / "stub_config.h").read_text()
+    # ...under a key in the key area, which the stub finds at the address the table gives
+    assert "#define STUB_KEY_AREA               0x%08X\n" % ae3.secure_element["key_area"] in cfg
 
 
 def test_a_stub_encrypted_flag_is_validated():
@@ -291,3 +300,9 @@ def test_a_stub_encrypted_flag_is_validated():
     assert B._stub("X", dict(raw, encrypted=True)).encrypted is True
     with pytest.raises(ValueError, match="stub encrypted must be true or false"):
         B._stub("X", dict(raw, encrypted="yes"))
+    assert B._stub("X", raw).slot_crypt is False and B._stub("X", dict(raw, encrypted=True)).slot_crypt is True
+    slots = B._stub("X", dict(raw, slots_encrypted=True))
+    assert slots.slots_encrypted is True and slots.encrypted is False and slots.slot_crypt is True
+    for bad in (dict(raw, slots_encrypted="yes"), dict(raw, encrypted=True, slots_encrypted=True)):
+        with pytest.raises(ValueError, match="slots_encrypted must be true or false"):
+            B._stub("X", bad)

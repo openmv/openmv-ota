@@ -146,6 +146,10 @@ int main(void) {
         }
     }
 
+    if (!port_crypt_keyed()) {
+        log_line("no flash key yet: the slots run as flashed");
+    }
+
     record_read(&record);
     if (record.valid) {
         log_kv("record slot", record.hdr.slot);
@@ -170,7 +174,8 @@ int main(void) {
         // not this slot's ciphertext is in the clear (a factory slot, or an installer that
         // wrote plaintext) or damaged. A clear slot never boots as it is: it is converted
         // into the other slot when no ciphered slot verifies, and erased when one does.
-        if (!slot_body_ok(s, false)) {
+        // (A camera that has not made its key yet ciphers nothing: see port_crypt_keyed.)
+        if (port_crypt_keyed() && !slot_body_ok(s, false)) {
             slot_t *o = &slots[1 - s->index];
             if (port_crypt_slot_select(NULL, 0, 0) != 0 || !slot_in_clear(s)) {
                 log_line("slot body does not verify");
@@ -210,7 +215,7 @@ int main(void) {
             journal_event(EVENT_CLEAR_SLOT_ERASED);
             s = o;
         }
-        {
+        if (port_crypt_keyed()) {
             // The other slot in the clear -- a conversion a reset cut short of its last step,
             // or a plaintext install -- never boots: erased, so no plaintext stays behind.
             slot_t *o = &slots[1 - s->index];

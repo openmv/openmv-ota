@@ -12,6 +12,9 @@
 #include "port_alif.h"
 #include "sys_ctrl_uart.h"
 #include "wdt.h"
+#ifdef STUB_SLOT_CRYPT
+#include "ecb_slot.h"
+#endif
 
 static volatile uint32_t ticks_ms;
 static bool prog_mode = false;
@@ -226,7 +229,96 @@ static int mram_program(uint32_t addr, const uint8_t *src, uint32_t size) {
     return 0;
 }
 
-int port_flash_read(uint32_t addr, uint8_t *buf, uint32_t size) {
+#ifdef STUB_SLOT_CRYPT
+// The slots are ciphertext at rest, and the chip's engine only deciphers what is read
+// through the memory map -- which the stub never uses. So the cipher is run here, both
+// ways, over the one range a slot is selected on: the body of the slot being verified,
+// booted or written. Everything else on the part (the other slot, every slot's status
+// sector and trailer, /flash) is read and written as it is stored.
+static bool crypt_keyed = false;
+static uint8_t crypt_flash_key[16];
+static ecb_slot_t crypt_slot;
+static uint32_t crypt_start = 0, crypt_end = 0;             // [start, end): empty when equal
+static uint8_t crypt_chunk[256] __attribute__((aligned(4)));
+
+_Static_assert((STUB_WRITE_UNIT % 16) == 0, "the cipher works on whole 16-byte blocks");
+
+int port_crypt_init(void) {
+    // The camera's own key, from the key area in MRAM. A camera that has not made it yet
+    // (its first boot) is not an error: its slots run as flashed until it has.
+    crypt_keyed = ecb_flash_key((const uint8_t *) STUB_KEY_AREA, crypt_flash_key);
+    return 0;
+}
+
+bool port_crypt_keyed(void) {
+    return crypt_keyed;
+}
+
+int port_crypt_slot_select(const uint8_t *tweak, uint32_t start, uint32_t end) {
+    crypt_start = crypt_end = 0;
+    if (tweak == NULL) {
+        return 0;
+    }
+    if (!crypt_keyed || (start % 16) != 0 || (end % 16) != 0 || end < start || !in_ospi(start, end - start)) {
+        return -1;
+    }
+    uint8_t key[16];
+    ecb_slot_key(crypt_flash_key, tweak, key);
+    ecb_slot_init(&crypt_slot, key);
+    memset(key, 0, sizeof(key));
+    crypt_start = start;
+    crypt_end = end;
+    return 0;
+}
+
+// Nothing of the key stays in RAM for the firmware to find: it reads its own copy.
+void port_crypt_lock(void) {
+    memset(crypt_flash_key, 0, sizeof(crypt_flash_key));
+    memset(&crypt_slot, 0, sizeof(crypt_slot));
+    crypt_start = crypt_end = 0;
+}
+
+// How much of [addr, addr + size) lies on one side of the ciphered range's edges, and
+// whether that piece is inside it.
+static uint32_t crypt_piece(uint32_t addr, uint32_t size, bool *inside) {
+    *inside = addr >= crypt_start && addr < crypt_end;
+    uint32_t room = size;
+    if (*inside) {
+        room = crypt_end - addr;
+    } else if (addr < crypt_start) {
+        room = crypt_start - addr;
+    }
+    return (room < size) ? room : size;
+}
+
+// Deciphered bytes of the selected range: whole blocks straight into the buffer, a block
+// the read only partly covers through a copy of it.
+static int crypt_read(uint32_t addr, uint8_t *buf, uint32_t size) {
+    while (size) {
+        uint32_t off = addr % 16, n;
+        if (off != 0 || size < 16) {
+            uint8_t block[16];
+            if (ospi_flash_read(addr - off - STUB_OSPI_XIP_BASE, block, 16) != 0) {
+                return -1;
+            }
+            ecb_slot_decrypt(&crypt_slot, block, 16);
+            n = (16 - off < size) ? 16 - off : size;
+            memcpy(buf, block + off, n);
+        } else {
+            n = size & ~15U;
+            if (ospi_flash_read(addr - STUB_OSPI_XIP_BASE, buf, n) != 0) {
+                return -1;
+            }
+            ecb_slot_decrypt(&crypt_slot, buf, n);
+        }
+        addr += n;
+        buf += n;
+        size -= n;
+    }
+    return 0;
+}
+
+int port_flash_read_stored(uint32_t addr, uint8_t *buf, uint32_t size) {
     if (in_mram(addr, size)) {
         memcpy(buf, (const void *) addr, size);
         return 0;
@@ -235,6 +327,32 @@ int port_flash_read(uint32_t addr, uint8_t *buf, uint32_t size) {
         return ospi_flash_read(addr - STUB_OSPI_XIP_BASE, buf, size);
     }
     return -1;
+}
+#endif
+
+int port_flash_read(uint32_t addr, uint8_t *buf, uint32_t size) {
+    if (in_mram(addr, size)) {
+        memcpy(buf, (const void *) addr, size);
+        return 0;
+    }
+    if (!in_ospi(addr, size)) {
+        return -1;
+    }
+    #ifdef STUB_SLOT_CRYPT
+    while (size) {
+        bool inside;
+        uint32_t n = crypt_piece(addr, size, &inside);
+        if ((inside ? crypt_read(addr, buf, n) : ospi_flash_read(addr - STUB_OSPI_XIP_BASE, buf, n)) != 0) {
+            return -1;
+        }
+        addr += n;
+        buf += n;
+        size -= n;
+    }
+    return 0;
+    #else
+    return ospi_flash_read(addr - STUB_OSPI_XIP_BASE, buf, size);
+    #endif
 }
 
 int port_flash_prog_begin(void) {
@@ -250,11 +368,18 @@ int port_flash_prog_end(void) {
 }
 
 int port_flash_erase(uint32_t addr) {
-    // No erase blocks in MRAM: an erased block reads 0xFF because it was written so.
-    if (!prog_mode || (addr % STUB_FLASH_BLOCK) != 0 || !in_mram(addr, STUB_FLASH_BLOCK)) {
+    if (!prog_mode || (addr % STUB_FLASH_BLOCK) != 0) {
         return -1;
     }
-    return mram_program(addr, NULL, STUB_FLASH_BLOCK);
+    // No erase blocks in MRAM: an erased block reads 0xFF because it was written so.
+    if (in_mram(addr, STUB_FLASH_BLOCK)) {
+        return mram_program(addr, NULL, STUB_FLASH_BLOCK);
+    }
+    // A slot's block on the OSPI part: one of its 4 KiB sectors.
+    if (in_ospi(addr, STUB_FLASH_BLOCK)) {
+        return ospi_flash_erase(addr - STUB_OSPI_XIP_BASE);
+    }
+    return -1;
 }
 
 int port_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size) {
@@ -264,10 +389,33 @@ int port_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size) {
     if (in_mram(addr, size)) {
         return mram_program(addr, buf, size);
     }
-    if (in_ospi(addr, size)) {
-        return ospi_flash_write(addr - STUB_OSPI_XIP_BASE, buf, size);
+    if (!in_ospi(addr, size)) {
+        return -1;
     }
-    return -1;
+    #ifdef STUB_SLOT_CRYPT
+    while (size) {
+        bool inside;
+        uint32_t n = crypt_piece(addr, size, &inside);
+        if (inside) {
+            // What is stored there is ciphertext: a copy of the bytes, ciphered, is what
+            // reaches the part.
+            if (n > sizeof(crypt_chunk)) {
+                n = sizeof(crypt_chunk);
+            }
+            memcpy(crypt_chunk, buf, n);
+            ecb_slot_encrypt(&crypt_slot, crypt_chunk, n);
+        }
+        if (ospi_flash_write(addr - STUB_OSPI_XIP_BASE, inside ? crypt_chunk : buf, n) != 0) {
+            return -1;
+        }
+        addr += n;
+        buf += n;
+        size -= n;
+    }
+    return 0;
+    #else
+    return ospi_flash_write(addr - STUB_OSPI_XIP_BASE, buf, size);
+    #endif
 }
 
 // ---- Debug UART --------------------------------------------------------------
@@ -345,6 +493,7 @@ int port_wdt_start(uint32_t id, uint32_t timeout_ms) {
 
 void port_jump(uint32_t addr) {
     port_flash_prog_end();
+    port_crypt_lock();
 
     // As the bootloader leaves the OSPI: the controller off, the part hardware-reset. The
     // firmware's driver brings it all up itself.

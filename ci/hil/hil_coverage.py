@@ -293,7 +293,9 @@ def _render_stub_md(traces):
         if not all("/common/" in r for r, _n in points[t]["where"]):
             continue                             # a port's own line: not every board has it
         want = [b for b in stub_boards
-                if not t.startswith(ota_cycle.STUB_CRYPT_LINES) or ota_cycle._stub_encrypts(b)]
+                if (not t.startswith(ota_cycle.STUB_CRYPT_LINES) or ota_cycle._stub_encrypts(b))
+                and (not t.startswith(ota_cycle.STUB_SLOT_CRYPT_LINES) or ota_cycle._stub_slot_crypt(b))
+                and (not t.startswith(ota_cycle.STUB_LATE_KEY_LINES) or ota_cycle._stub_late_key(b))]
         lack = sorted(set(want) - {h.split("/")[0] for h in points[t]["hits"]})
         if lack:
             gaps.append("- `%s`: never on %s" % (t, ", ".join(lack)))

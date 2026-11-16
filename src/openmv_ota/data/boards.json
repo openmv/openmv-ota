@@ -213,7 +213,7 @@
     },
     "OPENMV_AE3": {
       "recovery_ca_bundle": true,
-      "stub": {"origin": "0x80020000", "firmware_dest": "0x80028000", "firmware_max": "0x2F8000", "coprocessor": {"dest": "0x80320000", "max": "0x15D000"}, "record": "0x8047D000"},
+      "stub": {"origin": "0x80020000", "firmware_dest": "0x80028000", "firmware_max": "0x2F8000", "coprocessor": {"dest": "0x80320000", "max": "0x15D000"}, "record": "0x8047D000", "slots_encrypted": true},
       "display_name": "OpenMV AE3",
       "cloud": "full",
       "live_framesize": "QVGA",
