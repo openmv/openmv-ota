@@ -186,6 +186,25 @@ def test_the_read_enters_dfu_uploads_the_firmware_alt_and_leaves(bench):
     assert any("no slot images in build/" in ln for ln in bench["logged"])   # nothing published here
 
 
+def test_the_rt1062_is_read_through_flash_read_not_dfu(bench, monkeypatch):
+    """No DFU on the RT1062: its partitions come back through `openmv-ota flash read` (the
+    resident bootloader), and the board is one the harness reads back at all."""
+    monkeypatch.setitem(ota_cycle.CFG, "sdk", "SDK")
+    monkeypatch.setattr(ota_cycle, "ota", lambda name: name)
+    assert ota_cycle._reads_back("OPENMV_RT1060") and ota_cycle._reads_back(BOARD)
+    assert not ota_cycle._reads_back("ARDUINO_GIGA")
+    data, why = ota_cycle._read_back("OPENMV_RT1060", "romfs")
+    assert data == bench["dump"] and why is None and bench["exec"] == []     # no DFU entry
+    (argv,) = bench["ran"]
+    assert argv[:3] == ["openmv-ota", "flash", "read"] and argv[-2] == "--to"
+    assert argv[argv.index("--part") + 1] == "romfs" and "OPENMV_RT1060" in argv
+    assert argv[argv.index("--mpremote") + 1] == "mpremote" and argv[argv.index("--sdk-home") + 1] == "SDK"
+    assert not os.path.exists(os.path.dirname(argv[-1]))                # the dump is not kept
+    bench["rc"] = 1
+    data, why = ota_cycle._read_back("OPENMV_RT1060", "firmware")
+    assert data is None and "the read-back did not happen (firmware, rc=1)" in why
+
+
 def test_with_the_slot_images_the_romfs_partition_is_read_and_judged_too(bench, tmp_path, monkeypatch):
     a, b = _slot_image(os.urandom(5000), b"a"), _slot_image(os.urandom(9000), b"b")
     build = tmp_path / "build"

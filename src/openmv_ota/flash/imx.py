@@ -173,6 +173,35 @@ def _write_region(blhost: str, usb: str, addr: str, file: Path) -> list[ImxStep]
     ]
 
 
+READ_PARTS = ("firmware", "romfs")
+READ_TIMEOUT_MS = 600000         # one read-memory of a whole partition over USB HID
+
+
+def read_region(bl: dict, part: str) -> tuple[int, int]:
+    """``(address, length)`` of a partition as the flash part stores it: ``firmware`` is the
+    whole firmware area (from its start to the user disk), ``romfs`` both slots."""
+    if part == "firmware":
+        start = int(bl["firmware_addr"], 16)
+        return start, int(bl["disk_addr"], 16) - start
+    return int(bl["romfs_addr"], 16), int(bl["romfs_size"], 16)
+
+
+def read_plan(raw: dict, blhost: str, part: str, file: Path) -> list[ImxStep]:
+    """Read a partition back through the resident SBL: the stored bytes. The SBL runs before
+    anything that turns the chip's flash cipher on, so on a camera that encrypts this is what
+    the flash part holds, not what the running firmware sees. The caller has entered and
+    claimed the SBL (as for ``plan``'s resident ops); the reset runs the camera again."""
+    bl = raw["blhost"]
+    usb = bl["usb"]
+    addr, length = read_region(bl, part)
+    return [
+        ImxStep("read %s 0x%08X (0x%X) -> %s" % (part, addr, length, file.name),
+                _blhost(blhost, usb, "read-memory", "0x%08X" % addr, "0x%X" % length, str(file),
+                        timeout=READ_TIMEOUT_MS)),
+        ImxStep("reset", _blhost(blhost, usb, "reset")),
+    ]
+
+
 def _fcb(blhost: str, usb: str, bl: dict) -> list[ImxStep]:
     """Write the flash-config block so the ROM can boot from the FlexSPI NOR."""
     return [

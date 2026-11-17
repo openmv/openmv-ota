@@ -410,6 +410,25 @@ flashed again over USB, once.
   matter of course -- the Wi-Fi chip's firmware is a constant in the image, sent to the radio
   by the SDIO controller's DMA straight from flash -- and the first build, at level 3, could
   not start its radio. The stub sets level 0: the engine deciphers for every master.
+- **Reads that are not 16-byte aligned.** NXP's errata for the chip (ERR050164) say the
+  engine supports 16-byte bursts only, that a master sending an unaligned burst may get a bus
+  error, and that the way round it is aligned addresses and lengths, and for the core, the
+  cache on. Measured on the fleet's board with both ranges on (2026-11-16), reading a ciphered
+  range at each of the sixteen offsets of a block and comparing with the core's cached read:
+
+  | Who reads | What was read | Result |
+  |---|---|---|
+  | The core, through a non-cacheable MPU region | 1 to 64 bytes at every offset; 8, 16 and 32-bit loads | all correct |
+  | The SD controller's DMA (a file written to the card straight from flash) | 512, 4096, 5000 and 65536 bytes at every offset | all correct |
+  | The DCP (memory copy) | 16, 20, 32, 61 and 64 bytes at every offset | correct, but for 16 bytes at offset 8: a bus error, 25 times of 25 |
+  | The DCP (memory copy) | 1, 3 and 4 bytes at every offset | correct at offsets 0 to 12; a bus error at 13, 14 and 15, 25 times of 25 |
+
+  The erratum is real, it is the same every time, and it is a bus error, never wrong data.
+  Nothing the firmware does meets it: the stub's hand-over with the caches off reads through
+  the core, the Wi-Fi chip's firmware (at 0x6023AD64 in the fleet's build, offset 4) and SD
+  writes go through the SD controller, and neither the stub nor the firmware points the DCP at
+  flash. `machine.SPI` copies through the core. A driver that hands flash to another DMA
+  master is the thing to test first.
 - **Three things the bench showed.** A range's top register takes the range's END address
   (end minus 8 leaves the last 16 bytes as stored). The data cache keeps what it read before a
   range changed, so the stub drops it on every change. And the DCP's status reads zero for a
@@ -427,7 +446,8 @@ flashed again over USB, once.
   partition reaches the firmware as a block device, which has none to give, so the firmware
   build bakes the partition's address into `_ota_config.SLOT_CRYPT_BASE` (0x60800000).
 - **The lock.** At the jump the stub sets the lock bits of the two ranges' registers: they
-  cannot be moved until a reset. The key registers were never readable.
+  cannot be moved until a reset. The key registers were never readable: with the engine
+  running they read back as four zero words.
 - **Control data.** A slot's status sector and trailer are its last 8 KiB: one erase block on
   the N6 (64 KiB), two on the RT1062 (4 KiB). The conversion copies both, the trailer's block
   last, so a copy does not verify until it is whole.
@@ -449,8 +469,18 @@ Read back from the running camera after a conversion: the slot the engine does n
 exactly the bytes the model predicts for the factory image under that slot's tweak, and the
 slot the build wrote holds the image in the clear until it is erased.
 
-The fleet's read-back from outside the chip (`check_at_rest`) is a DFU upload, which this board
-does not have: on the RT1062 the stored firmware area has not been read back from outside.
+The fleet's read-back from outside the chip (`check_at_rest`) is a DFU upload on the N6. This
+board has no DFU, so `openmv-ota flash read` does the same through its resident bootloader,
+which runs before the stub with the engine off: a blhost `read-memory` of the firmware area
+(17 s) and of both slots (44 s). After `delta` on the fleet's board (bench, 2026-11-16):
+
+```
+at rest: stub as built; 0 of 166461 firmware blocks stored as built, 0 build samples found, 8.000 bits/byte, 0 bytes not blank after it
+at rest: slot A: 0 of 100096 blocks stored as built, 0 image samples found, 8.000 bits/byte, 0 bytes not blank before its status sector
+at rest: slot B: 0 of 100096 blocks stored as built, 0 image samples found, 8.000 bits/byte, 0 bytes not blank before its status sector
+```
+
+The fleet repeats it after every `delta` on this board.
 
 ## The AE3, as built (2026-11-16)
 

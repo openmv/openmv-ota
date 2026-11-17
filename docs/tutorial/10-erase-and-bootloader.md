@@ -4,9 +4,10 @@
 
 ---
 
-Two maintenance verbs ride the same `flash` tool: **erasing** the onboard
-filesystem, and writing the **bootloader** itself. Both are occasional
-operations — nothing here is part of a normal build-flash-iterate loop.
+Three maintenance verbs ride the same `flash` tool: **erasing** the onboard
+filesystem, **reading** a partition back, and writing the **bootloader** itself.
+All are occasional operations — nothing here is part of a normal
+build-flash-iterate loop.
 
 ## flash erase
 
@@ -38,6 +39,32 @@ would run: sdphost -u 0x1FC9,0x0135 -- write-file 0x20001C00 .../sdphost_flash_l
 would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60400000 0x1000
 would run: blhost -u 0x15A2,0x0073 -- reset
 ```
+
+## flash read
+
+`flash read` copies a partition out of the flash part into a file, through the
+board's resident bootloader, and writes nothing. The bootloader runs before
+anything that switches the chip's flash cipher on, so on a camera that keeps
+its flash encrypted the file holds the bytes as they are stored — what someone
+reading the flash part would get — and not what the running firmware sees.
+`--part firmware` is the whole firmware area, `--part romfs` both app slots.
+The camera is reset into the bootloader and runs again afterwards.
+
+It is for the OPENMV_RT1060, which has no DFU bootloader; on a DFU board
+`dfu-util -U` uploads a partition the same way.
+
+```
+$ openmv-ota flash read -b OPENMV_RT1060 --part firmware --to firmware-area.bin
+Reading memory
+Response status = 0 (0x0) Success.
+Response word 1 = 3932160 (0x3c0000)
+Read 3932160 of 3932160 bytes.
+Response status = 0 (0x0) Success.
+read firmware 0x60040000 (0x3C0000) -> firmware-area.bin (OPENMV_RT1060)
+reset (OPENMV_RT1060)
+```
+
+The firmware area takes about 17 s to read, the two slots (8 MiB) about 44 s.
 
 ## flash bootloader
 

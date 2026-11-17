@@ -18,6 +18,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The cipher is AES-128 one block at a time, which is what the engine does: equal blocks of
   one image are equal in flash. See `docs/design/flash-encryption.md`, "The AE3, as built".
 
+- **`flash read`: a partition read back as the flash part stores it (RT1062).**
+  `openmv-ota flash read -b OPENMV_RT1060 --part firmware|romfs --to FILE` copies the firmware
+  area or both app slots out through the resident bootloader, which runs with the chip's flash
+  cipher off, and writes nothing. It is the RT1062's counterpart of a DFU upload, and the
+  fleet now uses it to check from outside the chip, after every `delta`, that the RT1062's
+  flash holds ciphertext, as it already did for the N6 and the AE3.
+
 - **The RT1062's firmware and app are ciphertext at rest.** The i.MX RT1062 joins the N6: its
   boot stub keeps the firmware area and the booted slot encrypted, deciphered by the chip's bus
   encryption engine as they are read; the stub and the installer encrypt what they write, and
