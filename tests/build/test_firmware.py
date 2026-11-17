@@ -807,6 +807,7 @@ def test_a_multi_core_board_freezes_the_ota_modules_into_the_main_core_only(make
     # the modules are in the main core's directory, and the helper core's is empty
     assert (r.build_dir / "hp" / "boot.py").exists()
     assert (r.build_dir / "hp" / "openmv_installer.py").exists()
+    assert (r.build_dir / "hp" / "openmv_slot_engine.py").exists()     # this firmware keys its engine
     assert (r.build_dir / "hp" / "_ota_config.py").exists()
     assert list((r.build_dir / "he").iterdir()) == []
 
@@ -818,6 +819,7 @@ def test_a_single_core_board_freezes_by_name_as_before(make_project, monkeypatch
     manifest = (r.build_dir / "manifest.py").read_text()
     assert "$(MCU_CORE)" not in manifest
     assert (r.build_dir / "boot.py").exists() and not (r.build_dir / "hp").exists()
+    assert not (r.build_dir / "openmv_slot_engine.py").exists()       # the N6's stub keys its engine
 
 
 # --- boards whose OTA firmware drops imlib features to fit (the H7): an OVERLAY board dir --

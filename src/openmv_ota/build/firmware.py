@@ -69,6 +69,7 @@ _VERIFY_MODULE = "ecdsa_verify.c"        # dropped into the firmware's modules/ 
 _KEY_STORE_C = _DEVICE_DIR / "key_store.c"
 _KEY_STORE_MODULE = "key_store.c"        # likewise, on a board that keeps its own keys
 _FLASH_CRYPT_C = _DEVICE_DIR / "flash_crypt.c"
+_SLOT_ENGINE_MODULE = "openmv_slot_engine.py"   # frozen where the firmware keys the engine
 _FLASH_CRYPT_MODULE = "flash_crypt.c"    # likewise, on a board whose stub keeps the slots encrypted
 
 # The OTA installer verifies its download's TLS against a PEM CA bundle. micropython used to
@@ -358,6 +359,12 @@ def _write_wrapper_manifest(p, repo: Path, name: str,
         src = p.root / "device" / mod
         shutil.copy2(src if src.exists() else _DEVICE_DIR / mod, mods / mod)
         freezes.append('freeze("%s", "%s")\n' % (mods.as_posix(), mod))
+    # The module boot.py keys the slot cipher's engine with, where the firmware does that
+    # itself (the AE3). Nowhere else: it is ~1.2 KB of bytecode, and the OpenMV Cam M4 and M7
+    # overflowed FLASH_TEXT by 184 and 376 bytes carrying it inside boot.py.
+    if _firmware_keys_engine(name):
+        shutil.copy2(_DEVICE_DIR / _SLOT_ENGINE_MODULE, mods / _SLOT_ENGINE_MODULE)
+        freezes.append('freeze("%s", "%s")\n' % (mods.as_posix(), _SLOT_ENGINE_MODULE))
     # The installer, frozen as `openmv_installer`. It is the SAME source the romfs ships and
     # openmv_ota.install() exec's into RAM -- one implementation, so a fix cannot land on the
     # normal path and miss the recovery one. The romfs copy stays: on a healthy device it is
@@ -403,7 +410,7 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
     shutil.copytree(src, overlay)
     if stub is not None:
         _relink_for_stub(overlay, name, stub)
-        if stub.slot_crypt and _stub_port(name) == "alif":
+        if _firmware_keys_engine(name):
             mk = overlay / "board_config.mk"
             mk.write_text(mk.read_text(encoding="utf-8")
                           + "\n# openmv-ota: /flash reads go through the slot cipher's module "
@@ -586,6 +593,13 @@ def _slot_crypt(name: str) -> bool:
     (``StubLayout.encrypted``), so the installer must write its slot through the cipher."""
     stub = get_board(name).stub
     return stub is not None and stub.slot_crypt
+
+
+def _firmware_keys_engine(name: str) -> bool:
+    """Whether this board's FIRMWARE keys and switches on the slot cipher's engine (the AE3:
+    the key goes in through a service the stub does not carry), so boot.py needs
+    ``openmv_slot_engine``."""
+    return _slot_crypt(name) and _stub_port(name) == "alif"
 
 
 def _slot_crypt_base(name: str) -> int | None:

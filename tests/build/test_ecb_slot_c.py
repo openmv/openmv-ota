@@ -14,7 +14,7 @@ import subprocess
 import pytest
 
 from openmv_ota.build import stub as stub_mod
-from openmv_ota.build.device import boot
+from openmv_ota.build.device import openmv_slot_engine as engine
 from openmv_ota.ota import slot_crypt
 
 pytestmark = pytest.mark.skipif(not shutil.which("gcc"), reason="needs gcc to compile the stub's cipher")
@@ -169,20 +169,20 @@ class _Store:
 def test_boot_py_makes_the_key_the_stub_reads():
     store = _Store()
     key = os.urandom(16)
-    assert boot.make_flash_key(store, lambda n: key[:n]) is True
+    assert engine.make_flash_key(store, lambda n: key[:n]) is True
     assert store.writes == [32, 0]                       # the key word, then the word that commits it
     assert slot_crypt.flash_key(bytes(store.area[:256])) == key
     assert not any(store.area[256:])                     # the identity records' slots are not touched
     # a place a power cut left half written is passed over
     store = _Store()
     store.area[32:48] = os.urandom(16)
-    assert boot.make_flash_key(store, lambda n: key[:n]) is True
+    assert engine.make_flash_key(store, lambda n: key[:n]) is True
     assert store.writes == [96, 64] and slot_crypt.flash_key(bytes(store.area[:256])) == key
     # nowhere left
     store = _Store()
     for off in range(0, 256, 64):
         store.area[off] = 1
-    assert boot.make_flash_key(store, lambda n: key[:n]) is False and store.writes == []
+    assert engine.make_flash_key(store, lambda n: key[:n]) is False and store.writes == []
 
 
 def test_the_stubs_cipher_matches_the_silicon_and_the_host_twins(tmp_path):
@@ -197,7 +197,7 @@ def test_the_stubs_cipher_matches_the_silicon_and_the_host_twins(tmp_path):
     data = os.urandom(4096)
     k1 = os.urandom(16)
     store = _Store()
-    boot.make_flash_key(store, lambda n: k1[:n])
+    engine.make_flash_key(store, lambda n: k1[:n])
     rows = [("D", s[::-1], b"\xff" * 16) for s, _r in _BENCH_READS]
     rows += [("E", key, data), ("D", key, slot_crypt.ecb_encrypt(key, data)), ("K", key, tweak),
              ("F", bytes(256), None), ("F", bytes(store.area[:256]), None),

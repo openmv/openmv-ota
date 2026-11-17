@@ -16,6 +16,7 @@ import struct
 import pytest
 
 from openmv_ota.build.device import boot as B
+from openmv_ota.build.device import openmv_slot_engine as E
 from openmv_ota.ota import certificate as cert_mod
 from tests import trust
 from openmv_ota.ota import keys, sign
@@ -1071,36 +1072,36 @@ def test_the_booted_slots_tweak_is_the_hosts():
     ob, dev = _engine_ob()
     trailer_b = bytes(dev.read(PARTITION_SIZE - BLOCK, BLOCK))
     want = slot_crypt.slot_tweak(1, hashlib.sha256(T.signed_region(trailer_b)).digest())
-    assert ob.booted_tweak() == want == B.slot_tweak(1, trailer_b)
-    assert B.slot_tweak(0, trailer_b) != want                      # the slot is in it
-    assert B.slot_tweak(1, b"\xff" * BLOCK) is None                # a blank trailer
+    assert E.booted_tweak(ob, B.parse_trailer) == want == E.slot_tweak(1, trailer_b, B.parse_trailer)
+    assert E.slot_tweak(0, trailer_b, B.parse_trailer) != want                      # the slot is in it
+    assert E.slot_tweak(1, b"\xff" * BLOCK, B.parse_trailer) is None                # a blank trailer
     # the other slot's, when the record names it
     ob, dev = _engine_ob(record_slot=0)
-    assert ob.booted_tweak() == B.slot_tweak(0, bytes(dev.read(FRONT_SIZE - BLOCK, BLOCK)))
+    assert E.booted_tweak(ob, B.parse_trailer) == E.slot_tweak(0, bytes(dev.read(FRONT_SIZE - BLOCK, BLOCK)), B.parse_trailer)
     # no record, or a slot stored in the clear (flashed, not yet ciphered by the stub): none
-    assert _engine_ob(record_slot=None)[0].booted_tweak() is None
-    assert _engine_ob(body=b"\xd2\xcd1" + b"bbb" * 39)[0].booted_tweak() is None
+    assert E.booted_tweak(_engine_ob(record_slot=None)[0], B.parse_trailer) is None
+    assert E.booted_tweak(_engine_ob(body=b"\xd2\xcd1" + b"bbb" * 39)[0], B.parse_trailer) is None
     # a record naming a slot this layout does not have
     ob, _dev = _engine_ob()
     ob.front_size = 0                                              # single-slot: only A
-    assert ob.booted_tweak() is None
+    assert E.booted_tweak(ob, B.parse_trailer) is None
 
 
 def test_start_slot_engine_keys_the_engine_for_the_booted_slot():
     ob, _dev = _engine_ob()
     crypt, log, resets = _Crypt(), _Log(), []
-    B.start_slot_engine(crypt, ob, _KeyStore(), os.urandom, lambda: resets.append(1), log)
-    assert crypt.tweaks == [ob.booted_tweak()] and crypt.enabled() and not resets
+    E.start(crypt, ob, _KeyStore(), os.urandom, lambda: resets.append(1), log, B.parse_trailer)
+    assert crypt.tweaks == [E.booted_tweak(ob, B.parse_trailer)] and crypt.enabled() and not resets
     assert log.lines == ["boot: slot engine on"]
     assert crypt.disabled == 1          # whatever a reset left of the engine is off before the first read
     # a soft reset: still on, still keyed -- nothing to do
     log = _Log()
-    B.start_slot_engine(crypt, ob, _KeyStore(), os.urandom, lambda: resets.append(1), log)
+    E.start(crypt, ob, _KeyStore(), os.urandom, lambda: resets.append(1), log, B.parse_trailer)
     assert len(crypt.tweaks) == 1 and log.lines == ["boot: slot engine already on"]
     # a slot in the clear with a key present (a stub that does not cipher): left off
     crypt, log = _Crypt(), _Log()
-    B.start_slot_engine(crypt, _engine_ob(body=b"\xd2\xcd1" + b"b" * 117)[0], _KeyStore(), os.urandom,
-                        lambda: resets.append(1), log)
+    E.start(crypt, _engine_ob(body=b"\xd2\xcd1" + b"b" * 117)[0], _KeyStore(), os.urandom,
+            lambda: resets.append(1), log, B.parse_trailer)
     assert not crypt.enabled() and log.lines == ["boot: slot engine off (no ciphered slot)"]
 
 
@@ -1108,18 +1109,18 @@ def test_start_slot_engine_makes_the_key_on_the_first_boot_and_resets():
     ob, _dev = _engine_ob(body=b"\xd2\xcd1" + b"b" * 117)
     crypt, log, resets = _Crypt(keyed=False), _Log(), []
     store = _KeyStore(crypt)
-    B.start_slot_engine(crypt, ob, store, os.urandom, lambda: resets.append(1), log)
+    E.start(crypt, ob, store, os.urandom, lambda: resets.append(1), log, B.parse_trailer)
     assert resets == [1] and not crypt.enabled() and crypt.tweaks == []
     assert store.area[:5] == b"OMVF\x01" and log.lines == ["boot: flash key made, restarting"]
     # no blank place, or a write the chip does not then find: no reset loop, the boot goes on
     for store in (_KeyStore(crypt=None, full=True), _KeyStore(crypt=None)):
         crypt, log, resets = _Crypt(keyed=False), _Log(), []
-        B.start_slot_engine(crypt, ob, store, os.urandom, resets.append, log)
+        E.start(crypt, ob, store, os.urandom, resets.append, log, B.parse_trailer)
         assert not resets and log.lines == ["boot: no flash key, and none could be made"]
 
 
 def test_start_slot_engine_never_stops_the_boot():
     ob, _dev = _engine_ob()
     crypt, log = _Crypt(fail=OSError(5)), _Log()
-    B.start_slot_engine(crypt, ob, _KeyStore(), os.urandom, lambda: None, log)
+    E.start(crypt, ob, _KeyStore(), os.urandom, lambda: None, log, B.parse_trailer)
     assert not crypt.enabled() and log.lines == ["boot: slot engine failed: OSError(5)"]

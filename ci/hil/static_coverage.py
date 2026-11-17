@@ -45,6 +45,7 @@ DEFAULT_FILES = [
     os.path.join(DEVICE, "openmv_wdt.py"),
     os.path.join(DEVICE, "openmv_netcfg.py"),
     os.path.join(DEVICE, "openmv_recovery.py"),
+    os.path.join(DEVICE, "openmv_slot_engine.py"),
 ]
 _LOGCALL = ("info(", "debug(", "warning(", "error(")
 

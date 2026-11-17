@@ -9,7 +9,7 @@ in the field either has its keys or fails, and never makes new ones on its own. 
 elliptic-curve work is mbedtls's, through ``ecdsa_verify``.
 
 THE KEY AREA is 4 KB: sixteen 256-byte slots. The lowest is not this module's: on a board whose
-firmware keys its flash cipher itself (the AE3) it holds the camera's flash key (boot.py,
+firmware keys its flash cipher itself (the AE3) it holds the camera's flash key (``openmv_slot_engine``,
 ``make_flash_key``), and it is left alone everywhere. The other fifteen are filled from the top
 of the area down (so the area could later be made smaller without losing the slots in use). Each
 of those is one record or blank. A
