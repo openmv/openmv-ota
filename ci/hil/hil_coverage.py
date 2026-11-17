@@ -57,6 +57,7 @@ DEVICE_FILES = [
     os.path.join(DEVICE, "openmv_log.py"),
     os.path.join(DEVICE, "openmv_netcfg.py"),
     os.path.join(DEVICE, "openmv_recovery.py"),
+    os.path.join(DEVICE, "openmv_slot_engine.py"),
     # openmv_wdt emits one marker -- "wdt: armed <window>", the witness that a watchdog is
     # REALLY running. The watchdog scenario requires it, because "the install survived" only
     # implies the watchdog behaved IF one was armed at all.
@@ -293,7 +294,9 @@ def _render_stub_md(traces):
         if not all("/common/" in r for r, _n in points[t]["where"]):
             continue                             # a port's own line: not every board has it
         want = [b for b in stub_boards
-                if not t.startswith(ota_cycle.STUB_CRYPT_LINES) or ota_cycle._stub_encrypts(b)]
+                if (not t.startswith(ota_cycle.STUB_CRYPT_LINES) or ota_cycle._stub_encrypts(b))
+                and (not t.startswith(ota_cycle.STUB_SLOT_CRYPT_LINES) or ota_cycle._stub_slot_crypt(b))
+                and (not t.startswith(ota_cycle.STUB_LATE_KEY_LINES) or ota_cycle._stub_late_key(b))]
         lack = sorted(set(want) - {h.split("/")[0] for h in points[t]["hits"]})
         if lack:
             gaps.append("- `%s`: never on %s" % (t, ", ".join(lack)))

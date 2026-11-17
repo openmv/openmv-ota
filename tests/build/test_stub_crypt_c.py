@@ -63,6 +63,7 @@ static void phex(const uint8_t *b, size_t n) {
 }
 
 // rows: "A <key> <block>"            -> AES-128(key, block)
+//       "X <key> <block>"            -> the inverse: AES-128 decryption of block
 //       "S <key> <tweak> <addr> <n>" -> n keystream bytes from addr (XOR over zeros)
 //       "W <key> <tweak>"            -> CCKEYR0..3, CCNR0, CCNR1, VERSION, KEYCRC
 int main(int argc, char **argv) {
@@ -77,6 +78,12 @@ int main(int argc, char **argv) {
             unhex(b, blk);
             aes128_init(&aes, key);
             aes128_encrypt(&aes, blk, blk);
+            phex(blk, 16);
+        } else if (op[0] == 'X') {
+            aes128_t aes;
+            unhex(b, blk);
+            aes128_init(&aes, key);
+            aes128_decrypt(&aes, blk, blk);
             phex(blk, 16);
         } else if (op[0] == 'S') {
             unsigned long addr, n;
@@ -144,6 +151,13 @@ def test_the_stubs_cipher_matches_the_silicon_and_the_hosts_aes(tmp_path):
         k, b = os.urandom(16), os.urandom(16)
         rows.append("A %s %s" % (k.hex(), b.hex()))
         want.append(_aes(k, b).hex())
+    # ...and the inverse (the Alif engine's direction): the same vector backwards, then random
+    rows.append("X %s %s" % (fips_key.hex(), "69c4e0d86a7b0430d8cdb78070b4c55a"))
+    want.append("00112233445566778899aabbccddeeff")
+    for _ in range(20):
+        k, b = os.urandom(16), os.urandom(16)
+        rows.append("X %s %s" % (k.hex(), _aes(k, b).hex()))
+        want.append(b.hex())
     # the bench: the keystream, and the register values that produced it
     rows.append("S %s %s %x %d" % (_BENCH_KEY.hex(), _BENCH_TWEAK.hex(), 0x70800000, 48))
     want.append(_BENCH_KS0.hex())

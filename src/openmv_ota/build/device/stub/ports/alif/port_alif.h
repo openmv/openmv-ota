@@ -38,5 +38,6 @@ int ospi_flash_init(void);
 int ospi_flash_deinit(void);
 int ospi_flash_read(uint32_t addr, uint8_t *buf, uint32_t size);
 int ospi_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size);
+int ospi_flash_erase(uint32_t addr);                    // one 4 KiB sector
 
 #endif // STUB_PORT_ALIF_H

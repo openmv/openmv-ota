@@ -5,8 +5,9 @@
  * The part is hardware-reset into 1-line SPI and driven through the controller's FIFO:
  * READ 0x13 and PAGE PROGRAM 0x12 with 4-byte addresses, no dummy cycles, 50 MHz. The
  * firmware runs the part in octal DDR through the XIP window, so the stub never uses that
- * window: every slot access here is a command. The slots are never erased by the stub
- * (status marks are 16-byte programs over erased bytes), so there is no erase.
+ * window: every slot access here is a command. Status marks are 16-byte programs over
+ * erased bytes; a 4 KiB sector erase (0x21) is for a board that keeps its slots encrypted,
+ * where the stub rewrites one slot as the other's ciphertext.
  */
 #include "stub.h"
 #include "port.h"
@@ -28,6 +29,7 @@
 #define CMD_READ            (0x13)
 #define CMD_WREN            (0x06)
 #define CMD_WRITE           (0x12)
+#define CMD_ERASE_4K        (0x21)
 
 #define SR_WIP              (1 << 0)
 #define SR_WEL              (1 << 1)
@@ -120,7 +122,7 @@ static int ospi_recv(ospi_flash_t *o, uint32_t cmd, uint32_t addr_len, uint32_t 
     return 0;                                   // every frame is in: the transfer is over
 }
 
-static int ospi_wait_sr(ospi_flash_t *o, uint8_t mask, uint8_t val) {
+static int ospi_wait_sr_for(ospi_flash_t *o, uint8_t mask, uint8_t val, uint32_t timeout_ms) {
     uint32_t start = port_ticks_ms();
     do {
         uint8_t sr;
@@ -130,8 +132,12 @@ static int ospi_wait_sr(ospi_flash_t *o, uint8_t mask, uint8_t val) {
         if ((sr & mask) == val) {
             return 0;
         }
-    } while ((port_ticks_ms() - start) < 1000);
+    } while ((port_ticks_ms() - start) < timeout_ms);
     return -1;
+}
+
+static int ospi_wait_sr(ospi_flash_t *o, uint8_t mask, uint8_t val) {
+    return ospi_wait_sr_for(o, mask, val, 1000);
 }
 
 static int ospi_write_enable(ospi_flash_t *o) {
@@ -164,7 +170,11 @@ int ospi_flash_init(void) {
     ospi_writel(o, ser, 0);
     ospi_writel(o, rx_sample_dly, STUB_OSPI_RX_DELAY);
     ospi_writel(o, txd_drive_edge, STUB_OSPI_DDR_EDGE);
-    o->aes_regs->aes_control &= ~AES_CONTROL_XIP_EN;
+    // The memory map off, and the decryption engine with it: a reset that restarts the chip's
+    // cores does not always reset the engine (measured: the reset pin leaves it on, keyed for
+    // the slot the firmware last booted), and a firmware that maps the part again would read
+    // everything on it -- /flash first -- through a cipher it knows nothing about.
+    o->aes_regs->aes_control &= ~(AES_CONTROL_XIP_EN | AES_CONTROL_DECRYPT_EN);
     o->aes_regs->aes_rxds_delay = STUB_OSPI_RXDS_DELAY;
     spi_set_clk(o, STUB_AXI_CLOCK / STUB_OSPI_CLOCK);
     spi_enable(o);
@@ -231,6 +241,20 @@ int ospi_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size) {
         addr += n;
         buf += n;
         size -= n;
+    }
+    return 0;
+}
+
+// One 4 KiB sector, addr anywhere in it. The part's worst case is a few hundred ms.
+int ospi_flash_erase(uint32_t addr) {
+    ospi_flash_t *o = &ospi;
+    if (!o->initialized) {
+        return -1;
+    }
+    if (ospi_write_enable(o) != 0 ||
+        ospi_send(o, CMD_ERASE_4K, OSPI_ADDR_32BIT, addr, 0, NULL) != 0 ||
+        ospi_wait_sr_for(o, SR_WIP, 0, 3000) != 0) {
+        return -1;
     }
     return 0;
 }

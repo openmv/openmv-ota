@@ -100,3 +100,62 @@ def bee_keystream_xor(key: bytes, tweak: bytes, addr: int, data: bytes) -> bytes
         addr += n
     return bytes(out)
 
+
+
+# --- The Alif Ensemble (the OpenMV AE3): a block cipher with no address in it ---------------
+
+ECB_SLOT_KEY_LABEL = b"omvslt"
+FLASH_KEY_MAGIC = b"OMVF\x01"
+FLASH_KEY_PLACE = 64                    # bytes per place in the key area's first 256
+FLASH_KEY_PLACES = 4
+
+
+def aes_block(key: bytes, block: bytes, encrypt: bool = True) -> bytes:
+    """One AES-128 block operation and nothing else: the primitive the AE3's engine is, and a
+    key derivation's one block. (A single block through CBC with a zero IV is that operation;
+    each call starts a new one, so nothing chains.)"""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    if len(key) != 16 or len(block) != 16:
+        raise ValueError("key and block must be 16 bytes")
+    c = Cipher(algorithms.AES(key), modes.CBC(bytes(16)))
+    return (c.encryptor() if encrypt else c.decryptor()).update(block)
+
+
+def ecb_slot_key(flash_key: bytes, tweak: bytes) -> bytes:
+    """The key a slot image is ciphered under on the AE3 (the stub's ``ecb_slot.c``): one AES
+    block under the camera's flash key, ``tweak || "omvslt"``."""
+    if len(flash_key) != 16 or len(tweak) != TWEAK_SIZE:
+        raise ValueError("flash key must be 16 bytes and the tweak 10")
+    return aes_block(flash_key, tweak + ECB_SLOT_KEY_LABEL)
+
+
+def _ecb(key: bytes, data: bytes, encrypt: bool) -> bytes:
+    if len(key) != 16 or len(data) % 16:
+        raise ValueError("key must be 16 bytes and the data whole 16-byte blocks")
+    return b"".join(aes_block(key, data[i:i + 16][::-1], encrypt)[::-1] for i in range(0, len(data), 16))
+
+
+def ecb_encrypt(key: bytes, data: bytes) -> bytes:
+    """``data`` as the AE3's flash holds it under slot key ``key``: AES-128 a block at a
+    time, each block's bytes reversed going in and coming out, as the chip's engine deciphers
+    them. For tests and the fleet's read-back, with a key they know."""
+    return _ecb(key, data, True)
+
+
+def ecb_decrypt(key: bytes, data: bytes) -> bytes:
+    """What the AE3's engine reads out of stored ``data`` under slot key ``key``."""
+    return _ecb(key, data, False)
+
+
+def flash_key(area: bytes) -> bytes | None:
+    """The camera's flash key out of the first 256 bytes of an AE3's key area (the stub's
+    ``ecb_flash_key``): the first place whose commit word and key word are both whole."""
+    for off in range(0, FLASH_KEY_PLACE * FLASH_KEY_PLACES, FLASH_KEY_PLACE):
+        place = area[off:off + FLASH_KEY_PLACE]
+        if place[:len(FLASH_KEY_MAGIC)] != FLASH_KEY_MAGIC:
+            continue
+        key = place[32:48]
+        if bytes(b ^ 0xFF for b in key) == place[48:64]:
+            return bytes(key)
+    return None

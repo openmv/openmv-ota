@@ -512,6 +512,12 @@ COVERAGE = {
     "boot: marked slot XIP": "boot.marked",
     "boot: slot marker verified": "boot.marked_verify",       # marker read back + verified
     "boot: stub ": "boot.stub",                               # a boot-stub board: the stub chose + installed the slot
+    # The AE3: its firmware keys the chip's cipher engine for the slot the stub booted.
+    "boot: slot engine on": "boot.engine_on",                 # keyed and switched on, before the slot is read
+    "boot: slot engine off": "boot.engine_off",               # the booted slot is stored in the clear
+    "boot: flash key made": "boot.flash_key",                 # the first boot: the camera's key made, then a reset
+    "boot: no flash key": "boot.engine_failed",
+    "boot: slot engine failed": "boot.engine_failed",
     # The boot stub (C, build/device/stub) logs "stub: <line>" on the same UART before the
     # firmware starts. Its literals are whole lines with no runtime words inside them, so a
     # key here is checked verbatim against the C source (hil_coverage.stub_log_lines).
@@ -525,6 +531,7 @@ COVERAGE = {
     "stub: record written": "stub.record_written",            # the install record landed last
     "stub: installed area verified": "stub.install_verified",  # ...and the area hashes to it through the memory map
     "stub: flash cipher on": "stub.crypt",                    # the firmware area is ciphertext at rest, and the chip took the key
+    "stub: no flash key yet": "stub.no_flash_key",            # the AE3's first boot: nothing is ciphered until the camera has its key
     # The slots, on a board whose stub keeps them ciphertext at rest too: a slot stored in the
     # clear (the factory image) is copied into the other slot through the cipher and erased.
     "stub: slot in the clear: converting": "stub.slot_convert",
@@ -991,10 +998,14 @@ STUB_FAULT_ONLY = {
 # Lines only a stub that keeps its firmware area encrypted prints (boards.json stub.encrypted):
 # the per-board gaps in the coverage report do not ask the other boards for them.
 STUB_CRYPT_LINES = ("stub: flash cipher", "stub: stale blocks erased",
-                    "stub: firmware area in the clear", "stub: area scrub", "stub: no hardware key",
-                    "stub: slot in the clear", "stub: slot converted", "stub: clear slot erased",
-                    "stub: other slot in the clear", "stub: slot body does not verify",
-                    "stub: slot convert failed", "stub: converted slot does not verify")
+                    "stub: firmware area in the clear", "stub: area scrub", "stub: no hardware key")
+# ...and lines only a stub that keeps its SLOTS encrypted prints (those boards, and the AE3,
+# whose firmware area is in the clear: boards.json stub.slots_encrypted).
+STUB_SLOT_CRYPT_LINES = ("stub: slot in the clear", "stub: slot converted", "stub: clear slot erased",
+                         "stub: other slot in the clear", "stub: slot body does not verify",
+                         "stub: slot convert failed", "stub: converted slot does not verify")
+# ...and the one line of a stub whose key the camera makes on its first boot (the AE3).
+STUB_LATE_KEY_LINES = ("stub: no flash key yet",)
 
 
 def _stub_encrypts(board):
@@ -1004,6 +1015,28 @@ def _stub_encrypts(board):
         from openmv_ota.romfs.boards import get_board
         stub = get_board(board).stub
         return bool(stub and stub.encrypted)
+    except Exception:
+        return False
+
+
+def _stub_slot_crypt(board):
+    """True when this board's stub keeps the ROMFS slots encrypted: with the firmware area
+    (``stub.encrypted``) or alone (``stub.slots_encrypted``, the AE3)."""
+    try:
+        from openmv_ota.romfs.boards import get_board
+        stub = get_board(board).stub
+        return bool(stub and stub.slot_crypt)
+    except Exception:
+        return False
+
+
+def _stub_late_key(board):
+    """True when the camera makes its own flash key on its first boot (the AE3): the one
+    board whose stub can find it has none yet."""
+    try:
+        from openmv_ota.romfs.boards import get_board
+        stub = get_board(board).stub
+        return bool(stub and stub.slots_encrypted)
     except Exception:
         return False
 
@@ -1068,7 +1101,7 @@ def _enable_stub_uart(project, board):
     if "\nENABLED = True" not in new or "\nUART = %d" % uart not in new:
         raise RuntimeError("%s: could not set ENABLED/UART for the boot stub -- the module's "
                            "defaults are not where this expects" % path)
-    if _stub_encrypts(board):
+    if _stub_slot_crypt(board):
         # Bench mode (DEBUG, the lines the coverage keys on) normally comes from the baked
         # .hilcov_uart file, read at import through the stock /rom mount -- the start of the
         # partition, slot A. On a board whose stub keeps the slots encrypted, slot A is
@@ -1143,8 +1176,14 @@ def scenario_markers(board, key, then=False):
                        "stub.boot_repaired"} - expect
             if _stub_encrypts(board):
                 expect.add("stub.crypt")
-                if "install.armed" in expect:
-                    expect.add("install.slot_cipher")    # the installer wrote its slot through the cipher
+            if _stub_slot_crypt(board) and "install.armed" in expect:
+                expect.add("install.slot_cipher")        # the installer wrote its slot through the cipher
+            if _stub_late_key(board):
+                # The window opens with a hard reset, which leaves the engine to the firmware:
+                # it keys it for the booted slot on every such boot. The key was made, and the
+                # factory slot ciphered, before any window opened.
+                expect.add("boot.engine_on")
+                forbid |= {"boot.engine_failed", "boot.engine_off", "boot.flash_key", "stub.no_flash_key"}
         elif s.get("secure_boot"):
             expect.add("stub.unsigned_refused")
             forbid.add("stub.no_slot_boot")
@@ -1155,7 +1194,7 @@ def scenario_markers(board, key, then=False):
             expect.add("stub.no_slot_boot")
         if not s.get("secure_boot"):
             forbid.add("stub.unsigned_refused")
-        if _stub_encrypts(board):
+        if _stub_slot_crypt(board):
             # The factory slot is converted on the first boot after the golden flash, before any
             # window opens; inside a window nothing in the clear may turn up (a conversion or a
             # drop there means a slot was written in the clear).
@@ -1997,22 +2036,25 @@ def check_at_rest(board):
     from openmv_ota.romfs.boards import firmware_image_name, get_board
     cfg, layout = flash_config(board), get_board(board).stub
     build = os.path.join(CFG["project"], "build")
-    with open(os.path.join(build, "%s-stub.bin" % board), "rb") as f:
-        stub = f.read()
-    with open(os.path.join(build, firmware_image_name(board)), "rb") as f:
-        firmware = f.read()
-    log("at rest: reading %s's firmware partition back through the bootloader" % board)
-    dump, why = _dfu_upload(board, cfg.alt_of("firmware"), "firmware-partition.bin")
-    if dump is None:
-        return False, {"problems": [why]}
-    start = layout.firmware_dest - layout.origin
-    problems, numbers = at_rest.judge(dump, stub, firmware, start, start + layout.firmware_max)
-    report = dict(numbers, problems=problems)
-    if numbers:
-        log("at rest: stub %s; %d of %d firmware blocks stored as built, %d build samples "
-            "found, %.3f bits/byte, %d bytes not blank after it"
-            % ("as built" if numbers["stub_ok"] else "NOT this build's", numbers["same"],
-               numbers["blocks"], numbers["found"], numbers["entropy"], numbers["stale"]))
+    problems, report = [], {}
+    if layout.encrypted:
+        # (Not the AE3: its firmware is in the chip's own MRAM, in the clear by design.)
+        with open(os.path.join(build, "%s-stub.bin" % board), "rb") as f:
+            stub = f.read()
+        with open(os.path.join(build, firmware_image_name(board)), "rb") as f:
+            firmware = f.read()
+        log("at rest: reading %s's firmware partition back through the bootloader" % board)
+        dump, why = _dfu_upload(board, cfg.alt_of("firmware"), "firmware-partition.bin")
+        if dump is None:
+            return False, {"problems": [why]}
+        start = layout.firmware_dest - layout.origin
+        problems, numbers = at_rest.judge(dump, stub, firmware, start, start + layout.firmware_max)
+        report = dict(numbers, problems=problems)
+        if numbers:
+            log("at rest: stub %s; %d of %d firmware blocks stored as built, %d build samples "
+                "found, %.3f bits/byte, %d bytes not blank after it"
+                % ("as built" if numbers["stub_ok"] else "NOT this build's", numbers["same"],
+                   numbers["blocks"], numbers["found"], numbers["entropy"], numbers["stale"]))
     # The ROMFS slots too, where the build has the plaintext of what they should hold: the
     # update the scenario installed (slot A, the slot the installer wrote) and the factory
     # image the stub converted (slot B). Matched by trailer, so the order is not assumed.
@@ -4400,13 +4442,13 @@ def main():
         # update -- by now the stub has stored the factory flash's plaintext download and then
         # installed the update -- read the firmware back through the bootloader and require
         # ciphertext (check_at_rest). The scored window is over, so taking the REPL costs nothing.
-        if (trace["passed"] and args.scenario == "delta" and _stub_encrypts(args.board)
+        if (trace["passed"] and args.scenario == "delta" and _stub_slot_crypt(args.board)
                 and _usb_firmware(args.board)):        # the read-back is a DFU upload
             ok, report = phase("at_rest", lambda: check_at_rest(args.board))
             trace["at_rest"] = report
             if not ok:
                 trace["passed"] = False
-                log("FAIL: the firmware is not ciphertext in the flash chip")
+                log("FAIL: the flash chip holds something that is not ciphertext")
         if spec.get("secure_boot"):
             # The way back, whatever the score: the camera is stopped in its stub with no USB
             # console, and a golden flash over USB (the usual stub with it) is the recovery a

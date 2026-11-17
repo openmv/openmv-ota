@@ -730,7 +730,8 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
         return steps
     raw = flash_config(board).raw
     stub = get_board(board).stub
-    deadline = time.monotonic() + (_CRYPT_BOOT_WAIT_S if stub and stub.encrypted else _IDENTITY_WAIT_S)
+    boot_wait = _CRYPT_BOOT_WAIT_S if stub and stub.slot_crypt else _IDENTITY_WAIT_S
+    deadline = time.monotonic() + boot_wait
     while (cam := device.select(raw, serial)) is None:
         if time.monotonic() > deadline:
             raise FlashError("the camera did not come back on USB after flashing; its keys were "
@@ -771,7 +772,7 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
                 drops += 1
                 print("the camera dropped off USB while its keys were asked for (%s); "
                       "reopening" % e, file=sys.stderr)
-                con = _reconnect(con, raw, serial, time.monotonic() + _IDENTITY_WAIT_S) \
+                con = _reconnect(con, raw, serial, time.monotonic() + boot_wait) \
                     if drops <= _IDENTITY_RECONNECTS else None
                 if con is None:
                     break

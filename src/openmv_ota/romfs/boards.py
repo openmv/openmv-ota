@@ -74,6 +74,16 @@ class StubLayout:
     # (the N6's memory cipher engine, keyed from the chip's own hardware key): what the tool
     # flashes there in the clear is installed again, encrypted, on the first boot.
     encrypted: bool = False
+    # The stub keeps the booted ROMFS slot ciphertext at rest and nothing else (the AE3: its
+    # firmware is in the chip's own MRAM, its slots on a flash part beside it), under a key
+    # the camera makes on its first boot.
+    slots_encrypted: bool = False
+
+    @property
+    def slot_crypt(self) -> bool:
+        """The stub keeps the ROMFS slots ciphertext at rest, with the firmware area or alone:
+        the installer writes a slot through the cipher."""
+        return self.encrypted or self.slots_encrypted
 
     @property
     def stub_max(self) -> int:
@@ -136,8 +146,12 @@ def _stub(name: str, raw) -> StubLayout | None:
     encrypted = raw.get("encrypted", False)
     if not isinstance(encrypted, bool):
         raise ValueError("boards.json: %s stub encrypted must be true or false" % name)
+    slots_encrypted = raw.get("slots_encrypted", False)
+    if not isinstance(slots_encrypted, bool) or (encrypted and slots_encrypted):
+        raise ValueError("boards.json: %s stub slots_encrypted must be true or false, and not "
+                         "set beside encrypted (which covers the slots too)" % name)
     return StubLayout(origin, dest, size, t2_dest, t2_max, prefer, exclude, cp_dest, cp_max, record,
-                      encrypted)
+                      encrypted, slots_encrypted)
 
 
 def firmware_image_name(name: str) -> str:

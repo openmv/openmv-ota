@@ -633,6 +633,8 @@ _TRAILER_MAGIC = b"OMVR"
 # framing | versions | stub resources | identity (three u64 at 40/48/56) | body_sha256 at 64
 _TRAILER_HEADER_STRUCT = "<4sIIIIIIBBBBIIQQQ32s"
 _TRAILER_PAYLOAD_VERSION = 6                      # field index of payload_version
+_TRAILER_COMP_SIZE = 80                           # one component entry: dest, offset, size, ...
+_CRYPT_GRAIN = 4096                               # the slot cipher's reach is rounded up to it
 _TRAILER_BODY_SHA = 16                            # field index of body_sha256 (the last field)
 
 
@@ -754,6 +756,27 @@ def _slot_tweak(index, trailer_sha256):
     signed region hashes to ``trailer_sha256`` (32 bytes, from the manifest)."""
     h = hashlib.sha256(_SLOT_CRYPT_LABEL + struct.pack("<I", index) + trailer_sha256)
     return h.digest()[:10]
+
+
+def _trailer_crypt_size(trailer, body_end):
+    """How far the cipher reaches from the start of a slot holding this trailer: the body and
+    every component, to the cipher's 4 KiB grain, never past ``body_end`` (the status sector).
+    0 if the trailer doesn't parse. (Mirror of ``slot_crypt.crypt_size``.)"""
+    head = struct.calcsize(_TRAILER_HEADER_STRUCT)
+    if len(trailer) < head:
+        return 0
+    fields = struct.unpack_from(_TRAILER_HEADER_STRUCT, trailer, 0)
+    if fields[0] != _TRAILER_MAGIC:
+        return 0
+    used, count = fields[2], fields[3]                # body_size, comp_count
+    if head + count * _TRAILER_COMP_SIZE > len(trailer):
+        return 0
+    for i in range(count):
+        _dest, offset, size = struct.unpack_from("<III", trailer, head + i * _TRAILER_COMP_SIZE)
+        if offset + size > used:
+            used = offset + size
+    used = (used + _CRYPT_GRAIN - 1) // _CRYPT_GRAIN * _CRYPT_GRAIN
+    return used if used < body_end else body_end
 
 
 def _trailer_version(trailer):
@@ -1947,6 +1970,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     # nothing more than an addend.
     part = vfs.rom_ioctl(2, 0)
     xip_base = None                                   # set by the XIP write path below
+    base_stored = None                                # set there too, on the AE3 (see base_read)
     _seen = set()                                     # one-shot log guard: emit each per-chunk
     if hasattr(part, "ioctl"):                        # write marker once (bounded, RAM-safe)
         log.debug("install: write path block-device")
@@ -2097,9 +2121,37 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
         # is trailer padding: a trailer parses from offset 0 and the erase/write verifies simply
         # cover that much less. Everything else is byte-for-byte the alias it was before.
         readable_end = len(part) - _XIP_TAIL_GUARD
+        # On a board whose cipher engine deciphers every read of the map (the AE3:
+        # flash_crypt.raw), what the flash HOLDS -- the slot being written, any slot's control
+        # data, whether a block is blank -- is the map with the engine undone: a copy, into
+        # one reused chunk. The running slot's body (the delta base) is the one thing read as
+        # mapped: that is what the engine is keyed for.
+        _raw = None
+        if getattr(cfg, "SLOT_CRYPT", False):
+            try:  # hil-residual: an import guard; install.slot_cipher witnesses the module on every encrypting board
+                import flash_crypt as _fc  # hil-residual: the firmware's C module on an encrypting board
+                _raw = getattr(_fc, "raw", None)  # hil-residual: same
+            except ImportError:  # hil-residual: an encrypting board's firmware always carries the module; the install refuses below without it
+                pass  # hil-residual: same branch as the line above
+        _rs = memoryview(bytearray(_CHUNK)) if _raw is not None else None
+
+        def stored_at(off, n):
+            if _raw is None:  # hil-residual: witnessed by the read-back and blank-probe markers of every XIP install
+                return uctypes.bytearray_at(base + off, n)  # hil-residual: bare return of the alias (every board but the AE3)
+            v = _rs if n == _CHUNK else (_rs[:n] if n < _CHUNK else memoryview(bytearray(n)))  # hil-residual: the AE3's copy; witnessed by every write verify and blank probe of its installs
+            _raw(base + off, v)  # hil-residual: same
+            return v  # hil-residual: same
+
+        if _raw is not None:
+            _bs = memoryview(bytearray(_CHUNK))       # hil-residual: the AE3's scratch for base reads past the cipher's reach
+
+            def base_stored(off, n):                  # hil-residual: a def line; base_read below says when it runs
+                v = _bs[:n] if n <= _CHUNK else memoryview(bytearray(n))  # hil-residual: witnessed by install.delta on the AE3: a patch that copies from the base's pad reconstructs only through this
+                _raw(base + off, v)  # hil-residual: same
+                return v  # hil-residual: same
 
         def read_at(off, n):                          # absolute partition offset
-            r = uctypes.bytearray_at(base + off, _clamp_to(off, n, readable_end))
+            r = stored_at(off, _clamp_to(off, n, readable_end))
             if log and "r" not in _seen:
                 _seen.add("r")
                 log.debug("install: readback XIP")
@@ -2134,7 +2186,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                 k = _CHUNK if n >= _CHUNK else n
                 if off + k > readable_end:            # tail guard -- unreadable, so never assume
                     return False  # hil-residual: bare return (tail-guard block is always erased)
-                if not _is_blank(uctypes.bytearray_at(base + off, k)):
+                if not _is_blank(stored_at(off, k)):
                     return False  # hil-residual: bare return (dirty block -- must be erased)
                 off += k
                 n -= k
@@ -2241,7 +2293,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     # depends on which slot happens to be running.
     slots = _slot_table(cfg.PARTITION_SIZE, cfg.FRONT_SIZE)
     running = getattr(cfg, "last_slot", None)         # set by boot.py when it mounted a slot
-    counters, floors, epochs, versions, offsets, shas = {}, {}, {}, {}, {}, {}
+    counters, floors, epochs, versions, offsets, shas, reaches = {}, {}, {}, {}, {}, {}, {}
     for _name, _off, _size in slots:
         _st = read_at(_off + _size - 2 * block, block)   # the status sector: counter + floors
         counters[_name] = _install_counter(_st)
@@ -2249,6 +2301,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
         epochs[_name] = _rollback_floor_of(_st[_EPOCH_OFF:])
         _tr = read_at(_off + _size - block, block)
         versions[_name] = _trailer_version(_tr)
+        reaches[_name] = _trailer_crypt_size(_tr, _size - 2 * block)
         shas[_name] = _trailer_body_sha(_tr)          # names the slot's exact bytes (one field)
         offsets[_name] = _off
         log.debug("install: slot surveyed")            # bounded: once per slot (at most twice)
@@ -2256,6 +2309,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     epoch = max(epochs.values())                      # (and so is the certificate-epoch floor)
     base_off = offsets.get(running, 0)                # ...and the delta base is the running slot
     base_version = versions.get(running, 0)
+    base_reach = reaches.get(running, 0)              # how far the running slot is ciphered
     base_body_sha = shas.get(running, "")
     target, target_off, slot_size, counter = _install_target(slots, running, counters)
     # SINGLE mode erases the only slot there is, so there is no surviving image to patch against.
@@ -2278,8 +2332,12 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
         if xip_base is None:  # hil-residual: every encrypting board is mapped or has its base baked in; the guard is for a port with neither
             raise OSError("slot cipher needs the partition's flash address")  # hil-residual: unreachable on the fleet's encrypting boards
 
+        # A counter-mode engine's module XORs its keystream (xor: the N6, the RT1062); the
+        # AE3's ciphers whole blocks (encrypt). Either way: plaintext in, what the flash holds out.
+        _cipher = getattr(flash_crypt, "encrypt", None) or flash_crypt.xor  # hil-residual: witnessed by the stub's `slot ok` on the trial boot
+
         def crypt(off, buf, _slot=1 if target == "B" else 0):   # hil-residual: a def line; its body is witnessed by the stub's `slot ok` on the trial boot
-            flash_crypt.xor(xip_base + target_off + off, buf, _tweak[_slot])  # hil-residual: witnessed by the stub's `slot ok` on the trial boot
+            _cipher(xip_base + target_off + off, buf, _tweak[_slot])  # hil-residual: witnessed by the stub's `slot ok` on the trial boot
         _tweak = (None, None)                         # hil-residual: a placeholder the vetted manifest replaces (install.slot_cipher)
 
     def write(off, data):                             # SLOT-RELATIVE, so _install_stream and the
@@ -2300,6 +2358,17 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     def base_read(off, n):                            # the delta base: the RUNNING slot
         if off + n > base_limit:  # hil-residual: contract guard -- the builder computes the patch against this same region, so a real bench delta never trips it; the taken branch is unit-tested
             raise ValueError("delta reads past the base body region")  # hil-residual: contract violation (a patch built against the whole slot); the bench's deltas are body-only so it is unreachable there
+        if base_stored is not None and off + n > base_reach:  # hil-residual: the AE3 alone has base_stored; witnessed by install.delta there
+            # The AE3's engine deciphers the whole part, and the base is ciphered only as far
+            # as its image reaches: the pad after it is stored blank, and reads as noise
+            # through the map. Past the reach the base is what the flash holds.
+            if off >= base_reach:  # hil-residual: witnessed by install.delta on the AE3 (see base_stored)
+                return base_stored(base_off + off, n)  # hil-residual: same
+            k = base_reach - off  # hil-residual: a read across the edge: the two halves, joined
+            both = bytearray(n)  # hil-residual: same
+            both[:k] = base_read_at(base_off + off, k)  # hil-residual: same
+            both[k:] = base_stored(base_off + base_reach, n - k)  # hil-residual: same
+            return both  # hil-residual: same
         return base_read_at(base_off + off, n)  # hil-residual: bare return of the slot-relative base read
 
     # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the

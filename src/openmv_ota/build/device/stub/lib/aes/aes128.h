@@ -1,6 +1,8 @@
 /*
- * AES-128, encryption only -- the block function the stub's flash keystream is made of
- * (ports/stm32/mce_stream.c). Small rather than fast: a table of 256 bytes and no
+ * AES-128 -- the block function the stub's flash ciphers are made of: encryption for the
+ * counter-mode engines' keystreams (ports/stm32/mce_stream.c, ports/mimxrt/bee_stream.c),
+ * and the inverse for the Alif engine's block mode (ports/alif/ecb_slot.c). Small rather
+ * than fast: a table of 256 bytes and no
  * precomputed rounds, about 2 KiB of code; the stub runs it over a firmware image once
  * per install, which the flash erases dwarf.
  */
@@ -15,5 +17,6 @@ typedef struct {
 
 void aes128_init(aes128_t *a, const uint8_t key[16]);
 void aes128_encrypt(const aes128_t *a, const uint8_t in[16], uint8_t out[16]);
+void aes128_decrypt(const aes128_t *a, const uint8_t in[16], uint8_t out[16]);
 
 #endif // STUB_AES128_H

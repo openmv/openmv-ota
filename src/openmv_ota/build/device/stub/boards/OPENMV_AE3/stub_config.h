@@ -48,6 +48,15 @@
 #define STUB_ROMFS_ORIGIN           0xA0800000
 #define STUB_ROMFS_LENGTH           0x01800000
 
+// The booted slot's body is ciphertext at rest (verify.c, install.c); the firmware, in the
+// chip's own MRAM, is not. The key is the camera's own, made by the firmware on its first
+// boot and kept at the head of the key area (the last 4 KiB of the bootloader's partition,
+// boards.json's secure_element.key_area): until then the slots run as flashed.
+#define STUB_SLOT_CRYPT             1
+#define STUB_CRYPT_KEY_LATE         1
+#define STUB_CRYPT_GRAIN            0x1000          // what a manifest's crypt_size is rounded to
+#define STUB_KEY_AREA               0x8001F000
+
 // Where firmware may put its stack (the vector-table plausibility check): the HP core's
 // stack is in its ITCM at 0, its data in DTCM/SRAM.
 #define STUB_RAM_START              0x00000000

@@ -314,9 +314,7 @@ static int write_record(const slot_t *s, uint32_t reason) {
 }
 
 
-#ifdef STUB_CRYPT_START
-_Static_assert((STUB_CRYPT_START % STUB_FLASH_BLOCK) == 0, "the encrypted area starts on an erase block");
-
+#if defined(STUB_CRYPT_START) || defined(STUB_SLOT_CRYPT)
 // Is the erase block at addr blank, as stored?
 static bool block_blank(uint32_t addr) {
     for (uint32_t off = 0; off < STUB_FLASH_BLOCK; off += IN_CHUNK) {
@@ -331,7 +329,10 @@ static bool block_blank(uint32_t addr) {
     }
     return true;
 }
+#endif
 
+#ifdef STUB_CRYPT_START
+_Static_assert((STUB_CRYPT_START % STUB_FLASH_BLOCK) == 0, "the encrypted area starts on an erase block");
 
 // An encrypted area holds nothing but this install. Whatever else is in it -- the tail of
 // a longer firmware an earlier install left, or of one downloaded over USB in the clear --

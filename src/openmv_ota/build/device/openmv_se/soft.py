@@ -8,8 +8,11 @@ rewritten: firmware and romfs updates don't touch the boot partition. Opening on
 in the field either has its keys or fails, and never makes new ones on its own. All
 elliptic-curve work is mbedtls's, through ``ecdsa_verify``.
 
-THE KEY AREA is 4 KB: sixteen 256-byte slots, filled from the top of the area down (so the area
-could later be made smaller without losing the slots in use). Each slot is one record or blank. A
+THE KEY AREA is 4 KB: sixteen 256-byte slots. The lowest is not this module's: on a board whose
+firmware keys its flash cipher itself (the AE3) it holds the camera's flash key (``openmv_slot_engine``,
+``make_flash_key``), and it is left alone everywhere. The other fifteen are filled from the top
+of the area down (so the area could later be made smaller without losing the slots in use). Each
+of those is one record or blank. A
 record is eight 32-byte words -- 32 bytes is the largest flash write unit here (the H7's), and
 fields are aligned to their size:
 
@@ -115,7 +118,8 @@ def _scan():
     blank = bytes([key_store.BLANK]) * _WORD
     newest = free = None
     damaged = False
-    for i in range(key_store.SIZE // _SLOT):           # top down: the order they're written in
+    for i in range(key_store.SIZE // _SLOT - 1):       # top down: the order they're written in;
+        #                                                the lowest slot is the flash key's
         off = key_store.SIZE - (i + 1) * _SLOT
         words = _words(off)
         if all(w == blank for w in words):
