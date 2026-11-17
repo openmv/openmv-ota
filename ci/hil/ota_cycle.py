@@ -955,6 +955,8 @@ SCENARIOS["fw_corrupt"] = dict(
 # a path a scenario could exercise, and the coverage report names the ones none does.
 STUB_FAULT_ONLY = {
     "stub: no hardware key": "the chip's hardware key is not valid",
+    "stub: fuse key": "a chip whose SW_GP2 fuses are not locked yet: the stub makes the key "
+                      "once in a chip's life, and the fleet's board has had its turn",
     "stub: flash cipher setup failed": "the cipher engine refused its key",
     "stub: component install failed": "an erase, a program or its read-back failed",
     "stub: area scrub failed": "a read or an erase of the encrypted area failed",

@@ -54,13 +54,13 @@ It is for the OPENMV_RT1060, which has no DFU bootloader; on a DFU board
 `dfu-util -U` uploads a partition the same way.
 
 ```
-$ openmv-ota flash read -b OPENMV_RT1060 --part firmware --to firmware-area.bin
+$ openmv-ota flash read -b OPENMV_RT1060 --part firmware --to rt-read-firmware.bin
 Reading memory
 Response status = 0 (0x0) Success.
 Response word 1 = 3932160 (0x3c0000)
 Read 3932160 of 3932160 bytes.
 Response status = 0 (0x0) Success.
-read firmware 0x60040000 (0x3C0000) -> firmware-area.bin (OPENMV_RT1060)
+read firmware 0x60040000 (0x3C0000) -> rt-read-firmware.bin (OPENMV_RT1060)
 reset (OPENMV_RT1060)
 ```
 

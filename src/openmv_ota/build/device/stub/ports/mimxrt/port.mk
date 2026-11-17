@@ -45,7 +45,10 @@ CFLAGS += -Ilib/aes
 SRC_C += $(PORT_DIR)/port.c \
          $(PORT_DIR)/bee.c \
          $(PORT_DIR)/bee_stream.c \
+         $(PORT_DIR)/fuse_key.c \
+         $(PORT_DIR)/fuse_key_plan.c \
          lib/aes/aes128.c \
          $(HAL_DIR)/drivers/fsl_romapi.c \
+         $(HAL_DIR)/drivers/fsl_trng.c \
          $(CMSIS_DIR)/src/mimxrt/system_$(MCU_SERIES).c
 SRC_S += common/start.s

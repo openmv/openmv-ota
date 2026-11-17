@@ -18,7 +18,7 @@
 // bee_stream.c on the RT1062: the file above this one in the generated module). The key is
 // the stub's, derived here on first use and kept for the process: on the N6, AES-256-ECB
 // of a fixed label in the SAES under the DHUK; on the RT1062, AES-128-ECB of the same
-// label in the DCP under its unique key. It is never handed to Python.
+// label in the DCP under the key in the SW_GP2 fuses. It is never handed to Python.
 //
 // `openmv-ota build firmware` writes this file into the firmware's modules/ dir, with the
 // stub's aes128 and stream sources pasted above it, for a board whose stub layout is
@@ -74,17 +74,26 @@ static const uint8_t flash_crypt_label[16] = { 'o', 'm', 'v', '-', 'f', 'l', 'a'
 
 #if defined(FLASH_CRYPT_BEE)
 
-// The DCP by its registers: one AES-128-ECB block of the label under the unique key, as the
-// stub's bee.c runs it. -13 when the fuse key has not reached the DCP, -5 on a timeout or a
-// channel error. On a chip that is not closed the unique key is sixteen zero bytes, on
-// every board (see bee.c): the key is then one anyone can compute.
+// The DCP by its registers: one AES-128-ECB block of the label under the key in the chip's
+// SW_GP2 fuses, as the stub's bee.c runs it -- the DCP's key input pointed at the fuses, the
+// block reset so it takes them. -13 when the fuse key has not reached the DCP, or when what
+// comes out is the key an all-zero hardware key gives (an open chip off the fuses: never a
+// camera's key); -5 on a timeout or a channel error.
 static int omv_flash_crypt_derive(uint8_t key[16]) {
     static uint32_t packet[8] __attribute__((aligned(32)));
     static uint8_t src[32] __attribute__((aligned(32)));
     static uint8_t dst[32] __attribute__((aligned(32)));
     CCM->CCGR0 |= CCM_CCGR0_CG5_MASK;
+    IOMUXC_GPR->GPR10 |= IOMUXC_GPR_GPR10_DCPKEY_OCOTP_OR_KEYMUX_MASK;
+    if (!(IOMUXC_GPR->GPR10 & IOMUXC_GPR_GPR10_DCPKEY_OCOTP_OR_KEYMUX_MASK)) {
+        return -13;                              // the mux is locked the other way until a reset
+    }
+    DCP->CTRL_SET = DCP_CTRL_SFTRST_MASK;
+    uint32_t t0 = mp_hal_ticks_ms();
+    while (mp_hal_ticks_ms() - t0 < 2) {
+    }
     DCP->CTRL_CLR = DCP_CTRL_SFTRST_MASK | DCP_CTRL_CLKGATE_MASK;
-    uint32_t t0 = mp_hal_ticks_ms();             // the status reads zero until the clock has run
+    t0 = mp_hal_ticks_ms();                      // the status reads zero until the clock has run
     while (!(DCP->STAT & DCP_STAT_OTP_KEY_READY_MASK)) {
         if (mp_hal_ticks_ms() - t0 > 100) {
             return -13;
@@ -97,7 +106,7 @@ static int omv_flash_crypt_derive(uint8_t key[16]) {
     memset(dst, 0, sizeof(dst));
     packet[0] = 0;
     packet[1] = 0x122U | (1U << 10);             // encrypt, cipher on, release the semaphore; an OTP key
-    packet[2] = 0xFEU << 8;                      // ...the unique one
+    packet[2] = 0xFFU << 8;                      // ...the one on its hardware input: SW_GP2
     packet[3] = (uint32_t) src;
     packet[4] = (uint32_t) dst;
     packet[5] = 16;
@@ -120,6 +129,15 @@ static int omv_flash_crypt_derive(uint8_t key[16]) {
     SCB_InvalidateDCache_by_Addr((void *) dst, sizeof(dst));
     memcpy(key, dst, 16);
     memset(dst, 0, sizeof(dst));
+    static const uint8_t zero[16];
+    aes128_t a;
+    uint8_t open_key[16];
+    aes128_init(&a, zero);
+    aes128_encrypt(&a, flash_crypt_label, open_key);
+    if (memcmp(open_key, key, 16) == 0) {
+        memset(key, 0, 16);
+        return -13;
+    }
     return 0;
 }
 
