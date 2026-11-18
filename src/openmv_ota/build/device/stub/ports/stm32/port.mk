@@ -77,7 +77,11 @@ $(BUILD)/mce.o $(BUILD)/stm32n6xx_hal_cryp.o $(BUILD)/stm32n6xx_hal_cryp_ex.o: C
 endif
 
 ifeq ($(HAL_SERIES),h7)
+CFLAGS += -Ilib/aes
 SRC_C += $(PORT_DIR)/qspi.c \
+         $(PORT_DIR)/mce_stream.c \
+         lib/aes/aes128.c \
+         lib/aes/flash_key.c \
          $(addprefix $(HAL_DIR)/src/, \
          stm32h7xx_hal_qspi.c \
          stm32h7xx_hal_flash.c \

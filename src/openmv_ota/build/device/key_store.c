@@ -116,13 +116,14 @@ static int omv_key_store_ecc_failed(uintptr_t lo, int32_t span) {
     return at >= lo && at < lo + (uintptr_t)span;
 }
 
+// Not static: the flash_crypt module reads the camera's flash key through it (the H7 Plus).
 // Copy ``len`` bytes of the key area at ``addr``: 0, or -1 if a flash word there failed its ECC
 // (a double error: a power cut while it was programmed; reproduced on a Pure Thermal by
 // programming one flash word twice). The read runs with bus faults ignored
 // -- FAULTMASK raises the CPU to priority -1, where CCR.BFHFNMIGN applies -- and the flash
 // controller's double-error flag says afterwards whether any of it was bad. The D-cache lines are
 // dropped first so the bytes come from the flash, not from a line cached before it went bad.
-static int omv_key_store_copy(uint8_t *dst, uintptr_t addr, size_t len) {
+int omv_key_store_copy(uint8_t *dst, uintptr_t addr, size_t len) {
     uintptr_t lo = addr & ~(uintptr_t)31;
     int32_t span = (int32_t)(((addr + len + 31) & ~(uintptr_t)31) - lo);
     SCB_InvalidateDCache_by_Addr((void *)lo, span);

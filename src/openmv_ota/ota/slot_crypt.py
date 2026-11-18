@@ -150,7 +150,7 @@ def ecb_decrypt(key: bytes, data: bytes) -> bytes:
 
 def flash_key(area: bytes) -> bytes | None:
     """The camera's flash key out of the first 256 bytes of an AE3's key area (the stub's
-    ``ecb_flash_key``): the first place whose commit word and key word are both whole."""
+    ``flash_key_read``): the first place whose commit word and key word are both whole."""
     for off in range(0, FLASH_KEY_PLACE * FLASH_KEY_PLACES, FLASH_KEY_PLACE):
         place = area[off:off + FLASH_KEY_PLACE]
         if place[:len(FLASH_KEY_MAGIC)] != FLASH_KEY_MAGIC:

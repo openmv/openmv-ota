@@ -4,10 +4,6 @@ To-do only. Done work is in `git log`; deliberate non-goals are in
 [docs/compliance/residual-threats.md](docs/compliance/residual-threats.md); this
 file's own history has the longer design notes behind each line.
 
-- **Firmware updates via the ROMFS (next)** — bootloader as *reconciler*: copy a
-  verified `firmware.bin` out of a **confirmed** slot into the firmware area at
-  a fixed offset (no romfs parser in the bootloader), never downgrade; a power
-  loss mid-copy retries, not bricks.
 - **WINC demo wedges after a relay stall** — the H7 Plus demo (2026-10-15, minutes after a relay
   redeploy) logged `live[console]: relay send stalled for 10 s; reconnecting`, then every OTA cycle
   failed with `OSError(12)`: the WINC module itself out of memory (`M2M_ERR_MEM_ALLOC` on DNS), not
@@ -16,8 +12,9 @@ file's own history has the longer design notes behind each line.
   recovered on the bench. The camera now rebuilds its network stack, then reboots, instead of
   sitting dead. Left: find what held sockets open in the field (a bench H7 Plus is soaking on the
   hosted cloud).
-- **Device lockdown** — debug-port and boot protection (residual-threats:
-  planned); until then bench/bus access is accepted. It is also what makes a camera's
+- **Device lockdown** — debug-port and boot protection for the N6, the AE3 and the RT1062
+  (residual-threats: planned; not offered on the STM32H7 boards); until then bench/bus
+  access is accepted. It is also what makes a camera's
   keys unreadable on the boards that keep them in flash unsealed (the M4, M7, H7, H7 Plus,
   Pure Thermal and AE3; the N6 seals its keys to the chip).
 

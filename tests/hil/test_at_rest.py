@@ -273,7 +273,7 @@ def test_rollback_on_an_encrypting_board_shows_in_the_stub_not_in_boot_pys_fallb
     expect, forbid = ota_cycle.scenario_markers("OPENMV_N6", "rollback")
     assert "boot.fallback" not in expect and "boot.fallback" not in forbid
     assert {"stub.slot_rejected", "stub.boot_reverted", "install.armed"} <= expect
-    expect, _forbid = ota_cycle.scenario_markers("OPENMV4P", "rollback")   # a stub in the clear
+    expect, _forbid = ota_cycle.scenario_markers("ARDUINO_PORTENTA_H7", "rollback")   # a stub in the clear
     assert "boot.fallback" in expect
 
 

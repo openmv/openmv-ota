@@ -21,6 +21,10 @@
 #if defined(STM32N6)
 #include "board_config.h"               // the firmware's board: oscillators, PLLs, ICs
 #endif
+#if defined(STM32H7) && defined(STUB_SLOT_CRYPT)
+#include "flash_key.h"
+#include "mce_stream.h"
+#endif
 
 #if defined(IWDG1) && !defined(IWDG)
 #define IWDG IWDG1
@@ -444,6 +448,78 @@ __attribute__((naked)) void HardFault_Handler(void) {
     __asm volatile ("mrs r0, msp\n\tb stub_fault_skip");
 }
 
+#ifdef STUB_SLOT_CRYPT
+// The slots are ciphertext at rest, and this chip has no engine to decipher them: the
+// firmware reads the booted slot into RAM through the same cipher (its flash_crypt
+// module), and the stub runs it here, both ways, over the one range a slot is selected on
+// -- the body of the slot being verified, booted or written. The cipher is the N6 engine's
+// stream in software (mce_stream.c: AES-128 in counter mode over the flash address, under
+// the slot's tweak), and the key is the camera's own, made by the firmware on its first
+// boot and kept in the key area in internal flash (flash_key.h). Everything else on the
+// part (the other slot, every slot's status sector and trailer, /flash) is read and
+// written as it is stored.
+static bool crypt_keyed = false;
+static uint8_t crypt_flash_key[16];
+static mce_stream_t crypt_stream;
+static uint32_t crypt_start = 0, crypt_end = 0;             // [start, end): empty when equal
+static uint8_t crypt_chunk[256] __attribute__((aligned(4)));
+
+int port_crypt_init(void) {
+    // A camera that has not made its key yet (its first boot) is not an error: its slots
+    // run as flashed until it has. The key area is internal flash: a word a power cut tore
+    // reads as a fault, and then there is no key either.
+    uint8_t area[FLASH_KEY_AREA];
+    crypt_keyed = port_flash_read(STUB_KEY_AREA, area, sizeof(area)) == 0 && flash_key_read(area, crypt_flash_key);
+    memset(area, 0, sizeof(area));
+    return 0;
+}
+
+bool port_crypt_keyed(void) {
+    return crypt_keyed;
+}
+
+int port_crypt_slot_select(const uint8_t *tweak, uint32_t start, uint32_t end) {
+    crypt_start = crypt_end = 0;
+    if (tweak == NULL) {
+        return 0;
+    }
+    if (!crypt_keyed || end < start || !in_qspi(start, end - start)) {
+        return -1;
+    }
+    mce_stream_init(&crypt_stream, crypt_flash_key, tweak);
+    crypt_start = start;
+    crypt_end = end;
+    return 0;
+}
+
+// Nothing of the key stays in RAM for the firmware to find: it reads its own copy.
+void port_crypt_lock(void) {
+    memset(crypt_flash_key, 0, sizeof(crypt_flash_key));
+    memset(&crypt_stream, 0, sizeof(crypt_stream));
+    crypt_start = crypt_end = 0;
+}
+
+// How much of [addr, addr + size) lies on one side of the ciphered range's edges, and
+// whether that piece is inside it.
+static uint32_t crypt_piece(uint32_t addr, uint32_t size, bool *inside) {
+    *inside = addr >= crypt_start && addr < crypt_end;
+    uint32_t room = size;
+    if (*inside) {
+        room = crypt_end - addr;
+    } else if (addr < crypt_start) {
+        room = crypt_start - addr;
+    }
+    return (room < size) ? room : size;
+}
+
+int port_flash_read_stored(uint32_t addr, uint8_t *buf, uint32_t size) {
+    if (in_qspi(addr, size)) {
+        return qspi_flash_read(addr - STUB_QSPI_BASE, buf, size);
+    }
+    return port_flash_read(addr, buf, size);
+}
+#endif
+
 int port_flash_read(uint32_t addr, uint8_t *buf, uint32_t size) {
     if (in_axi_flash(addr, size)) {
         uint32_t before = flash_faults;
@@ -454,7 +530,22 @@ int port_flash_read(uint32_t addr, uint8_t *buf, uint32_t size) {
         return (flash_faults == before) ? 0 : -1;
     }
     if (in_qspi(addr, size)) {
-        return qspi_flash_read(addr - STUB_QSPI_BASE, buf, size);
+        if (qspi_flash_read(addr - STUB_QSPI_BASE, buf, size) != 0) {
+            return -1;
+        }
+        #ifdef STUB_SLOT_CRYPT
+        while (size) {
+            bool inside;
+            uint32_t n = crypt_piece(addr, size, &inside);
+            if (inside) {
+                mce_stream_xor(&crypt_stream, addr, buf, n);
+            }
+            addr += n;
+            buf += n;
+            size -= n;
+        }
+        #endif
+        return 0;
     }
     return -1;
 }
@@ -479,6 +570,12 @@ int port_flash_prog_end(void) {
 }
 
 int port_flash_erase(uint32_t addr) {
+    #ifdef STUB_SLOT_CRYPT
+    // A slot's block on the QSPI part: one of its 4 KiB sectors (STUB_SLOT_BLOCK).
+    if (prog_mode && (addr % STUB_SLOT_BLOCK) == 0 && in_qspi(addr, STUB_SLOT_BLOCK)) {
+        return qspi_flash_erase(addr - STUB_QSPI_BASE);
+    }
+    #endif
     if (!prog_mode || (addr % STUB_FLASH_BLOCK) != 0 || !in_axi_flash(addr, STUB_FLASH_BLOCK)) {
         return -1;
     }
@@ -511,7 +608,30 @@ int port_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size) {
         return 0;
     }
     if (in_qspi(addr, size)) {
+        #ifdef STUB_SLOT_CRYPT
+        while (size) {
+            bool inside;
+            uint32_t n = crypt_piece(addr, size, &inside);
+            if (inside) {
+                // What is stored there is ciphertext: a copy of the bytes, ciphered, is
+                // what reaches the part.
+                if (n > sizeof(crypt_chunk)) {
+                    n = sizeof(crypt_chunk);
+                }
+                memcpy(crypt_chunk, buf, n);
+                mce_stream_xor(&crypt_stream, addr, crypt_chunk, n);
+            }
+            if (qspi_flash_write(addr - STUB_QSPI_BASE, inside ? crypt_chunk : buf, n) != 0) {
+                return -1;
+            }
+            addr += n;
+            buf += n;
+            size -= n;
+        }
+        return 0;
+        #else
         return qspi_flash_write(addr - STUB_QSPI_BASE, buf, size);
+        #endif
     }
     return -1;
 }

@@ -4,28 +4,7 @@
 #include <string.h>
 #include "ecb_slot.h"
 
-static const uint8_t flash_key_magic[5] = { 'O', 'M', 'V', 'F', 1 };
 static const uint8_t slot_key_label[6] = { 'o', 'm', 'v', 's', 'l', 't' };
-
-bool ecb_flash_key(const uint8_t *area, uint8_t key[16]) {
-    for (uint32_t off = 0; off < ECB_FLASH_KEY_AREA; off += ECB_FLASH_KEY_PLACE) {
-        const uint8_t *p = area + off;
-        if (memcmp(p, flash_key_magic, sizeof(flash_key_magic)) != 0) {
-            continue;
-        }
-        bool ok = true;
-        for (uint32_t i = 0; i < 16; i++) {
-            if ((uint8_t) ~p[32 + i] != p[48 + i]) {
-                ok = false;
-            }
-        }
-        if (ok) {
-            memcpy(key, p + 32, 16);
-            return true;
-        }
-    }
-    return false;
-}
 
 void ecb_slot_key(const uint8_t flash_key[16], const uint8_t tweak[ECB_SLOT_TWEAK_SIZE], uint8_t key[16]) {
     aes128_t a;

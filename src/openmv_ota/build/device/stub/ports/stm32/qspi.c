@@ -28,6 +28,8 @@
 // the cost is about 0.3 s more per install.
 #define QSPI_MAX_HZ             (25000000)
 #define QSPI_CMD_TIMEOUT        (1000)
+#define QSPI_ERASE_TIMEOUT      (3000)
+#define QSPI_SECTOR_SIZE        (0x1000)
 #define QSPI_READ_CHUNK         (0x10000)       // one transfer per timeout
 #define QSPI_RESET_RETRIES      (3)             // reset attempts after the first, 10/20/40 ms apart
 
@@ -38,6 +40,8 @@
 #define CMD_READ_4B             (0x13)
 #define CMD_PAGE_PROG_3B        (0x02)
 #define CMD_PAGE_PROG_4B        (0x12)
+#define CMD_SECTOR_ERASE_3B     (0x20)          // 4 KiB
+#define CMD_SECTOR_ERASE_4B     (0x21)
 #define CMD_RESET_ENABLE        (0x66)
 #define CMD_RESET_MEMORY        (0x99)
 #define CMD_ADDR4_ENABLE        (0xB7)
@@ -434,6 +438,20 @@ int qspi_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size) {
         size -= n;
     }
     return 0;
+}
+
+// Erase the 4 KiB sector at addr (a board that keeps its slots ciphered rewrites them:
+// install.c's slot conversion). The part takes up to 400 ms for one.
+int qspi_flash_erase(uint32_t addr) {
+    if ((!inited && qspi_flash_init() != 0) || (addr % QSPI_SECTOR_SIZE) != 0 || write_enable() != 0) {
+        return -1;
+    }
+    QSPI_CommandTypeDef c = command_at(CMD_SECTOR_ERASE_3B, CMD_SECTOR_ERASE_4B, addr, 0);
+    c.DataMode = QSPI_DATA_NONE;                // an instruction and an address, nothing after
+    if (send(&c) != 0) {
+        return -1;
+    }
+    return poll_status(SR_WIP, 0, QSPI_ERASE_TIMEOUT);
 }
 
 #endif // STM32H7

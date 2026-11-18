@@ -24,7 +24,12 @@
 // stub's aes128 and stream sources pasted above it, for a board whose stub layout is
 // encrypted; and removes it after the build.
 //
-// RAM BUDGET: ciphers the caller's buffer in place, 16 bytes of keystream at a time.
+// The STM32H743 boards (the OpenMV Cam H7 Plus, the Pure Thermal) have no engine at all:
+// their module is the same cipher under a key the camera made for itself, plus `load`,
+// which deciphers the booted slot into RAM for boot.py to mount (see FLASH_CRYPT_SOFT).
+//
+// RAM BUDGET: ciphers the caller's buffer in place, 16 bytes of keystream at a time. `load`
+// takes one block of the frame-buffer pool as big as the booted image, once per boot.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -43,9 +48,11 @@
 #define FLASH_CRYPT_BEE         (1)
 #elif defined(CORE_M55_HP)
 #define FLASH_CRYPT_ECB         (1)                 // the Alif Ensemble: see the end of this file
+#elif defined(STM32H7)
+#define FLASH_CRYPT_SOFT        (1)                 // no engine: the booted slot is read into RAM
 #endif
 
-#if defined(FLASH_CRYPT_MCE) || defined(FLASH_CRYPT_BEE)
+#if defined(FLASH_CRYPT_MCE) || defined(FLASH_CRYPT_BEE) || defined(FLASH_CRYPT_SOFT)
 
 #define FLASH_CRYPT_TWEAK_SIZE  (10)
 
@@ -54,7 +61,7 @@
 // Pure C over the key the port hands it; host-tested with a known key.
 int omv_flash_crypt_xor(const uint8_t key[16], const uint8_t tweak[FLASH_CRYPT_TWEAK_SIZE],
                                uint32_t addr, uint8_t *buf, size_t len) {
-    #if defined(FLASH_CRYPT_MCE)
+    #if defined(FLASH_CRYPT_MCE) || defined(FLASH_CRYPT_SOFT)
     mce_stream_t m;
     mce_stream_init(&m, key, tweak);
     mce_stream_xor(&m, addr, buf, (uint32_t) len);
@@ -69,10 +76,30 @@ int omv_flash_crypt_xor(const uint8_t key[16], const uint8_t tweak[FLASH_CRYPT_T
 
 #if !defined(OMV_FLASH_CRYPT_HOST_TEST)
 
+#if !defined(FLASH_CRYPT_SOFT)
 // What the key is derived from: the stub's label (mce.c, bee.c). Never changes.
 static const uint8_t flash_crypt_label[16] = { 'o', 'm', 'v', '-', 'f', 'l', 'a', 's', 'h', '-', 'k', 'e', 'y', '-', 'v', '1' };
+#endif
 
-#if defined(FLASH_CRYPT_BEE)
+#if defined(FLASH_CRYPT_SOFT)
+
+// The camera's own key, out of the key area in the chip's internal flash (the stub's
+// flash_key.h): -13 until the firmware has made it (boot.py does, on the first boot). The
+// area is read the way key_store reads it, so a flash word a power cut tore is "no key"
+// and not a bus fault.
+#ifndef OMV_KEY_AREA_ADDR
+#error "flash_crypt: OMV_KEY_AREA_ADDR not defined (openmv-ota build firmware defines it)"
+#endif
+int omv_key_store_copy(uint8_t *dst, uintptr_t addr, size_t len);    // key_store.c
+
+static int omv_flash_crypt_derive(uint8_t key[16]) {
+    uint8_t area[FLASH_KEY_AREA];
+    int r = (omv_key_store_copy(area, OMV_KEY_AREA_ADDR, sizeof(area)) == 0 && flash_key_read(area, key)) ? 0 : -13;
+    memset(area, 0, sizeof(area));
+    return r;
+}
+
+#elif defined(FLASH_CRYPT_BEE)
 
 // The DCP by its registers: one AES-128-ECB block of the label under the key in the chip's
 // SW_GP2 fuses, as the stub's bee.c runs it -- the DCP's key input pointed at the fuses, the
@@ -225,9 +252,109 @@ static mp_obj_t mod_flash_crypt_xor(mp_obj_t addr_in, mp_obj_t buf_in, mp_obj_t 
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(flash_crypt_xor_obj, mod_flash_crypt_xor);
 
+#if defined(FLASH_CRYPT_SOFT)
+
+// ---- No engine (the OpenMV Cam H7 Plus, the Pure Thermal) -------------------------------
+//
+// The STM32H743 cannot decipher its QSPI part as it reads it, so the firmware reads the
+// booted slot ONCE, at boot, into RAM, and /rom is mounted there:
+//
+//   flash_crypt.keyed() -> bool               does the camera have its flash key?
+//   flash_crypt.load(addr, size, tweak) -> memoryview
+//                                             size bytes of the slot image with this tweak,
+//                                             stored at the address addr, deciphered into
+//                                             the module's one RAM copy: the view is of
+//                                             that copy. A second call reuses the memory.
+//   flash_crypt.loaded() -> memoryview        the copy the last load made, or None
+//   flash_crypt.forget() -> None              boot.py calls this first: a soft reset has
+//                                             given the copy's memory back
+//
+// The copy comes from the firmware's frame-buffer pool (uma_malloc, persistent: a collect
+// leaves it), which every soft reset starts over, and it is as big as the image, not the
+// slot. The flash key (above) is kept for the process and never handed to Python.
+#include "py/mperrno.h"
+#include "umalloc.h"
+
+#define FLASH_CRYPT_COPY_MAX    (16UL << 20)        // no slot is bigger
+
+static uint8_t *flash_crypt_copy = NULL;
+static size_t flash_crypt_copy_room = 0;            // bytes allocated
+static size_t flash_crypt_copy_len = 0;             // bytes the last load filled
+
+static mp_obj_t mod_flash_crypt_keyed(void) {
+    uint8_t key[16];
+    bool keyed = flash_crypt_have_key || omv_flash_crypt_derive(key) == 0;
+    memset(key, 0, sizeof(key));
+    return mp_obj_new_bool(keyed);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(flash_crypt_keyed_obj, mod_flash_crypt_keyed);
+
+static mp_obj_t mod_flash_crypt_forget(void) {
+    flash_crypt_copy = NULL;
+    flash_crypt_copy_room = 0;
+    flash_crypt_copy_len = 0;
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(flash_crypt_forget_obj, mod_flash_crypt_forget);
+
+static mp_obj_t mod_flash_crypt_loaded(void) {
+    if (flash_crypt_copy == NULL || flash_crypt_copy_len == 0) {
+        return mp_const_none;
+    }
+    return mp_obj_new_memoryview('B', flash_crypt_copy_len, flash_crypt_copy);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(flash_crypt_loaded_obj, mod_flash_crypt_loaded);
+
+static mp_obj_t mod_flash_crypt_load(mp_obj_t addr_in, mp_obj_t size_in, mp_obj_t tweak_in) {
+    mp_buffer_info_t tweak;
+    mp_get_buffer_raise(tweak_in, &tweak, MP_BUFFER_READ);
+    if (tweak.len != FLASH_CRYPT_TWEAK_SIZE) {
+        mp_raise_ValueError(MP_ERROR_TEXT("tweak must be 10 bytes"));
+    }
+    uint32_t addr = mp_obj_get_int_truncated(addr_in);
+    size_t size = (size_t)mp_obj_get_int(size_in);
+    if (size == 0 || size > FLASH_CRYPT_COPY_MAX) {
+        mp_raise_ValueError(MP_ERROR_TEXT("bad size"));
+    }
+    if (!flash_crypt_have_key) {
+        int r = omv_flash_crypt_derive(flash_crypt_key);
+        if (r != 0) {
+            mp_raise_OSError(-r);
+        }
+        flash_crypt_have_key = true;
+    }
+    flash_crypt_copy_len = 0;
+    if (flash_crypt_copy == NULL || flash_crypt_copy_room < size) {
+        if (flash_crypt_copy != NULL) {
+            uma_free(flash_crypt_copy);
+            flash_crypt_copy = NULL;
+            flash_crypt_copy_room = 0;
+        }
+        size_t room = (size + 31) & ~(size_t)31;
+        flash_crypt_copy = uma_malloc(room, UMA_PERSIST | UMA_MAYBE);
+        if (flash_crypt_copy == NULL) {
+            mp_raise_OSError(MP_ENOMEM);
+        }
+        flash_crypt_copy_room = room;
+    }
+    memcpy(flash_crypt_copy, (const void *)addr, size);
+    omv_flash_crypt_xor(flash_crypt_key, (const uint8_t *)tweak.buf, addr, flash_crypt_copy, size);
+    flash_crypt_copy_len = size;
+    return mp_obj_new_memoryview('B', size, flash_crypt_copy);
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(flash_crypt_load_obj, mod_flash_crypt_load);
+
+#endif // FLASH_CRYPT_SOFT
+
 static const mp_rom_map_elem_t flash_crypt_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_flash_crypt) },
     { MP_ROM_QSTR(MP_QSTR_xor),      MP_ROM_PTR(&flash_crypt_xor_obj) },
+    #if defined(FLASH_CRYPT_SOFT)
+    { MP_ROM_QSTR(MP_QSTR_keyed),    MP_ROM_PTR(&flash_crypt_keyed_obj) },
+    { MP_ROM_QSTR(MP_QSTR_load),     MP_ROM_PTR(&flash_crypt_load_obj) },
+    { MP_ROM_QSTR(MP_QSTR_loaded),   MP_ROM_PTR(&flash_crypt_loaded_obj) },
+    { MP_ROM_QSTR(MP_QSTR_forget),   MP_ROM_PTR(&flash_crypt_forget_obj) },
+    #endif
 };
 static MP_DEFINE_CONST_DICT(flash_crypt_globals, flash_crypt_globals_table);
 
@@ -239,7 +366,7 @@ MP_REGISTER_MODULE(MP_QSTR_flash_crypt, flash_crypt_module);
 
 #endif // !OMV_FLASH_CRYPT_HOST_TEST (MicroPython binding)
 
-#endif // FLASH_CRYPT_MCE || FLASH_CRYPT_BEE
+#endif // FLASH_CRYPT_MCE || FLASH_CRYPT_BEE || FLASH_CRYPT_SOFT
 
 #if defined(FLASH_CRYPT_ECB)
 
@@ -372,7 +499,7 @@ int __wrap_ospi_flash_read(uint32_t addr, uint32_t len, uint8_t *dest) {
 
 static mp_obj_t mod_flash_crypt_keyed(void) {
     uint8_t key[16];
-    bool keyed = ecb_flash_key((const uint8_t *)OMV_KEY_AREA_ADDR, key);
+    bool keyed = flash_key_read((const uint8_t *)OMV_KEY_AREA_ADDR, key);
     memset(key, 0, sizeof(key));
     return mp_obj_new_bool(keyed);
 }
@@ -390,7 +517,7 @@ static void flash_crypt_tweak_key(mp_obj_t tweak_in, uint8_t key[16]) {
         mp_raise_ValueError(MP_ERROR_TEXT("tweak must be 10 bytes"));
     }
     uint8_t flash_key[16];
-    if (!ecb_flash_key((const uint8_t *)OMV_KEY_AREA_ADDR, flash_key)) {
+    if (!flash_key_read((const uint8_t *)OMV_KEY_AREA_ADDR, flash_key)) {
         mp_raise_OSError(MP_EACCES);                // the camera has no flash key
     }
     ecb_slot_key(flash_key, (const uint8_t *)tweak.buf, key);

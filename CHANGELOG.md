@@ -18,6 +18,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The cipher is AES-128 one block at a time, which is what the engine does: equal blocks of
   one image are equal in flash. See `docs/design/flash-encryption.md`, "The AE3, as built".
 
+- **The H7 Plus's and the Pure Thermal's app is ciphertext at rest.** These cameras keep their
+  two ROMFS slots on a QSPI flash part beside the chip, and the slots are now stored
+  encrypted there. The STM32H743 has no engine to decipher flash as it reads it, so the
+  firmware deciphers the booted slot once at boot into RAM (a block of the frame-buffer pool
+  as big as the app image) and mounts `/rom` there; the boot stub and the installer cipher
+  what they write. The cipher is AES-128 in counter mode, in software. The key is the
+  camera's own: sixteen random bytes made on its first boot and kept in the chip's flash; the
+  first boot after a factory flash makes the key, resets, and ciphers the factory slot (under
+  a minute, once). The firmware itself is in the chip's flash and stays in the clear. The
+  Arduino boards are not part of this: their frame-buffer pool is too small for the copy.
+  See `docs/design/flash-encryption.md`, "The H7 Plus and the Pure Thermal, as built".
+
 - **The RT1062's flash key is its own, in fuses it burns once.** The first boot of the boot
   stub on an RT1062 whose SW_GP2 fuses are not locked takes 128 bits from the chip's random
   number generator, burns them into SW_GP2 and burns its write lock and read lock. From then

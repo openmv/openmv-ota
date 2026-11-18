@@ -21,6 +21,7 @@ pytestmark = pytest.mark.skipif(not shutil.which("gcc"), reason="needs gcc to co
 
 _AES_C = stub_mod.STUB_DIR / "lib" / "aes" / "aes128.c"
 _ECB_C = stub_mod.STUB_DIR / "ports" / "alif" / "ecb_slot.c"
+_KEY_C = stub_mod.STUB_DIR / "lib" / "aes" / "flash_key.c"       # the flash key's reader, shared with the H7 boards
 
 # The bench: the 16 bytes handed to the Secure Enclave's key service, and what sixteen 0xFF
 # bytes of erased flash then read as through the memory map.
@@ -76,7 +77,7 @@ int main(int argc, char **argv) {
             show(eng, 16);
         } else {
             uint8_t key[16];
-            if (ecb_flash_key(x, key)) show(key, 16); else printf("none\n");
+            if (flash_key_read(x, key)) show(key, 16); else printf("none\n");
         }
     }
     fclose(f);
@@ -186,13 +187,13 @@ def test_boot_py_makes_the_key_the_stub_reads():
 
 
 def test_the_stubs_cipher_matches_the_silicon_and_the_host_twins(tmp_path):
-    for src in (_AES_C, _ECB_C):
+    for src in (_AES_C, _ECB_C, _KEY_C):
         shutil.copy2(src, tmp_path / src.name)
     (tmp_path / "harness.c").write_text(_HARNESS_C)
     exe = tmp_path / "ecb"
     subprocess.run(["gcc", "-O1", "-Wall", "-Werror", "-I", str(_AES_C.parent), "-I", str(_ECB_C.parent),
                     str(tmp_path / "harness.c"), str(tmp_path / "aes128.c"),
-                    str(tmp_path / "ecb_slot.c"), "-o", str(exe)], check=True)
+                    str(tmp_path / "ecb_slot.c"), str(tmp_path / "flash_key.c"), "-o", str(exe)], check=True)
     key, tweak = os.urandom(16), os.urandom(10)
     data = os.urandom(4096)
     k1 = os.urandom(16)

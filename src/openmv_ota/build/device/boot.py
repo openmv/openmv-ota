@@ -777,18 +777,24 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
             import flash_crypt as crypt  # hil-residual: same
         except ImportError:  # hil-residual: an encrypting board's firmware always carries the module
             crypt = None  # hil-residual: same branch as the line above
-        if not hasattr(crypt, "enable"):  # hil-residual: witnessed by boot.engine_on on the AE3 and its absence elsewhere
+        if not hasattr(crypt, "enable") and not hasattr(crypt, "load"):  # hil-residual: witnessed by boot.engine_on on the AE3 and the H7 Plus and its absence elsewhere
             crypt = None  # hil-residual: the N6's and the RT1062's module: nothing for boot.py to switch on
+    # A board with no engine (the H7 Plus): its module deciphers a slot's body into RAM, and
+    # `copy` (openmv_slot_engine.copier, set below) is how a body is read. None elsewhere.
+    raw = getattr(crypt, "raw", None)
+    copy = []
 
     _read_seen = []
     def read(off, size):
-        if crypt is not None and size <= cfg.CONTROL_BLOCK:
+        if raw is not None and size <= cfg.CONTROL_BLOCK:
             # Control data (a status sector, a trailer, a mark) is not stored under the
             # engine's key: a copy, with the engine undone. A slot body is read as mapped.
-            raw = bytearray(size)  # hil-residual: witnessed by boot.mount on the AE3: the trailer it verified came through this copy
-            crypt.raw(base + off, raw)  # hil-residual: same
-            return raw  # hil-residual: same
+            stored = bytearray(size)  # hil-residual: witnessed by boot.mount on the AE3: the trailer it verified came through this copy
+            raw(base + off, stored)  # hil-residual: same
+            return stored  # hil-residual: same
         body = uctypes.bytearray_at(base + off, size)    # the XIP alias -- witnessed below
+        if copy and size > cfg.CONTROL_BLOCK:
+            body = copy[0](off, size, body)  # hil-residual: witnessed by boot.engine_on on the H7 Plus: what it mounts came through this copy
         if not _read_seen:                               # witness the read once (no per-call spam)
             _read_seen.append(1)
             log.debug("boot: slot read")
@@ -846,7 +852,12 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
             import key_store  # hil-residual: imports; the call below logs what it did
             import machine  # hil-residual: same
             import openmv_slot_engine  # hil-residual: same
-            openmv_slot_engine.start(crypt, ob, key_store, os.urandom, machine.reset, log, parse_trailer)  # hil-residual: witnessed by boot.engine_on (the AE3)
+            if raw is not None:  # hil-residual: the AE3 one way, the H7 Plus the other; boot.engine_on witnesses both
+                openmv_slot_engine.start(crypt, ob, key_store, os.urandom, machine.reset, log, parse_trailer)  # hil-residual: witnessed by boot.engine_on (the AE3)
+            else:
+                c = openmv_slot_engine.copier(crypt, key_store, os.urandom, machine.reset, log, parse_trailer, read, base, cfg.CONTROL_BLOCK)  # hil-residual: witnessed by boot.engine_on (the H7 Plus)
+                if c is not None:  # hil-residual: None only on a camera that could not make its key (boot.engine_failed)
+                    copy.append(c)  # hil-residual: same line of thought as the call above
         slot, trailer, reject_reason = ob.run()
     except OtaReject as e:
         log.error("boot: no bootable slot: %s" % e)

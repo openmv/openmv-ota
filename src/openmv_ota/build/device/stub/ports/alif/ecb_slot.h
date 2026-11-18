@@ -17,14 +17,7 @@
  *
  *   K = AES-128-encrypt(flash key, tweak (10 bytes) || "omvslt")
  *
- * The flash key is sixteen random bytes the firmware makes on the camera's first boot and
- * keeps in the first 256 bytes of the board's key area, in the chip's own MRAM: four
- * 64-byte places, the first complete one being the key. A place is two 32-byte words,
- *
- *   word 0   "OMVF", version 1, zeros           written LAST: it commits the place
- *   word 1   the key, then its bitwise complement
- *
- * so a write a power cut stopped is a place that never counts, and the next one is used.
+ * The flash key is the camera's own, kept in the chip's MRAM (lib/aes/flash_key.h).
  * No hardware in here: it builds for the host as it is.
  */
 #ifndef STUB_ECB_SLOT_H
@@ -33,18 +26,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "aes128.h"
+#include "flash_key.h"
 
 #define ECB_SLOT_TWEAK_SIZE         (10)
-#define ECB_FLASH_KEY_AREA          (256)       // the bytes of the key area the flash key lives in
-#define ECB_FLASH_KEY_PLACE         (64)
 
 typedef struct {
     aes128_t aes;
 } ecb_slot_t;
-
-// The camera's flash key out of the first ECB_FLASH_KEY_AREA bytes of its key area: true
-// and the key, or false if no place there is complete.
-bool ecb_flash_key(const uint8_t *area, uint8_t key[16]);
 
 // The key a slot image is ciphered under.
 void ecb_slot_key(const uint8_t flash_key[16], const uint8_t tweak[ECB_SLOT_TWEAK_SIZE], uint8_t key[16]);

@@ -613,13 +613,67 @@ at rest: slot A: 0 of 144896 blocks stored as built, 0 image samples found, 8.00
 at rest: slot B: 0 of 144896 blocks stored as built, 0 image samples found, 8.000 bits/byte, 0 bytes not blank before its status sector
 ```
 
+## The H7 Plus and the Pure Thermal, as built (2026-11-18)
+
+The STM32H743 on the OpenMV Cam H7 Plus and the Pure Thermal keeps its firmware in the chip's
+own flash and the two ROMFS slots on a QSPI part beside it, like the AE3. Only the part can be
+read off the board, so only the slots are ciphered. What the chip lacks is an engine: nothing
+deciphers the QSPI part as it is read, so the booted slot is deciphered once, into RAM.
+
+- **The cipher.** The N6 engine's stream, in software (`mce_stream.c`): AES-128 in counter
+  mode over the flash address, under the slot's tweak. The same code runs in the stub and in
+  the firmware's `flash_crypt` module. A block's position is in the keystream, so equal blocks
+  of an image are not equal in flash.
+- **The key.** The camera's own, as on the AE3: sixteen random bytes the firmware makes on the
+  first boot and keeps in the first 256 bytes of the key area, which here is the last 4 KiB of
+  the bootloader's sector in the chip's flash. The reader is one file shared by both boards
+  (`lib/aes/flash_key.c`). Internal flash keeps an ECC per 32-byte word and a word a power cut
+  tore reads as a bus fault: the stub and the module both read the key area the way that
+  turns that into "no key".
+- **The stub.** It reads the QSPI part through the controller and runs the stream both ways
+  over the one range a slot is selected on, as the AE3's stub does with its cipher. The first
+  boot is the AE3's: no key, so the slot boots as flashed; boot.py makes the key and resets;
+  the stub then copies the slot into the other one through the cipher and erases the clear
+  one. That copy needed two things the H7 stub did not have: a 4 KiB sector erase on the QSPI
+  part, and a slot erase block of its own (`STUB_SLOT_BLOCK`), because the install window in
+  the chip's flash erases in 128 KiB sectors and the slots do not.
+- **The read.** boot.py asks `flash_crypt.load` for the body of the slot the stub's record
+  names: the module copies the slot's ciphered range out of the memory map into one block of
+  the firmware's frame-buffer pool and runs the stream over it. That copy is what is hashed
+  against the trailer and what `/rom` is mounted on. It is as big as the image (the trailer
+  says how far the cipher reaches), not the slot. The pool is started over on every soft
+  reset, so the copy is made again on each one. A slot that was flashed and not yet ciphered
+  starts with the ROMFS magic and is mounted from the map as it is.
+- **The installer.** It writes the other slot through `flash_crypt.xor`, as on the N6. A
+  delta's base is the RAM copy as far as it reaches and the stored bytes past that (the pad
+  after an image is stored blank).
+- **What it costs.** RAM: the image's size out of the frame-buffer pool (27 MB on the H7
+  Plus, 55 MB on the Pure Thermal). Time: one pass of software AES over the image on every
+  boot.
+- **Measured** on the fleet's OPENMV4P over Wi-Fi (bench, 2026-11-18), each scenario from a
+  factory flash: `delta` PASS (553 s), `rollback` PASS (538 s), `full` PASS (516 s), `corrupt`
+  PASS (532 s), `bad_sig` PASS (484 s), `reinstall` PASS (622 s), `watchdog_recover` PASS
+  (648 s). On the first boot with a key the stub converted the factory slot in 17.5 s and
+  erased the clear one in 11 s, once. Reading the booted slot into RAM (a 1.1 MB image) takes
+  about 0.6 s of each boot. The firmware fits with the module in it. After `delta`, the part
+  read back from outside the chip over DFU:
+
+  ```
+  at rest: slot A: 0 of 68352 blocks stored as built, 0 image samples found, 8.000 bits/byte, 0 bytes not blank before its status sector
+  at rest: slot B: 0 of 68352 blocks stored as built, 0 image samples found, 8.000 bits/byte, 0 bytes not blank before its status sector
+  ```
+
+  The Pure Thermal builds the same code and has not been run: it has no camera in the fleet.
+- **Not the Arduino boards.** The Portenta H7 and the Giga have a 4 MB pool for a slot of up
+  to 2 MiB, and the Nicla Vision has no SDRAM at all (476 KB): the copy does not fit a real
+  app. Their bootloader is Arduino's, and by its source its USB DFU mode reads the chip's
+  flash back (not tried on a board here), so a key kept in the chip would not be private
+  there either. Their slots stay in the clear.
+
 ## Open questions to verify against documentation
 
 - i.MX RT1062: what closing the chip (HAB) does to the stub's use of the DCP and the BEE, on
   a board that can be closed. (The key is in SW_GP2 and does not depend on it.)
-- STM32H743/H747: RDP2 interaction with the Arduino bootloader (not ours) and with DFU
-  recovery; whether "decrypt the active ROMFS slot into SDRAM" fits the boards' SDRAM
-  budget next to the frame buffers.
 
 ## Not in scope
 

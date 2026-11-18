@@ -284,9 +284,11 @@ def test_the_stubs_that_keep_the_firmware_area_encrypted_say_so_in_both_places()
         assert ("#define STUB_CRYPT_START" in cfg.read_text()) == b.stub.encrypted, name
         assert ("#define STUB_SLOT_CRYPT" in cfg.read_text()) == b.stub.slot_crypt, name
         assert ("#define STUB_CRYPT_KEY_LATE" in cfg.read_text()) == b.stub.slots_encrypted, name
-    # the AE3 keeps its slots encrypted and its firmware, in the chip's own MRAM, in the clear
+    # the boards whose firmware is inside the chip, in the clear, and whose slots are ciphered under
+    # a key the camera makes: the AE3 (an engine on its OSPI part), and the H7 Plus and the Pure
+    # Thermal (no engine: the booted slot is read into RAM)
     slots_only = {name for name, b in B.load_boards().items() if b.stub and b.stub.slots_encrypted}
-    assert slots_only == {"OPENMV_AE3"}
+    assert slots_only == {"OPENMV_AE3", "OPENMV4P", "OPENMVPT"}
     ae3 = B.get_board("OPENMV_AE3")
     cfg = (stub_mod.STUB_DIR / "boards" / "OPENMV_AE3" / "stub_config.h").read_text()
     # ...under a key in the key area, which the stub finds at the address the table gives

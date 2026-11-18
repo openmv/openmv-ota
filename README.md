@@ -41,6 +41,62 @@ that aren't — and `project new --ota` scaffolds the fill-in templates
 project's `compliance/`. Found a vulnerability in this stack itself? See
 [the security policy](https://github.com/openmv/openmv-ota/blob/main/SECURITY.md).
 
+## What each camera gets
+
+What the stack does depends on the board: where its firmware and app live, whether the chip
+can decipher flash as it reads it, and where it can keep a key.
+
+**Updates.** A release always carries the app. On a board with a boot stub it carries the
+firmware too, and two app slots mean a failed update falls back to the release that worked.
+
+| Camera | Board | A release reaches | Slots | If an update fails |
+|---|---|---|---|---|
+| OpenMV N6 | `OPENMV_N6` | app + firmware | A/B, 12.0 MiB each | falls back to the other slot |
+| OpenMV AE3 | `OPENMV_AE3` | app + firmware (both cores) | A/B, 12.0 MiB each | falls back to the other slot |
+| OpenMV Cam RT1062 | `OPENMV_RT1060` | app + firmware | A/B, 4.0 MiB each | falls back to the other slot |
+| OpenMV Cam H7 Plus | `OPENMV4P` | app + firmware | A/B, 4.0 MiB each | falls back to the other slot |
+| OpenMV Pure Thermal | `OPENMVPT` | app + firmware | A/B, 4.0 MiB each | falls back to the other slot |
+| Arduino Portenta H7 | `ARDUINO_PORTENTA_H7` | app + firmware | A/B, 2.0 MiB each | falls back to the other slot |
+| Arduino Giga | `ARDUINO_GIGA` | app + firmware | A/B, 2.0 MiB each | falls back to the other slot |
+| Arduino Nicla Vision | `ARDUINO_NICLA_VISION` | app + firmware | A/B, 2.0 MiB each | falls back to the other slot |
+| OpenMV Cam H7 | `OPENMV4` | app (firmware over USB) | one, 120 KiB | downloads again |
+| OpenMV Cam M7 | `OPENMV3` | app, over USB (firmware over USB) | one, 248 KiB | flashed again over USB |
+| OpenMV Cam M4 | `OPENMV2` | app, over USB (firmware over USB) | one, 120 KiB | flashed again over USB |
+
+**Secrecy.** What a camera downloads is encrypted on every board. What it then stores is
+ciphertext where the chip can decipher flash as it is read, or has the RAM to hold a
+deciphered copy, and the key to it never leaves the chip. A camera's own keys (its identity) are safest in a secure element.
+
+| Camera | Download encrypted | Firmware in flash | App in flash | The flash key | The camera's own keys |
+|---|---|---|---|---|---|
+| OpenMV N6 | yes | encrypted | encrypted | derived in the chip from the hardware key ST fuses into it | in flash, sealed to the chip |
+| OpenMV Cam RT1062 | yes | encrypted | encrypted | derived in the chip from fuses the camera burns and locks on its first boot | in a secure element (SE050) |
+| OpenMV AE3 | yes | inside the chip (MRAM) | encrypted | made on the first boot, kept inside the chip | inside the chip, unsealed |
+| OpenMV Cam H7 Plus | yes | in the clear, inside the chip | encrypted (read into RAM at boot) | made on the first boot, kept inside the chip | in flash, unsealed |
+| OpenMV Pure Thermal | yes | in the clear, inside the chip | encrypted (read into RAM at boot) | made on the first boot, kept inside the chip | in flash, unsealed |
+| Arduino Portenta H7 | yes | in the clear, inside the chip | in the clear | none | in a secure element (SE050) |
+| Arduino Giga | yes | in the clear, inside the chip | in the clear | none | in a secure element (ATECC608) |
+| Arduino Nicla Vision | yes | in the clear, inside the chip | in the clear | none | in a secure element (SE050) |
+| OpenMV Cam H7 | yes | in the clear, inside the chip | in the clear, inside the chip | none | in flash, unsealed |
+| OpenMV Cam M7 | yes | in the clear, inside the chip | in the clear, inside the chip | none | in flash, unsealed |
+| OpenMV Cam M4 | yes | in the clear, inside the chip | in the clear, inside the chip | none | in flash, unsealed |
+
+"Inside the chip" is the microcontroller's own flash or MRAM: nothing to desolder or probe,
+but an open debug port reads it. No board locks its debug port yet; that, and secure boot,
+are the device lockdown the
+[residual threats](https://github.com/openmv/openmv-ota/blob/main/docs/compliance/residual-threats.md)
+list as planned for the N6, the AE3 and the RT1062. The Arduino boards keep their app in the
+clear: they have too little RAM to hold a deciphered copy.
+
+**The hosted cloud.** Every camera can run against an update server you host. On the hosted
+OpenMV Cloud:
+
+| Camera | OTA updates | Console logs and telemetry | Live video |
+|---|---|---|---|
+| OpenMV N6, AE3, Cam RT1062, Cam H7 Plus, Cam H7 | yes | yes | yes (QVGA) |
+| Arduino Portenta H7, Giga, Nicla Vision | yes | yes | yes (QVGA) |
+| OpenMV Pure Thermal, Cam M7, Cam M4 | not offered | not offered | not offered |
+
 ## Installation
 
 All tools install together, from [PyPI](https://pypi.org/project/openmv-ota/):
