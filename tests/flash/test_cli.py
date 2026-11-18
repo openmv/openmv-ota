@@ -118,6 +118,19 @@ def test_erase_romfs_dry_run(proj, monkeypatch, capsys):
     assert "would run: blhost -u 0x15A2,0x0073 -- reset" in out
 
 
+def test_read_dry_run_and_its_refusal_off_imx(proj, monkeypatch, capsys):
+    root, ran, artifact = proj
+    monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
+    assert main(["flash", "read", str(root), "-b", "OPENMV_RT1060", "--part", "romfs",
+                 "--to", "slots.bin", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "would run: blhost -u 0x15A2,0x0073 -t 600000 -- read-memory 0x60800000 0x800000 slots.bin" in out
+    assert "would run: blhost -u 0x15A2,0x0073 -- reset" in out
+    assert main(["flash", "read", str(root), "-b", "OPENMV_N6", "--part", "firmware",
+                 "--to", "fw.bin", "--dry-run"]) != 0
+    assert "only supported on the imx backend" in capsys.readouterr().err
+
+
 def test_arduino_factory_dry_run(proj, capsys):
     root, ran, artifact = proj
     for n in ("firmware.bin", "factory-romfs.img", "stub.bin", "firmware-text2.bin"):

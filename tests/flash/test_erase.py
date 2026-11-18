@@ -131,3 +131,33 @@ def test_erase_cli_dry_run(erase_project, capsys):
 def test_erase_cli_error_returns_exit_code(capsys):
     assert main(["flash", "erase", "-b", "ARDUINO_NANO_RP2040_CONNECT"]) == 2
     assert "no longer supported" in capsys.readouterr().err
+
+
+# -- flash read: the same resident-SBL session, nothing written ------------------------------
+
+def test_read_rt1060_enters_the_sbl_and_reads_the_partition(tmp_path, monkeypatch):
+    ran: list = []
+    entered: list = []
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **k: ran.append(argv))
+    monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name.upper())
+    monkeypatch.setattr(fl, "_prepare", lambda raw, **k: "SN1")
+    monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: entered.append(a[3]))
+    out = tmp_path / "fw.bin"
+    steps = fl.flash_read(str(tmp_path), board="OPENMV_RT1060", part="firmware", file=str(out))
+    assert entered == ["SN1"]                                   # the SBL is claimed before the read
+    assert ran[0][-4:] == ["read-memory", "0x60040000", "0x3C0000", str(out)]
+    assert ran[-1][-1] == "reset" and len(ran) == len(steps) == 2
+
+
+def test_read_dry_run_touches_no_camera(tmp_path, monkeypatch):
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **k: pytest.fail("ran %r" % (argv,)))
+    monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: name)
+    monkeypatch.setattr(fl, "_imx_catch_and_reset", lambda *a, **k: pytest.fail("entered the SBL"))
+    steps = fl.flash_read(str(tmp_path), board="OPENMV_RT1060", part="romfs",
+                          file=str(tmp_path / "r.bin"), dry_run=True)
+    assert "read-memory" in steps[0].argv
+
+
+def test_read_only_supported_on_imx(tmp_path):
+    with pytest.raises(FlashError, match="only supported on the imx backend"):
+        fl.flash_read(str(tmp_path), board="OPENMV_N6", part="firmware", file="x", dry_run=True)

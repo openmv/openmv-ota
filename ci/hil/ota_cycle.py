@@ -955,6 +955,8 @@ SCENARIOS["fw_corrupt"] = dict(
 # a path a scenario could exercise, and the coverage report names the ones none does.
 STUB_FAULT_ONLY = {
     "stub: no hardware key": "the chip's hardware key is not valid",
+    "stub: fuse key": "a chip whose SW_GP2 fuses are not locked yet: the stub makes the key "
+                      "once in a chip's life, and the fleet's board has had its turn",
     "stub: flash cipher setup failed": "the cipher engine refused its key",
     "stub: component install failed": "an erase, a program or its read-back failed",
     "stub: area scrub failed": "a read or an erase of the encrypted area failed",
@@ -1078,6 +1080,12 @@ def _usb_firmware(board):
     """True when the harness can put firmware on this board over USB in the clear, behind
     the stub's back: the DFU boards. (The RT1062's firmware only ever arrives in a slot.)"""
     return BOARDS[board]["flash"] == "dfu_cli"
+
+
+def _reads_back(board):
+    """True when the harness can read this board's flash back through its bootloader
+    (_read_back): the DFU boards, and the RT1062 through `flash read`."""
+    return BOARDS[board]["flash"] in ("dfu_cli", "blhost_imx")
 
 
 def _enable_stub_uart(project, board):
@@ -2032,9 +2040,8 @@ def check_at_rest(board):
     Run after a scenario is scored: entering DFU over the CDC stops the app, and the upload
     leaves DFU with a reset. With the CDC gone it catches the bootloader's DFU window."""
     import at_rest
-    from openmv_ota.flash.targets import flash_config
     from openmv_ota.romfs.boards import firmware_image_name, get_board
-    cfg, layout = flash_config(board), get_board(board).stub
+    layout = get_board(board).stub
     build = os.path.join(CFG["project"], "build")
     problems, report = [], {}
     if layout.encrypted:
@@ -2044,7 +2051,7 @@ def check_at_rest(board):
         with open(os.path.join(build, firmware_image_name(board)), "rb") as f:
             firmware = f.read()
         log("at rest: reading %s's firmware partition back through the bootloader" % board)
-        dump, why = _dfu_upload(board, cfg.alt_of("firmware"), "firmware-partition.bin")
+        dump, why = _read_back(board, "firmware")
         if dump is None:
             return False, {"problems": [why]}
         start = layout.firmware_dest - layout.origin
@@ -2061,7 +2068,7 @@ def check_at_rest(board):
     images = _slot_images(board)
     if images:
         log("at rest: reading %s's romfs partition back through the bootloader" % board)
-        slots, why = _dfu_upload(board, cfg.alt_of("romfs"), "romfs-partition.bin")
+        slots, why = _read_back(board, "romfs")
         if slots is None:
             problems.append(why)
         else:
@@ -2099,6 +2106,28 @@ def _slot_images(board):
         image = f.read()
     with open(factory, "rb") as f:
         return [image, f.read()]
+
+
+def _read_back(board, part):
+    """One partition (``firmware`` or ``romfs``) as the flash part stores it, read through the
+    board's bootloader: ``(bytes, None)``, or ``(None, why)``. A DFU upload, or on the RT1062
+    (no DFU) ``openmv-ota flash read`` through its resident bootloader."""
+    from openmv_ota.flash.targets import flash_config
+    name = "%s-partition.bin" % part
+    if BOARDS[board]["flash"] != "blhost_imx":
+        return _dfu_upload(board, flash_config(board).alt_of(part), name)
+    d = tempfile.mkdtemp(prefix="at-rest-")
+    path = os.path.join(d, name)
+    try:
+        rc, out = sh([ota("openmv-ota"), "flash", "read", CFG["project"], "-b", board,
+                      "--part", part, "--sdk-home", CFG["sdk"], "--mpremote", ota("mpremote"),
+                      "--to", path], timeout=CDC_FLASH_TIMEOUT, check=False)
+        if rc != 0 or not os.path.exists(path):
+            return None, "the read-back did not happen (%s, rc=%d): %s" % (part, rc, (out or "")[-200:])
+        with open(path, "rb") as f:
+            return f.read(), None
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _dfu_upload(board, alt, name):
@@ -4443,7 +4472,7 @@ def main():
         # installed the update -- read the firmware back through the bootloader and require
         # ciphertext (check_at_rest). The scored window is over, so taking the REPL costs nothing.
         if (trace["passed"] and args.scenario == "delta" and _stub_slot_crypt(args.board)
-                and _usb_firmware(args.board)):        # the read-back is a DFU upload
+                and _reads_back(args.board)):
             ok, report = phase("at_rest", lambda: check_at_rest(args.board))
             trace["at_rest"] = report
             if not ok:

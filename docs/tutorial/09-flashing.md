@@ -22,6 +22,7 @@ openmv-ota flash factory  ./my-product -b OPENMV4
 | `flash factory` | firmware **+** the factory image (the manufacturing program) | `<board>-firmware.bin`, `<board>-factory-romfs.img` |
 | `flash register` | nothing: registers the keys of a camera already flashed | — |
 | `flash erase` | the onboard filesystem — [next page](10-erase-and-bootloader.md) | — (no artifact) |
+| `flash read` | nothing: reads a partition back as stored (OPENMV_RT1060) — [next page](10-erase-and-bootloader.md) | — |
 | `flash bootloader` | the bootloader — [next page](10-erase-and-bootloader.md) | `<board>-bootloader.bin` |
 | `flash list` | *(query)* connected boards + the state each is in | — |
 

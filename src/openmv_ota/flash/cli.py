@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from . import flash as flash_mod
-from . import tools
+from . import imx, tools
 from .errors import FlashError
 
 
@@ -98,6 +98,14 @@ def register(flash_parser: argparse.ArgumentParser):
                       help="erase the whole OTA romfs region (both slots) instead of the user "
                            "disk, so no slot is bootable and the firmware's recovery runs (imx boards only)")
     p_er.set_defaults(func=cmd_erase, _command="flash erase")
+
+    p_rd = sub.add_parser("read", help="read a partition back from the flash part, as stored "
+                                       "(imx boards only)")
+    _add_common(p_rd)
+    p_rd.add_argument("--part", required=True, choices=imx.READ_PARTS,
+                      help="the partition to read: the firmware area, or both romfs slots")
+    p_rd.add_argument("--to", required=True, metavar="FILE", help="the file to write the bytes to")
+    p_rd.set_defaults(func=cmd_read, _command="flash read")
 
     p_ls = sub.add_parser("list", help="list connected boards and the state each is in")
     p_ls.add_argument("project", nargs="?", default=".",
@@ -279,6 +287,18 @@ def cmd_erase(args: argparse.Namespace) -> int:
             args.project, board=args.board, dfu_util=args.dfu_util, sdk_home=_sdk_home(args),
             reset=args.reset, enter_bootloader=args.enter_bootloader, serial=args.serial,
             mpremote=args.mpremote, romfs=args.romfs, dry_run=args.dry_run)
+    except FlashError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    return _report(args, steps)
+
+
+def cmd_read(args: argparse.Namespace) -> int:
+    try:
+        steps = flash_mod.flash_read(
+            args.project, board=args.board, part=args.part, file=args.to,
+            sdk_home=_sdk_home(args), enter_bootloader=args.enter_bootloader, serial=args.serial,
+            mpremote=args.mpremote, dry_run=args.dry_run)
     except FlashError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code

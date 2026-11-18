@@ -18,13 +18,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The cipher is AES-128 one block at a time, which is what the engine does: equal blocks of
   one image are equal in flash. See `docs/design/flash-encryption.md`, "The AE3, as built".
 
+- **The RT1062's flash key is its own, in fuses it burns once.** The first boot of the boot
+  stub on an RT1062 whose SW_GP2 fuses are not locked takes 128 bits from the chip's random
+  number generator, burns them into SW_GP2 and burns its write lock and read lock. From then
+  on the flash key is derived in the chip from those fuses on every boot; software reads
+  0xBADABADA there, on an open chip as on a closed one, and the key never leaves the chip.
+  **This is permanent and automatic: flashing an OTA firmware onto an RT1062 uses up its
+  SW_GP2 fuses.** No other fuse is written. Before this the key was derived from NXP's
+  master key, which an open chip replaces with zeros, so every open camera had the same,
+  computable key; a camera never runs on that key now. An RT1062 flashed with an earlier
+  build is flashed once more (`flash factory`): what it stored was under the old key.
+
+- **`flash read`: a partition read back as the flash part stores it (RT1062).**
+  `openmv-ota flash read -b OPENMV_RT1060 --part firmware|romfs --to FILE` copies the firmware
+  area or both app slots out through the resident bootloader, which runs with the chip's flash
+  cipher off, and writes nothing. It is the RT1062's counterpart of a DFU upload, and the
+  fleet now uses it to check from outside the chip, after every `delta`, that the RT1062's
+  flash holds ciphertext, as it already did for the N6 and the AE3.
+
 - **The RT1062's firmware and app are ciphertext at rest.** The i.MX RT1062 joins the N6: its
   boot stub keeps the firmware area and the booted slot encrypted, deciphered by the chip's bus
   encryption engine as they are read; the stub and the installer encrypt what they write, and
   the first boot after a factory flash ciphers the factory slot (about two minutes, once).
-  **On a chip that is not closed the key is one anyone can compute**: NXP's parts release their
-  fused master key only once closed, so until then the flash is the real data path without the
-  secrecy. Closing the chip makes the key the camera's own, and the camera is flashed once more.
+  The key is the camera's own: see the entry above.
   See `docs/design/flash-encryption.md`, "The RT1062, as built".
 
 - **On a chip with a secure boot key, the boot stub boots only signed firmware.** With no

@@ -136,3 +136,15 @@ def test_blhost_timeout_only_on_erase(tmp_path):
     assert "-t" in erase.argv and "120000" in erase.argv
     reset = next(s for s in steps if s.argv[-1] == "reset")
     assert "-t" not in reset.argv
+
+
+def test_read_plan_reads_a_whole_partition_through_the_resident_sbl_and_writes_nothing(tmp_path):
+    out = tmp_path / "dump.bin"
+    fw = [s.argv for s in imx.read_plan(_raw(), "blhost", "firmware", out)]
+    assert fw[0] == ["blhost", "-u", "0x15A2,0x0073", "-t", "600000", "--",
+                     "read-memory", "0x60040000", "0x3C0000", str(out)]   # up to the user disk
+    assert fw[-1][-1] == "reset" and len(fw) == 2
+    ro = imx.read_plan(_raw(), "blhost", "romfs", out)
+    assert ro[0].argv[-4:] == ["read-memory", "0x60800000", "0x800000", str(out)]   # both slots
+    assert ro[0].label == "read romfs 0x60800000 (0x800000) -> dump.bin"
+    assert not any(w in a for s in ro for a in s.argv for w in ("erase", "write", "efuse"))

@@ -63,8 +63,8 @@ region must therefore already be ciphertext under the engine's key and counter s
   holds the derived key in software anyway (it has to load it into the MCE), so it runs the
   MCE's stream cipher itself and programs ciphertext through the normal indirect-mode path,
   where the engine is not involved. The RT1062 BEE is read-only, so the stub does AES-CTR
-  itself with the key it reads from OCOTP before HAB closes that off *(verify which fuse
-  words stay readable to software after the device is closed)*.
+  itself with a key it derives in the DCP from fuses software cannot read (see "The RT1062,
+  as built").
 - **Installer writing a ROMFS slot** (all boards): `installer.py` streams the downloaded
   image into the slot through the block device. The same question: encrypt in Python (a C
   helper -- `cryptolib` AES-CTR with the engine's address-derived counter), or write through
@@ -378,14 +378,21 @@ The i.MX RT1062 gets the N6's design: the firmware area and the booted slot are 
 rest and deciphered by the chip as it reads them; the stub and the installer encrypt what they
 write. What differs is the engine, and where the key comes from.
 
-**Not secret until the chip is closed.** The key is derived in the chip from the master key NXP
-fuses into every part, and the chip releases that master key only once it is closed (HAB). On
-an open part, which is every camera until it is closed, the derivation runs on sixteen zero
-bytes instead: the key is the same on every board, and anyone can compute it. So an open
-RT1062's flash is ciphertext that a flash dump and this repository decrypt. Everything else is
-the real path: closing the chip changes nothing about how a camera behaves, and makes the key
-its own. It also changes the key, so what was installed no longer reads; a closed camera is
-flashed again over USB, once.
+**The key is the camera's own, in fuses it made itself.** NXP fuses a master key into every
+part, but the chip releases it only once it is closed (HAB): on an open part, which is every
+camera as shipped, a key derived from it is derived from sixteen zero bytes, the same on
+every board. The first build of this design used that key, and an open RT1062's flash was
+ciphertext that a flash dump and this repository decrypted. The key now comes from the chip's
+SW_GP2 fuses instead: 128 bits of customer fuses that the DCP can take as its hardware key,
+with a write lock and a read lock. The stub fills them on the first boot that finds them
+unlocked, so the key is different on every camera, stays with the chip, and is not readable
+by software, the chip open or closed. Closing the chip later does
+not change it.
+
+What an open chip still gives away is use, not the key: code running on the chip, or a
+debugger on its open debug port, can ask the DCP to encrypt under the key and so derive the
+flash key the way the stub does. Reading the flash part, the thing this phase is about, gets
+ciphertext.
 
 - **The engine (BEE).** It deciphers reads of the FlexSPI memory map, in the address ranges
   `IOMUXC_GPR` names, and does nothing for a write. Two regions, each with its own key and
@@ -410,16 +417,75 @@ flashed again over USB, once.
   matter of course -- the Wi-Fi chip's firmware is a constant in the image, sent to the radio
   by the SDIO controller's DMA straight from flash -- and the first build, at level 3, could
   not start its radio. The stub sets level 0: the engine deciphers for every master.
+- **Reads that are not 16-byte aligned.** NXP's errata for the chip (ERR050164) say the
+  engine supports 16-byte bursts only, that a master sending an unaligned burst may get a bus
+  error, and that the way round it is aligned addresses and lengths, and for the core, the
+  cache on. Measured on the fleet's board with both ranges on (2026-11-16), reading a ciphered
+  range at each of the sixteen offsets of a block and comparing with the core's cached read:
+
+  | Who reads | What was read | Result |
+  |---|---|---|
+  | The core, through a non-cacheable MPU region | 1 to 64 bytes at every offset; 8, 16 and 32-bit loads | all correct |
+  | The SD controller's DMA (a file written to the card straight from flash) | 512, 4096, 5000 and 65536 bytes at every offset | all correct |
+  | The DCP (memory copy) | 16, 20, 32, 61 and 64 bytes at every offset | correct, but for 16 bytes at offset 8: a bus error, 25 times of 25 |
+  | The DCP (memory copy) | 1, 3 and 4 bytes at every offset | correct at offsets 0 to 12; a bus error at 13, 14 and 15, 25 times of 25 |
+
+  The erratum is real, it is the same every time, and it is a bus error, never wrong data.
+  Nothing the firmware does meets it: the stub's hand-over with the caches off reads through
+  the core, the Wi-Fi chip's firmware (at 0x6023AD64 in the fleet's build, offset 4) and SD
+  writes go through the SD controller, and neither the stub nor the firmware points the DCP at
+  flash. `machine.SPI` copies through the core. A driver that hands flash to another DMA
+  master is the thing to test first.
 - **Three things the bench showed.** A range's top register takes the range's END address
   (end minus 8 leaves the last 16 bytes as stored). The data cache keeps what it read before a
   range changed, so the stub drops it on every change. And the DCP's status reads zero for a
   moment after its clock is switched on, so the stub waits for the fuse key to show.
 - **The key.** One AES-128-ECB block of the label `omv-flash-key-v1` in the DCP under its
-  unique key (key select 0xFE). Derived on every boot, stored nowhere, never handed to Python.
-  On the fleet's open board the result is `AES(00..00, label)`: the OTP key, the unique key and
-  a zero key encrypt alike, and a non-zero key does not.
-  NXP's AN12901 ("DCP - How to do Key Management") says as much: "If the device is in the
-  Non-secure state, SNVS Master key reset to all 0."
+  hardware key (key select 0xFF), with the DCP's key input pointed at the SW_GP2 fuses
+  (`IOMUXC_GPR10` bit 4) and the DCP reset so it takes them. Derived on every boot, stored
+  nowhere, never handed to Python. With the input left on the master key's path an open chip
+  gives `AES(00..00, label)` (measured: the OTP key, the unique key and a zero key in the
+  packet encrypt alike; NXP's AN12901 says as much, "If the device is in the Non-secure
+  state, SNVS Master key reset to all 0"). The stub and the firmware's module both refuse a
+  derived key equal to that value, so a camera never runs on the key every open chip shares.
+- **The fuse key.** `fuse_key.c`, on every boot before the key is derived: if the fuse map's
+  LOCK word shows SW_GP2 write-locked and read-locked, there is nothing to do. Otherwise the
+  stub takes sixteen bytes from the chip's random number generator (refusing a run of one
+  value, a repeated word, or a count of ones outside 32..96), burns them into the four
+  SW_GP2 words (fuse index 0x29..0x2C), checks each while it can still be read, burns the
+  write lock (LOCK bit 21) and then the read lock (bit 23). Fuses only go from 0 to 1, so
+  the order is the design: a power cut in the words leaves SW_GP2 unlocked with some bits
+  set, and the next boot burns fresh random words on top and carries on; a cut between the
+  locks leaves the words final and the next boot burns the read lock. Until both locks are
+  in, the stub has no key and boots nothing. The programming sequence and its timing are
+  NXP's (`fsl_ocotp.c`), worked out for the clock the stub runs on; no other fuse is written.
+- **What the fuses did on the bench** (the fleet's board, an open chip, 2026-11-16; burnt by
+  hand from the REPL with the same sequence, one step at a time):
+
+  | Step | What the chip showed |
+  |---|---|
+  | SW_GP2 blank, DCP input on the fuses | `AES(00..00, block)`: the zero key |
+  | A pattern written to the SW_GP2 shadow registers (no fuse burnt) | the DCP encrypts under the pattern: word 0 first, each word little-endian |
+  | Four random words burnt | each reads back exactly from the fuse array and the shadows; the DCP's output equals software AES under them; no programming-supply bit (`CCM_CGPR` bit 4) was needed |
+  | Write lock burnt (LOCK 0x40128003 to 0x40328003) | the DCP's output is unchanged; a write to a shadow register is refused |
+  | Read lock burnt (LOCK to 0x40B28003) | the shadows and the fuse array read 0xBADABADA; **the DCP's output is unchanged** |
+  | After a reset | the same |
+
+  Both locks take hold at once, with no reset. The DCP follows its key input only after a
+  reset of the DCP itself. Two ways to deny the key to later code were tried and do not
+  exist on an open chip: the DCP's `DISABLE_UNIQUE_KEY` capability bit does not take a
+  write, and locking the key input (`IOMUXC_GPR10` bit 20) outlasts a warm reset, so a stub
+  that locked it away from the fuses would lock itself out on the next boot.
+
+  With the stub and the firmware on the fuse key, the fleet's board, flashed from the
+  factory image over what it held under the old key (bench, 2026-11-16): `delta` PASS in
+  535 s, `rollback` PASS in 542 s, and after `delta` the read-back from outside the chip:
+
+  ```
+  at rest: stub as built; 0 of 166471 firmware blocks stored as built, 0 build samples found, 8.000 bits/byte, 0 bytes not blank after it
+  at rest: slot A: 0 of 100096 blocks stored as built, 0 image samples found, 8.000 bits/byte, 0 bytes not blank before its status sector
+  at rest: slot B: 0 of 100096 blocks stored as built, 0 image samples found, 8.000 bits/byte, 0 bytes not blank before its status sector
+  ```
 - **Writes.** The stub's `bee_stream.c` is the counter mode in software; `port_flash_write`
   encrypts a copy of whatever lands in a ciphered range before it programs the page. The
   installer does the same through the `flash_crypt` module, built from that source.
@@ -427,7 +493,8 @@ flashed again over USB, once.
   partition reaches the firmware as a block device, which has none to give, so the firmware
   build bakes the partition's address into `_ota_config.SLOT_CRYPT_BASE` (0x60800000).
 - **The lock.** At the jump the stub sets the lock bits of the two ranges' registers: they
-  cannot be moved until a reset. The key registers were never readable.
+  cannot be moved until a reset. The key registers were never readable: with the engine
+  running they read back as four zero words.
 - **Control data.** A slot's status sector and trailer are its last 8 KiB: one erase block on
   the N6 (64 KiB), two on the RT1062 (4 KiB). The conversion copies both, the trailer's block
   last, so a copy does not verify until it is whole.
@@ -449,8 +516,18 @@ Read back from the running camera after a conversion: the slot the engine does n
 exactly the bytes the model predicts for the factory image under that slot's tweak, and the
 slot the build wrote holds the image in the clear until it is erased.
 
-The fleet's read-back from outside the chip (`check_at_rest`) is a DFU upload, which this board
-does not have: on the RT1062 the stored firmware area has not been read back from outside.
+The fleet's read-back from outside the chip (`check_at_rest`) is a DFU upload on the N6. This
+board has no DFU, so `openmv-ota flash read` does the same through its resident bootloader,
+which runs before the stub with the engine off: a blhost `read-memory` of the firmware area
+(17 s) and of both slots (44 s). After `delta` on the fleet's board (bench, 2026-11-16):
+
+```
+at rest: stub as built; 0 of 166461 firmware blocks stored as built, 0 build samples found, 8.000 bits/byte, 0 bytes not blank after it
+at rest: slot A: 0 of 100096 blocks stored as built, 0 image samples found, 8.000 bits/byte, 0 bytes not blank before its status sector
+at rest: slot B: 0 of 100096 blocks stored as built, 0 image samples found, 8.000 bits/byte, 0 bytes not blank before its status sector
+```
+
+The fleet repeats it after every `delta` on this board.
 
 ## The AE3, as built (2026-11-16)
 
@@ -538,8 +615,8 @@ at rest: slot B: 0 of 144896 blocks stored as built, 0 image samples found, 8.00
 
 ## Open questions to verify against documentation
 
-- i.MX RT1062: what closing the chip (HAB) does to the stub's use of the DCP unique key and
-  the BEE, on a board that can be closed.
+- i.MX RT1062: what closing the chip (HAB) does to the stub's use of the DCP and the BEE, on
+  a board that can be closed. (The key is in SW_GP2 and does not depend on it.)
 - STM32H743/H747: RDP2 interaction with the Arduino bootloader (not ours) and with DFU
   recovery; whether "decrypt the active ROMFS slot into SDRAM" fits the boards' SDRAM
   budget next to the frame buffers.

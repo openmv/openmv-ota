@@ -9,15 +9,14 @@
  * FlexSPI controller, which the engine is not in, so port.c runs the same counter mode in
  * software (bee_stream.c) over what it programs.
  *
- * THE KEY. AES-128-ECB of a fixed label in the DCP under its UNIQUE key, the one derived
- * from the master key NXP fuses into every part (OTPMK). Software cannot read that key, and
- * the same value comes out on every boot, so nothing is stored and nothing is provisioned.
- * But the chip hands the DCP the real master key only once it is CLOSED (HAB): on an open
- * part the unique key is sixteen zero bytes, the same on every board (measured, 2026-11-13:
- * the OTP key, the unique key and a zero payload key encrypt alike). So until a camera is
- * closed its flash is ciphertext under a key anyone can compute -- the data path is the real
- * one, the secrecy is not there yet. Closing the chip changes the key: what was installed
- * no longer reads, and the camera is flashed again over USB, once.
+ * THE KEY. AES-128-ECB of a fixed label in the DCP under the key in the chip's SW_GP2 fuses:
+ * 128 bits this camera made for itself on its first boot and locked against software
+ * (fuse_key.c). The DCP takes that key when IOMUXC_GPR10 points its key input at the fuses
+ * and the block is then reset; software cannot read it, and the same value comes out on
+ * every boot, so nothing is stored. The DCP's other hardware key, the one derived from the
+ * master key NXP fuses into every part, is not used: the chip releases it only once it is
+ * closed, and on an open part it is sixteen zero bytes, the same on every board (measured,
+ * 2026-11-13). A derived key equal to what that zero key gives is refused.
  *
  * Measured against the silicon (bench, OPENMV_RT1060): the counter layout in bee_stream.h;
  * a range's top is its END address (top = end - 8 leaves the last block as stored); and the
@@ -29,13 +28,15 @@
 #include "port_mimxrt.h"
 #include "bee.h"
 #include "bee_stream.h"
+#include "fuse_key.h"
+#include "aes128.h"
 
 #ifdef STUB_CRYPT_START
 
 // What the key is derived from. Changing it changes every camera's key: never.
 static const uint8_t key_label[16] = { 'o', 'm', 'v', '-', 'f', 'l', 'a', 's', 'h', '-', 'k', 'e', 'y', '-', 'v', '1' };
 
-#define DCP_UNIQUE_KEY              (0xFEU)
+#define DCP_OTP_KEY                 (0xFFU)     // the key on the DCP's hardware input: SW_GP2
 #define DCP_TIMEOUT_MS              (100)
 #define BEE_KEY_TIMEOUT_MS          (100)
 // Counter mode for both regions, at security level 0; the endian swap stays on (bit 7 clear).
@@ -59,13 +60,23 @@ static bee_area_t areas[2];                     // 0: the firmware area, 1: the 
 static uint8_t device_key[16];
 static bool have_key = false;
 
-// One AES-128-ECB block under the DCP's unique key. The DCP is a bus master: the packet and
-// both buffers go out of the data cache before it runs, and the result is read past it.
-static int dcp_unique(const uint8_t in[16], uint8_t out[16]) {
+// One AES-128-ECB block under the key in the SW_GP2 fuses. The DCP's hardware key input is
+// a mux (the fuses, or the master key's path) that the block reads when it leaves reset:
+// point it at the fuses, then pulse the reset (measured: the output follows the mux only
+// after the pulse). The DCP is a bus master: the packet and both buffers go out of the data
+// cache before it runs, and the result is read past it.
+static int dcp_fuse_key(const uint8_t in[16], uint8_t out[16]) {
     static uint32_t packet[8] __attribute__((aligned(32)));
     static uint8_t src[32] __attribute__((aligned(32)));
     static uint8_t dst[32] __attribute__((aligned(32)));
     CCM->CCGR0 |= CCM_CCGR0_CG5_MASK;
+    IOMUXC_GPR->GPR10 |= IOMUXC_GPR_GPR10_DCPKEY_OCOTP_OR_KEYMUX_MASK;
+    if (!(IOMUXC_GPR->GPR10 & IOMUXC_GPR_GPR10_DCPKEY_OCOTP_OR_KEYMUX_MASK)) {
+        return -1;                              // the mux is locked the other way until a reset
+    }
+    DCP->CTRL_SET = DCP_CTRL_SFTRST_MASK;
+    for (uint32_t t = port_ticks_ms(); port_ticks_ms() - t < 2U;) {
+    }
     DCP->CTRL_CLR = DCP_CTRL_SFTRST_MASK | DCP_CTRL_CLKGATE_MASK;
     // The status register reads zero until the block's clock has run: give the fuse key a
     // moment to show before deciding it never reached the DCP.
@@ -82,7 +93,7 @@ static int dcp_unique(const uint8_t in[16], uint8_t out[16]) {
     memset(dst, 0, sizeof(dst));
     packet[0] = 0;                              // no next packet
     packet[1] = 0x122U | (1U << 10);            // encrypt, cipher on, release the semaphore; an OTP key
-    packet[2] = DCP_UNIQUE_KEY << 8;            // ...this one
+    packet[2] = DCP_OTP_KEY << 8;               // ...this one
     packet[3] = (uint32_t) src;
     packet[4] = (uint32_t) dst;
     packet[5] = 16;
@@ -109,8 +120,20 @@ static int dcp_unique(const uint8_t in[16], uint8_t out[16]) {
     return 0;
 }
 
+// What the label encrypts to under sixteen zero bytes: the key every open chip would give
+// if the DCP were not on the fuses. Never a camera's key.
+static bool public_key(const uint8_t key[16]) {
+    static const uint8_t zero[16];
+    aes128_t a;
+    uint8_t out[16];
+    aes128_init(&a, zero);
+    aes128_encrypt(&a, key_label, out);
+    return memcmp(out, key, 16) == 0;
+}
+
 int bee_init(void) {
-    if (dcp_unique(key_label, device_key) != 0) {
+    if (fuse_key_ready() != 0 || dcp_fuse_key(key_label, device_key) != 0 || public_key(device_key)) {
+        memset(device_key, 0, sizeof(device_key));
         return -1;
     }
     CCM->CCGR4 |= CCM_CCGR4_CG3_MASK;

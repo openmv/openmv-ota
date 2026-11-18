@@ -343,6 +343,30 @@ def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str,
     return steps
 
 
+def flash_read(project: str = ".", *, board: str, part: str, file: str,
+               sdk_home: Path | None = None, dry_run: bool = False, mpremote: str | None = None,
+               serial: str | None = None, enter_bootloader: bool = True) -> list[imx.ImxStep]:
+    """Read a partition (``firmware`` or ``romfs``) back from the flash part into ``file``,
+    through the board's resident bootloader: the bytes as stored. On a camera that keeps its
+    flash encrypted that is the ciphertext -- the bootloader runs with the cipher engine off --
+    so this is how to look at what someone reading the flash part would get. Nothing is
+    written. imx only: a DFU board's bootloader gives the same with ``dfu-util -U``."""
+    cfg = flash_config(board)                        # refuses the retired Nanos
+    if cfg.backend != "imx":
+        raise FlashError("flash read is only supported on the imx backend (board %r is %s); "
+                         "on a DFU board, `dfu-util -U` uploads a partition"
+                         % (board, cfg.backend))
+    blhost = _resolve_spsdk("blhost", sdk_home, dry_run)
+    steps = imx.read_plan(cfg.raw, blhost, part, Path(file))
+    if not dry_run:
+        serial = _prepare(cfg.raw, serial=serial, enter_bootloader=enter_bootloader,
+                          mpremote=mpremote, dry_run=dry_run)
+        _imx_catch_and_reset(cfg.raw, _sdk_python(blhost), mpremote, serial, enter_bootloader)
+        for s in steps:
+            runner.run(s.argv)
+    return steps
+
+
 # --- arduino backend ------------------------------------------------------------------------
 
 def _arduino_files(board: str, op: str, raw: dict, out_dir: Path) -> dict:
