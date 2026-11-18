@@ -25,17 +25,14 @@ partition, so firmware and romfs are untouched:
 | OPENMV4P / OPENMVPT | alt 3 |
 | OPENMV_N6 | alt 2 |
 | OPENMV_AE3 | alt 5 (its RWFS) |
-| ARDUINO_PORTENTA_H7 / GIGA | app at `0x08020000` + QSPI filesystem at `0x90000000` |
-| ARDUINO_NICLA_VISION | QSPI filesystem only |
+| ARDUINO_PORTENTA_H7 / GIGA / NICLA_VISION | QSPI filesystem at `0x90000000` |
 | OPENMV_RT1060 | the disk's MBR sector at `0x60400000`, via blhost |
 
 ```
 $ openmv-ota flash erase -b OPENMV4 --dry-run
-would run: dfu-util -w -d ,37c5:9204 -a 1 --reset -D <4KB-zeros>
+would run: dfu-util -d ,37c5:9204 -a 1 --reset -D <zeros>
 
 $ openmv-ota flash erase -b OPENMV_RT1060 --dry-run
-would run: sdphost -u 0x1FC9,0x0135 -- write-file 0x20001C00 .../sdphost_flash_loader.bin
-...
 would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60400000 0x1000
 would run: blhost -u 0x15A2,0x0073 -- reset
 ```
@@ -87,7 +84,7 @@ its own -- no jumper needed. Wait for the system DFU bootloader to enumerate.
 | OPENMV2 / 3 / 4 / 4P / PT | BOOT0 jumpered to 3.3V, replug (virgin boards come up in recovery on their own) | system DFU |
 | OPENMV_N6 | BOOT0 jumpered to 3.3V, replug (virgin boards come up in recovery on their own) | STM32CubeProgrammer (the layout + loader files it needs are bundled in the tool) |
 | OPENMV_RT1060 | SBL jumper — keep it on until flashing finishes | SDP/blhost (no build artifact: writes the flash-config block + the bundled secure bootloader) |
-| OPENMV_AE3 | SE-UART maintenance mode, over the board's USB-serial bridge (not the OpenMV USB port) | Alif Security Toolkit (see below) |
+| OPENMV_AE3 | SE-UART maintenance mode, over the board's USB-serial bridge (not the OpenMV USB port) | Alif Security Toolkit |
 | Arduino boards | — | no OpenMV bootloader to flash |
 
 ### The AE3's Security Toolkit flow

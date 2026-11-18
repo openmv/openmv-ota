@@ -41,8 +41,8 @@ corrects from the server's clock on every check-in (and from NTP while the serve
 unreachable) — and falls back to **monotonic uptime** before the clock is set (e.g. in `boot.py`):
 
 ```
-[   12.345] INFO openmv_ota: boot: mounted A (payload 1)                  (RTC unset)
-[2026-06-25 12:34:56] WARNING openmv_ota: install: FAILED after erase     (RTC set)
+[   12.345] INFO openmv_ota: boot: mounted A (payload 16777216)             (RTC unset)
+[2026-06-25 12:34:56] INFO openmv_ota: install: writing A                   (RTC set)
 ```
 
 `boot.py` logs the mounted slot and any reject reason; the installer logs each phase
@@ -105,8 +105,9 @@ with openmv_wdt.relax():
 
 `relax()` lets the helper's `machine.Timer` callback feed the watchdog at **interrupt
 time**, so the board survives the op *as long as the CPU is healthy* (interrupts still
-firing) — effectively suspending the watchdog without disabling it, and on exit it hands
-feeding back to your loop. Use it only around genuinely long ops; outside `relax()` the
+firing), and on exit it hands feeding back to your loop. The region is bounded: after
+60 seconds (`relax(max_ms)` sets another budget) the callback stops feeding, so a call
+that never returns still ends in a reset. Use it only around genuinely long ops; outside `relax()` the
 watchdog still catches a hung loop. On every OpenMV port `machine.Timer` *is* the
 virtual/soft timer (`-1`, the only id it accepts), and the helper creates it with
 `hard=True` — that runs its callback in the SysTick/PendSV interrupt handler, which is
@@ -117,9 +118,8 @@ for the life of the app: entering `relax()` allocates nothing, so no automatic g
 collection can land in the unfed gap between two regions (that gap is how an H7 Plus bit
 its 100 ms window right after a TLS handshake).
 
-**`install()` and `sync()` already do this, minimally** — each `relax()`es *only* the one
-long flash erase (which it can't feed from a loop and which can exceed even the WDT's max
-timeout) and `feed()`s the watchdog **per chunk** through the surrounding loops (`install`
+**`install()` and `sync()` already do this, minimally** — each `relax()`es *only* the long
+flash erases and its own garbage collections (which it can't feed from a loop) and `feed()`s the watchdog **per chunk** through the surrounding loops (`install`
 through the download + write; `sync` through its write *and* the already-applied re-read).
 So an OTA install or a `sync()` won't trip an enabled watchdog, yet a genuine stall
 *isn't* masked: if a loop stops or a recv stalls, feeding stops and the watchdog resets the

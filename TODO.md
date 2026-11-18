@@ -18,6 +18,12 @@ file's own history has the longer design notes behind each line.
   keys unreadable on the boards that keep them in flash unsealed (the M4, M7, H7, H7 Plus,
   Pure Thermal and AE3; the N6 seals its keys to the chip).
 
+- **A fleet run of a key retirement** — `project keys retire` and the camera's epoch floor
+  are each tested on the host and under QEMU; no HIL scenario yet retires a key and shows a
+  camera refusing an image signed before it.
+- **Adding signing keys** — the pool is fixed at `project new` (or a backend provision). The
+  roots can certify a new key at any time; no command does it yet.
+
 ## Before the hosted cloud goes live (required)
 
 The service is pre-launch, so data can be reset when these land. Website parts are in openmv-cloud's `TODO.md`; registrar parts in

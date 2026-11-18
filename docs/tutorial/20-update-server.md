@@ -10,7 +10,7 @@ it. Two deployment shapes run the **same software**:
 
 - **OpenMV-hosted (the default):** OpenMV runs the server + website — there is nothing
   to deploy, and everything the earlier pages did happened against it.
-- **Self-hosted:** you run your own; the next page is the manual.
+- **Self-hosted:** you run your own.
 
 Either way, this page is what the thing actually *does* — worth reading even if you
 never deploy one, because it is the other half of every `client` command.
@@ -23,7 +23,7 @@ against the keys baked into its firmware. The server only stores and distributes
 already-signed bytes and runs rollout *policy*. A fully compromised server cannot forge
 an update a device will accept — the worst it can do is serve stale bytes or nothing.
 Because the manifest's artifact URLs are **relative filenames**, the server serves the
-manifest untouched and co-locates the `-ota.img.gz`/`-ota.delta.gz` beside it — no
+manifest untouched and co-locates the `-ota.img.gz` and each `-ota.delta-<base>.gz` beside it — no
 rewriting, no re-signing.
 
 **It never stores data for an unvalidated device.** A deployment attached to OpenMV's
@@ -49,7 +49,7 @@ When `client release publish` uploads a release, the server does exactly three t
 3. **Records a release row** in the database: the id, the identity fields, the
    representation list, and the storage keys above. (The keys are names *inside the
    bucket* — a device never sees or constructs them; the URL a device gets is the
-   gateway's, below.)
+   gateway's.)
 
 That's all — no unpacking, no re-signing, no transformation. The row is the join point
 for everything after: rollouts and pins reference the release id, and the download
@@ -74,21 +74,25 @@ interval. In order:
    and **sticky** from then on (an admin `bind` overrides it). A later boot that reports
    a different or empty account — a factory-state fallback image, say — can't strand the
    device in the wrong tenant.
-4. **The offer decision** — a device **pin** wins, then a **cohort pin**, then the active
+4. **The signature** — a check-in signed by the camera's registered identity key goes on
+   through every step. An unsigned one, or one signed at a stale time, gets update offers
+   only: no device row, no telemetry, no grants. One whose signature does not verify gets
+   nothing, and so does a new camera past the account's device limit.
+5. **The offer decision** — a device **pin** wins, then a **cohort pin**, then the active
    rollout for the device's cohort. Whatever the source, an offer only happens when it's
    an *upgrade* over what the device reports running — by version, or by the account's
    publish counter for a camera that says it orders by that — the device is *settled*
    (not mid-trial — its fallback slot is worth more than a new download), and — for a
    rollout — the device's stable hash falls inside the current percent.
-5. **Rollout accounting** — the check-in feeds the rollout's counters: newly offered
+6. **Rollout accounting** — the check-in feeds the rollout's counters: newly offered
    devices bump `attempted`, a device now running the offered release bumps `updated`,
    and a device transitioning into a fallback bumps `failures`. When the failure rate
    among offered devices crosses the rollout's threshold, the rollout **auto-pauses**
    and the audit log records it.
-6. **The device row** — version, publish counter, slot, confirmation state, fallback
+7. **The device row** — version, publish counter, slot, confirmation state, fallback
    identity, cohort — is upserted; this is what `client fleet` and `client device list`
    summarize.
-7. **The answer** — `{update: false, poll_after_s: …}` in the common case; on an offer,
+8. **The answer** — `{update: false, poll_after_s: …}` in the common case; on an offer,
    a short-lived download URL for the release's manifest. Where the deployment is wired
    for them, the answer also carries per-device **grants** for OpenMV's live-viewing and
    data-ingest services.
@@ -128,15 +132,15 @@ become a download like this:
    there is no redirect; the server streams the bytes itself.)
    A device on a poor link resumes from the byte offset it reached instead of
    restarting.
-6. **The device reports the outcome** — `installed` or `failed` — which is what a
-   rollout's status counts as `reported`.
-
-The wire-level shapes of each request live with the device API pages.
+6. **The server learns the outcome** from the camera's next check-in — running the
+   release, or fallen back — which is what a rollout's status counts as `reported`.
 
 ## See also
 
 - [Residual threats](../compliance/residual-threats.md) — what this stack deliberately
   does *not* defend against.
+- [Self-hosting](21-self-hosting.md) — running your own.
+- [The device API](22-device-api.md) — the wire-level shape of each request.
 
 ---
 

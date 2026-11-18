@@ -72,14 +72,14 @@ deciphered copy, and the key to it never leaves the chip. A camera's own keys (i
 | OpenMV N6 | yes | encrypted | encrypted | derived in the chip from the hardware key ST fuses into it | in flash, sealed to the chip |
 | OpenMV Cam RT1062 | yes | encrypted | encrypted | derived in the chip from fuses the camera burns and locks on its first boot | in a secure element (SE050) |
 | OpenMV AE3 | yes | inside the chip (MRAM) | encrypted | made on the first boot, kept inside the chip | inside the chip, unsealed |
-| OpenMV Cam H7 Plus | yes | in the clear, inside the chip | encrypted (read into RAM at boot) | made on the first boot, kept inside the chip | in flash, unsealed |
-| OpenMV Pure Thermal | yes | in the clear, inside the chip | encrypted (read into RAM at boot) | made on the first boot, kept inside the chip | in flash, unsealed |
+| OpenMV Cam H7 Plus | yes | in the clear, inside the chip | encrypted (read into RAM at boot) | made on the first boot, kept inside the chip | inside the chip, unsealed |
+| OpenMV Pure Thermal | yes | in the clear, inside the chip | encrypted (read into RAM at boot) | made on the first boot, kept inside the chip | inside the chip, unsealed |
 | Arduino Portenta H7 | yes | in the clear, inside the chip | in the clear | none | in a secure element (SE050) |
 | Arduino Giga | yes | in the clear, inside the chip | in the clear | none | in a secure element (ATECC608) |
 | Arduino Nicla Vision | yes | in the clear, inside the chip | in the clear | none | in a secure element (SE050) |
-| OpenMV Cam H7 | yes | in the clear, inside the chip | in the clear, inside the chip | none | in flash, unsealed |
-| OpenMV Cam M7 | yes | in the clear, inside the chip | in the clear, inside the chip | none | in flash, unsealed |
-| OpenMV Cam M4 | yes | in the clear, inside the chip | in the clear, inside the chip | none | in flash, unsealed |
+| OpenMV Cam H7 | yes | in the clear, inside the chip | in the clear, inside the chip | none | inside the chip, unsealed |
+| OpenMV Cam M7 | yes | in the clear, inside the chip | in the clear, inside the chip | none | inside the chip, unsealed |
+| OpenMV Cam M4 | yes | in the clear, inside the chip | in the clear, inside the chip | none | inside the chip, unsealed |
 
 "Inside the chip" is the microcontroller's own flash or MRAM: nothing to desolder or probe,
 but an open debug port reads it. No board locks its debug port yet; that, and secure boot,

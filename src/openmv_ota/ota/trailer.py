@@ -10,7 +10,7 @@ crypto — the signature is opaque bytes produced/verified by a separate layer.
 
 Layout (little-endian)::
 
-    [ header (96) ][ components (n x 48) ][ certificate (160) ][ json_meta ][ signature ][ crc32 ]
+    [ header (96) ][ components (n x 80) ][ certificate (160) ][ json_meta ][ signature ][ crc32 ]
     \\_________________________ signed region _________________________/
     \\____________________ crc32 region: everything before the crc ________________/
 

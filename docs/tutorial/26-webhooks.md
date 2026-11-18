@@ -1,4 +1,8 @@
-# 26 · Webhooks
+# Webhooks
+
+*[← 25 · Integrating as a platform](25-platform-integration.md) · [Index](00-introduction.md)*
+
+---
 
 Everything the server does lands in the audit log, in order, and
 [Integrating as a platform](25-platform-integration.md) shows how to read that log
@@ -48,7 +52,7 @@ the URL, the subscription or the description, or switches the endpoint off and o
 | `product.create`, `product.rename` | product changes |
 | `advisory.found` | a scan found a **new** security advisory for a release the fleet runs (one event per finding, never one per scan) |
 | `advisory.cleared` | a finding stopped applying: a scan no longer reports it, or no camera runs the release any more (one event per finding) |
-| `account.limit`, `account.rename`, `account.activate`, `account.deactivate` | operator actions on the account |
+| `account.limit`, `account.rename`, `account.activate`, `account.deactivate` | an operator changed an account. Filed in the log of the account whose token made the change (the operator's), so that account's endpoints receive it, not the changed account's |
 | `token.revoke` | an API token was revoked |
 | `webhook.create`, `webhook.update`, `webhook.delete`, `webhook.disabled` | changes to endpoints, including the server switching one off |
 | `webhook.ping` | the test event `webhook test` sends |
@@ -66,11 +70,11 @@ to you:
   "id": "evt_4821",
   "type": "rollout.autopause",
   "account_id": "acct_7bd21c50e83a94f1",
-  "time": "2026-09-21T18:46:52.331Z",
-  "actor": "checkin",
+  "time": "2026-09-21T18:46:52.331204+00:00",
+  "actor": "system",
   "entity": {"type": "rollout", "id": "ro_1a618704bcf61837"},
   "product_id": 5553380507785669254,
-  "data": {"attempted": 7, "failures": 1, "threshold": 0.05},
+  "data": {"failures": 1, "attempted": 7},
   "seq": 4821,
   "delivery": {"id": "dl_9f0c2e11a4b37d58", "attempt": 1, "webhook_id": "wh_5a1e9c0d2b7f4e31"}
 }

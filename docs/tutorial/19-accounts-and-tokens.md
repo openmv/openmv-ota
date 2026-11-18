@@ -17,8 +17,7 @@ belonging to an account.
   website issues (and revokes) your working tokens. Logging in with one
   ([The client](15-the-client.md)) is all a hosted maker ever does — everything on this
   page is the operator machinery behind that button.
-- **Self-hosted:** `server init` prints a **bootstrap token** once at first setup
-  ([The update server](20-update-server.md)) — every scope, acting for the implicit
+- **Self-hosted:** `server init` prints a **bootstrap token** once at first setup — every scope, acting for the implicit
   single account named `''`. A single-tenant self-host can `login` with it and publish,
   manage, and observe forever without ever creating an account: the verbs below exist
   for the **multi-tenant** case, carving real accounts out of one server and issuing
@@ -135,7 +134,7 @@ account acct_7bd21c50e83a94f1 activated
 Deactivation is the off-switch: a fielded fleet keeps being served through a lapse or
 a mistake. Removing an account for good, with everything it owned, takes the server's
 own root token, `openmv-ota client account delete --account-id ...`, or the server's
-shell, `openmv-ota server account delete` ([Self-hosting](21-self-hosting.md)). Either
+shell, `openmv-ota server account delete`. Either
 way it takes a deactivated account only; an active one is refused.
 
 
@@ -338,6 +337,7 @@ $ openmv-ota client device registration --device-id OPENMV_N6:30003d000851303436
   signed check-ins.
 - [Residual threats](../compliance/residual-threats.md) — what this layer deliberately
   does *not* guarantee.
+- [The update server](20-update-server.md) and [Self-hosting](21-self-hosting.md) — `server init`, the bootstrap token, and the server's own shell.
 
 ---
 

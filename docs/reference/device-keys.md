@@ -299,7 +299,8 @@ read protection covers them there. The build refuses a bootloader that would gro
 **Flashing the bootloader erases the camera's keys.** On the STM32 boards the key area shares a
 flash sector with the bootloader. On the AE3 the Alif tools write only the bytes they're given,
 so `flash bootloader` writes the key area as well, blank. `flash bootloader` warns about it. The
-next `flash` provisions new keys: a new identity, to be registered again.
+next `flash` provisions new keys: a new identity, to be registered again. A flash-encryption
+key kept in the area goes with them, and the camera makes a new one on its next boot.
 
 The AE3's MRAM has no erased state: the Secure Enclave's MRAM erase writes zeros, so blank there
 is `0x00` rather than flash's `0xFF`. Each 16-byte MRAM write runs with interrupts off, since an
@@ -307,7 +308,9 @@ interrupt during an MRAM write hangs the chip until a power cycle.
 
 ### Format
 
-The area holds sixteen 256-byte slots, filled from the top of the area down. Flash here is
+The area holds sixteen 256-byte slots. The lowest is reserved (on the AE3, the H7 Plus and
+the Pure Thermal it holds the camera's flash-encryption key); the other fifteen hold key
+records, filled from the top of the area down. Flash here is
 written once and never erased, so a record can't be changed in place: a later record goes in
 the next blank slot, and the newest complete record is the camera's keys. Slot 0 is the area's
 last 256 bytes.
@@ -380,7 +383,7 @@ guessable, like the camera's serial number.
 - **The key is the camera's.** It is derived from the exchange key, so a blob is as well kept
   as that key: inside the chip on a board with a secure element (the SE050's and ATECC608's
   ECDH never shows the key), sealed under the N6's hardware key, and in the key area --
-  readable until lockdown -- on the other STM32 boards. No key is stored for this; the camera
+  readable until lockdown -- on the other soft-key boards. No key is stored for this; the camera
   derives the same one every boot, from the keys it already has.
 - **`aad` is the purpose.** `b"records"`, `b"wifi"`: it goes into the derived keys, so a blob
   sealed for one purpose does not open under another. A camera with one purpose can leave it
@@ -413,7 +416,7 @@ refused.
 
 ## What each kind protects against
 
-| Threat | Hard (SE050, ATECC608) | Soft, plain (STM32) | Soft, sealed (N6) |
+| Threat | Hard (SE050, ATECC608) | Soft, plain (M4, M7, H7, H7 Plus, Pure Thermal, AE3) | Soft, sealed (N6) |
 | --- | --- | --- | --- |
 | Reading the key out of the camera's flash | the key is never in flash | readable until lockdown | the NOR holds only sealed keys |
 | Copying the keys to another camera | not possible | possible until lockdown | the sealed keys open on this chip only |

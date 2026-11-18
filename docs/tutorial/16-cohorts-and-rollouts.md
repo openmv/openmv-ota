@@ -38,7 +38,8 @@ $ openmv-ota client cohort list
   "cohorts": [
     { "cohort": "__default__", "devices": 404, "by_product": { "5553380507785669254": 404 }, "pins": {} },
     { "cohort": "beta", "devices": 8, "by_product": { "5553380507785669254": 8 }, "pins": {} }
-  ]
+  ],
+  "total": 2
 }
 
 $ openmv-ota client cohort assign --cohort beta --product-id 5553380507785669254
@@ -51,8 +52,7 @@ $ openmv-ota client cohort show --cohort beta
 `assign` takes exactly one selector: `--device-id` (repeatable) moves those exact
 devices; `--product-id` moves every device of the product. And the devices behind any
 count are one filter away — `client device list --cohort beta [--product-id N]` prints
-the per-device rows ([Watching the fleet](17-watching-the-fleet.md) shows them in
-full). Assignment is also removal — a device moved to `beta` leaves
+the per-device rows. Assignment is also removal — a device moved to `beta` leaves
 `__default__` — and it counts only the devices that exist and are yours: the `1/1` in
 the summary is what makes a typo'd id visible.
 
@@ -109,7 +109,7 @@ Create one at publish time or stage an already-published release later — the s
 
 ```
 $ openmv-ota client release publish . -b OPENMV_N6 --cohort beta --percent 5
-published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl)
+published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl; reaches app + firmware)
 rollout ro_1c3f88ba90d2e644  5.0%  cohort=beta
 
 $ openmv-ota client rollout create --release-id rel_4f9c2a81d06b73ee --cohort beta --percent 5
@@ -175,6 +175,19 @@ Two ramps have names, so you need not spell them out: `--ramp cautious` (5, 25, 
 `client rollout presets` prints their stages exactly; a dashboard's create form offers the
 same two, from the same definitions.
 
+`rollout create` in full:
+
+| Flag | Effect |
+|---|---|
+| `--release-id RELEASE_ID` | The release to stage (ids come from `client release list`). |
+| `--cohort COHORT` | The cohort to stage it to (default `__default__`, the unassigned devices). |
+| `--percent PERCENT` | The share of the cohort to offer it to, 0-100. Omit with `--stage` or `--ramp`. |
+| `--stage PCT[:SOAK[:ATTEMPTED[:MAXFAIL]]]` | A ramp stage, repeatable: the percent, then optionally the soak in seconds, the devices that must have been offered it, and the failure rate (0-1) it must stay under. |
+| `--ramp {cautious,quick}` | A named ramp instead of `--stage`. |
+| `--failure-threshold RATE` | The fallback rate among offered devices that auto-pauses the rollout (default 0.05). |
+| `--name NAME` | A display name for the rollout: a label, renamed any time. |
+| `--json` | Print the server's response as JSON instead of the summary. |
+
 You can still act on a ramp by hand. `raise N` jumps ahead to the furthest stage N
 reaches, and that stage's soak and failure window start over; a raise that stays inside
 the current stage only widens it. `resume` also starts the current stage's window over, so
@@ -183,7 +196,7 @@ a ramp paused at its ceiling isn't paused again at once by the failures that sto
 `progress` toward each gate (`soak_left_s`, `attempted_left`, and its failure rate against
 the stage's ceiling).
 
-From there the lifecycle is four actions:
+From there the lifecycle is five actions:
 
 ```
 openmv-ota client rollout raise 50 --rollout-id ro_1c3f88ba90d2e644
@@ -217,10 +230,11 @@ $ openmv-ota client rollout list
       "cohort": "beta",
       "percent": 5.0,
       "state": "active",
-      "display_name": "",
       "cohort_devices": 412,
       "up_to_date": 21,
-      "pause_reason": null
+      "pause_reason": null,
+      "display_name": "",
+      "ramp": null
     }
   ],
   "total": 1
@@ -231,12 +245,9 @@ $ openmv-ota client rollout status --rollout-id ro_1c3f88ba90d2e644
   "rollout_id": "ro_1c3f88ba90d2e644",
   "release_id": "rel_4f9c2a81d06b73ee",
   "product_id": 5553380507785669254,
-  "product_id_str": "5553380507785669254",
   "cohort": "beta",
   "percent": 5.0,
   "state": "active",
-  "display_name": "",
-  "pause_reason": null,
   "failure_threshold": 0.05,
   "attempted": 21,
   "updated": 19,
@@ -244,10 +255,19 @@ $ openmv-ota client rollout status --rollout-id ro_1c3f88ba90d2e644
   "created_at": "2026-08-31T18:12:04.281937+00:00",
   "updated_at": "2026-08-31T19:40:11.905122+00:00",
   "account_id": "acct_7bd21c50e83a94f1",
+  "display_name": "",
+  "pause_reason": null,
+  "stage_index": 0,
+  "stage_entered_at": null,
+  "product_id_str": "5553380507785669254",
+  "stages": [],
+  "ramp": null,
   "cohort_devices": 412,
   "staged_devices": 21,
   "rates": { "attempted": 1.0, "updated": 0.9047619047619048, "failures": 0.0 },
-  "reported": { "installed": 19, "failed": 0 }
+  "reported": { "installed": 19, "failed": 0 },
+  "on_release": 19,
+  "superseded_by": null
 }
 ```
 
@@ -333,6 +353,10 @@ rollout ro_7209dc3c597caec0 named 'Beta wave 1'
 ```
 
 The name rides along in `release list` / `rollout list` rows as `display_name`.
+
+## See also
+
+- [Watching the fleet](17-watching-the-fleet.md) — the per-device rows in full.
 
 ---
 

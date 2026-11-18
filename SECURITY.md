@@ -15,8 +15,7 @@ advisories.
 
 ## Supported versions
 
-Pre-release: `main` is the only supported line. Once released, this section
-will name the supported release lines.
+The latest 1.0.x release and `main` are the supported lines.
 
 ## Scope notes for researchers
 

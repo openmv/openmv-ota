@@ -636,8 +636,7 @@ def _provision_keys(sig_alg: int, factory_keys: int, ota_keys: int, passphrase: 
     warnings: list[str] = []
     if ota_keys < OTA_KEYS_WARN_FLOOR:
         warnings.append(
-            "--ota-keys %d is a very small rotation pool; you can't add keys later without "
-            "re-flashing firmware (the default is 32)" % ota_keys
+            "--ota-keys %d is a very small rotation pool (the default is 32)" % ota_keys
         )
     return prov, warnings
 

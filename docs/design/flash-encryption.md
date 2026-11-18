@@ -1,17 +1,18 @@
-# Code protection: encrypted off-chip flash — survey and design questions
+# Code protection: encrypted off-chip flash — survey, decisions, and what was built
 
-**Status: N6 phase settled (2026-11-04); the N6 firmware area built (2026-11-05).** The
-survey below covers every OTA board; the "Decisions" section records what the owner settled
-for the first phase (the N6 only), "Verified on the N6" what was checked against RM0486 and
-on the bench, and "The N6 firmware area, as built" the first piece that exists. Rows for the
-other boards still carry *(verify)* marks: they are groundwork for later phases, not design.
+**Status: built.** The N6 and the RT1062 keep their firmware and app as ciphertext at rest;
+the AE3, the H7 Plus and the Pure Thermal keep their app as ciphertext. The Arduino boards
+and the M4/M7/H7 are not encrypted, and device lockdown (debug-port and boot protection) is
+not built. This page is in the order the work happened: the survey and the first decisions
+(2026-11-04, the N6 only) come first and are kept as written, and each "as built" section
+records what a board does. Where the two differ, the "as built" section is the truth.
 
 ## Context
 
 Every OTA board keeps something that matters in a flash chip outside the MCU package: the
 app ROMFS on all of them, the firmware itself on the N6 and the RT1062. A chip on the board
-can be desoldered and read, or its bus sniffed, so nothing in it is confidential today. The
-goal of this phase is that the bytes at rest in off-chip flash are ciphertext, and that the
+can be desoldered and read, or its bus sniffed, so nothing in it was confidential when this work started. The
+goal is that the bytes at rest in off-chip flash are ciphertext, and that the
 MCU decrypts them *on the fly* as it executes or reads them -- with the hardware engine
 where the part has one, so performance and memory-mapped (XIP, `/rom`) use are unchanged.
 
@@ -32,8 +33,8 @@ What already exists, and stays:
 |---|---|---|---|---|---|---|
 | OPENMV_N6 | STM32N657 | external XSPI flash, XIP at 0x70000000 | same chip (ROMFS0 at +8 MiB) | **MCE** (Memory Cipher Engine), MCE2 on XSPI2: 4 regions of 4 KiB granularity, AES-128/256 or Noekeon; *stream*, *block* and *fast block* modes all cipher reads **and** writes | none needed: a key derived from the ST-fused hardware unique key (HUK) through the SAES, see "Keys" | BSEC life cycle: shipped CLOSED_UNLOCKED (debug open); `secure_boot` fuse + debug lock = CLOSED_LOCKED, one-way |
 | OPENMV_RT1060 | i.MX RT1062 | external FlexSPI NOR, XIP at 0x60000000 | same chip | **BEE** (Bus Encryption Engine): 2 regions, AES-128 CTR or ECB, decrypt-only on the XIP read path | OCOTP fuses: SW_GP2 or the OTPMK-derived key; `fsl_bee.c` / `fsl_ocotp.c` are in the tree | HAB closed + JTAG fuse (irreversible) |
-| OPENMV_AE3 | Alif Ensemble E3 | **on-die MRAM** (0x80000000) | external OSPI flash (ROMFS0 in the 32 MiB part) | MRAM needs none (it is inside the package). OSPI: Alif's controller has an AES XIP decryption block *(verify: Alif OSPI/AES docs)* | Alif Secure Enclave / OTP *(verify)* | SE lifecycle: debug disable *(verify)* |
-| OPENMV4P, OPENMVPT | STM32H743 | internal flash (0x08060000 behind the stub) | external QSPI (ROMFS at +24 MiB) | **none** -- the H743/H747 have no OTFDEC (the engine exists on H7A3/B3 only; `lib/stm32/h7/*otfdec*` is for those) | internal flash RDP; no OTP key slot for an engine | RDP level 1 (reversible by mass erase) / level 2 (permanent) |
+| OPENMV_AE3 | Alif Ensemble E3 | **on-die MRAM** (0x80000000) | external OSPI flash (ROMFS0 in the 32 MiB part) | MRAM needs none (it is inside the package). OSPI: Alif's controller has an AES XIP decryption block (AES-ECB) | a key the camera makes on its first boot, in MRAM | SE lifecycle: debug disable (not built) |
+| OPENMV4P, OPENMVPT | STM32H743 | internal flash (0x08060000 behind the stub) | external QSPI (ROMFS at +24 MiB) | **none** -- the H743/H747 have no OTFDEC (the engine exists on H7A3/B3 only; `lib/stm32/h7/*otfdec*` is for those); the H7 Plus and the Pure Thermal decipher in software (AES-CTR) into SDRAM | a key the camera makes on its first boot, in internal flash; no OTP key slot for an engine | RDP level 1 (reversible by mass erase) / level 2 (permanent) |
 | ARDUINO_PORTENTA_H7, ARDUINO_GIGA | STM32H747 | internal flash | external QSPI | none (as above) | as above | as above; the Arduino bootloader is not ours |
 | ARDUINO_NICLA_VISION | STM32H747 | internal flash | external QSPI | none; and **no SDRAM**, so the software fallback below is not available either | as above | as above |
 | OPENMV2/3/4 (classic, app-only) | F4/F7/H7 | internal flash | internal flash / SD | not an OTA firmware board; RDP covers the firmware | RDP | RDP |
@@ -78,8 +79,9 @@ region must therefore already be ciphertext under the engine's key and counter s
   act with the key it reads.
 - **A/B slots and the key**: both slots and the firmware area share one device key, so a
   key is per device, not per release. A release stays one artifact: the device encrypts
-  what it stores. Per-device server-side encryption is not needed and is not wanted (one
-  download per fleet, not per camera).
+  what it stores. Per-device server-side encryption of the stored image is not needed and is not
+  wanted (one download per fleet, not per camera). This is the at-rest key only: per-camera
+  release encryption is a separate layer ([device-keys.md](../reference/device-keys.md)).
 
 ## Keys
 
@@ -90,7 +92,7 @@ region must therefore already be ciphertext under the engine's key and counter s
   the MCE's write-only key registers. The same key comes out on every boot, the host never
   knows it, nothing is burned and nothing is provisioned. `key_store.c` already uses this
   exact path to seal the device identity keys. (The RT1062's key is in "The RT1062, as
-  built"; nothing is settled for Alif.)
+  built", the AE3's in "The AE3, as built".)
 - **Fuses are deferred, deliberately.** Encryption at rest is on by default from the first
   N6 build of this phase, so every bench and HIL board runs the real data path from day one.
   What it does *not* buy yet is protection against a probe: until the device is closed and
@@ -133,9 +135,8 @@ region must therefore already be ciphertext under the engine's key and counter s
    build since 2026-11-08 and signed by the factory key; the bootloader side is lockdown
    work.
 
-Still open, and a bench measurement rather than a decision: how the installer (Python)
-encrypts a slot it writes -- AES-CTR in `cryptolib` with the MCE's address-derived counter,
-one call per 4 KiB chunk, or a C helper.
+How the installer (Python) encrypts a slot it writes was settled on the bench: a C helper
+(`flash_crypt`), not `cryptolib`.
 
 ## Verified on the N6 (RM0486, ST wiki and UM3234, bench 2026-11-04)
 
@@ -206,8 +207,8 @@ on; the stub's host tests hold the cipher to these vectors.
 
 ## The N6 firmware area, as built (2026-11-05)
 
-The firmware the stub installs is ciphertext at rest. The app's ROMFS slots are not yet, and
-each slot still carries the same firmware as a compressed component in the clear: on its own
+The firmware the stub installs is ciphertext at rest. At this step the app's ROMFS slots
+were not yet, and each slot still carried the same firmware as a compressed component in the clear: on its own
 this piece hides nothing from someone who reads the whole chip. It is the key, the engine
 set-up and the install path, proven on hardware, that the slots then use.
 
@@ -680,4 +681,4 @@ deciphers the QSPI part as it is read, so the booted slot is deciphered once, in
 - Encrypting `/flash` (the user filesystem). It is not load-bearing and holds no code.
 - Protecting against an attacker with the device open and SWD available: that is the
   debug lock's job, and it is binary.
-- Server-side per-device encryption of releases (see "A/B slots and the key").
+- Server-side per-device encryption of the stored image (see "A/B slots and the key").
