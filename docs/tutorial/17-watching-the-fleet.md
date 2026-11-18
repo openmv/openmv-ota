@@ -186,6 +186,23 @@ credential that can find a camera without knowing whose it is, is the server's o
 account by a fragment of the id or the display name, and each row names its
 `account_id`.
 
+`device list` in full:
+
+| Flag | Effect |
+|---|---|
+| `--product-id ID` | Only this product. |
+| `--cohort COHORT`, `--not-cohort COHORT` | Only devices in this cohort, or every device outside it. |
+| `--q TEXT` | A fragment of the name or id, case-insensitive. |
+| `--version VERSION` | Only devices running this version. |
+| `--fell-back` | Only devices whose last boot rejected a slot. |
+| `--unconfirmed` | Only devices mid-trial (an install not yet confirmed). |
+| `--seen-since WHEN`, `--not-seen-since WHEN` | Only devices that have, or have not, checked in since WHEN: epoch seconds, `30m`/`2h`/`1d`/`1w` ago, or an ISO date (UTC). |
+| `--behind`, `--up-to-date` | Only devices with a newer release published for their product, or at or past its newest. |
+| `--installed-on DAY`, `--failed-on DAY` | Only devices whose install, or failure, was reported on this UTC day (`YYYY-MM-DD`). |
+| `--older-than-release RELEASE_ID` | Only devices running something older than this release. |
+| `--sort COL`, `--dir {asc,desc}` | Sort by `seen`, `device`, `product`, `version`, `cohort` or `first_seen`. |
+| `--limit N`, `--offset N` | Page size and page start. |
+
 ## Every count at once
 
 `client dashboard` is every number an overview page shows, in one read: the size and

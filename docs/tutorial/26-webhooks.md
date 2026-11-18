@@ -29,6 +29,19 @@ private networks (a self-host can allow it with `OPENMV_OTA_WEBHOOK_ALLOW_PRIVAT
 the URL, the subscription or the description, or switches the endpoint off and on;
 `webhook delete` removes it with its delivery history.
 
+| Command | Flag | Effect |
+|---|---|---|
+| `webhook create` | `--url URL` | The `https://` address that receives the POSTs. |
+| | `--events LIST` | Comma-separated event types or families (default `*`, everything). |
+| | `--description TEXT` | A label for the endpoint. |
+| `webhook update` | `--webhook-id ID` | The endpoint. |
+| | `--url URL`, `--events LIST`, `--description TEXT` | A new URL, subscription or label. |
+| | `--enable` | Switch the endpoint on (clears its failure count). |
+| | `--disable` | Switch the endpoint off; its pending deliveries are dropped. |
+| `webhook deliveries` | `--webhook-id ID` | The endpoint. |
+| | `--status {pending,delivered,dead}` | Only deliveries in this state. |
+| | `--limit N`, `--offset N` | Page size (default 50) and page start. |
+
 ## The events
 
 | Event | Fires when |

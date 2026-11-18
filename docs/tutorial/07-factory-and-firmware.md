@@ -75,6 +75,13 @@ units is per-device registration's job, separate from signing. Factory keys are
 assigned and revocable but never rotated: you retire a compromised run's id, you
 don't roll a live one.
 
+`build factory-romfs` takes the flags of `build romfs`, and:
+
+| Flag | Effect |
+|---|---|
+| `--factory-key ID` | The factory key to sign with (default `0x0001`). |
+| `--no-account` | Silence the warning about provisioning devices with no `[product].account_id` (a self-host build). |
+
 ## build firmware
 
 `build firmware` runs the firmware repo's own `make` in the pegged checkout, so
@@ -150,7 +157,28 @@ against the old configuration. Building firmware needs the firmware toolchain
 | `--incremental` | Skip the clean rebuild (only when the tree is known good; the tool still cleans when its overlay/manifest inputs changed). |
 | `--key-passphrase-file FILE` | Passphrase that decrypts the project's payload keys (OTA projects; else the env var or a prompt). |
 | `-f, --firmware PATH` | Firmware checkout override. |
+| `--allow-dev-key` | Allow the boot stub's footer to be signed with a throwaway `--dev` key (refused by default). |
 | `--keep-build-dir` | Print the path of the generated wrapper dir (OTA builds): `build/openmv-ota-<board>/` in the firmware tree, left in place after every build. |
+
+## build stub
+
+```bash
+openmv-ota build stub ./my-product -b OPENMV_N6
+# -> build/OPENMV_N6-stub.bin
+```
+
+`build firmware` builds the boot stub as part of its own work. `build stub` builds the stub
+alone, for a board that has one: the same `<board>-stub.bin`, without the firmware build.
+
+| Flag | Effect |
+|---|---|
+| `-b, --board NAME` | Build only this board (repeatable; default: all boards). |
+| `-o, --output DIR` | Output directory (default: `<project>/build`). |
+| `-j, --jobs N` | Parallel make jobs (default: CPU count). |
+| `-f, --firmware PATH` | Firmware checkout override. |
+| `--factory-key ID` | The factory key that signs the stub's footer (default: the first factory key, `0x0001`). |
+| `--key-passphrase-file FILE` | Passphrase (read from FILE) that decrypts the signing key (else the `OPENMV_OTA_KEY_PASSPHRASE` environment variable, or a prompt). |
+| `--allow-dev-key` | Allow signing with a throwaway `--dev` key (refused by default). |
 
 ## See also
 

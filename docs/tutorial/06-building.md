@@ -96,6 +96,8 @@ openmv-ota build romfs ./my-product --vela-arg=--verbose-all --mpy-arg=-O2
 | `-f, --firmware PATH` | Firmware checkout override. |
 | `--allow-oversize` | Warn instead of failing when an image exceeds the budget. |
 | `--keep-build-dir` | Keep the staging directory for inspection. |
+| `--key-passphrase-file FILE` | Passphrase (read from FILE) that decrypts the signing key (else the `OPENMV_OTA_KEY_PASSPHRASE` environment variable, or a prompt). |
+| `--allow-dev-key` | Allow signing with a throwaway `--dev` key (refused by default for a production image). |
 
 ## See also
 

@@ -256,6 +256,29 @@ time_utc,used_pct_avg,used_pct_min,used_pct_max,used_pct_n
 2026-10-15 13:00:00,9.357122905027932,8.2,11.7,716
 ```
 
+| Command | Flag | Effect |
+|---|---|---|
+| `data topics` | `--device-id ID` | The device to read. |
+| | `--product-id ID` | Every device of this product together. |
+| `data logs` | `--device-id ID` | The device to read. |
+| | `--topic TOPIC` | The topic (default `console`). |
+| | `--sid SID` | A boot session id (default: the newest). |
+| | `--before-seq SEQ` | Page back: records with a `seq` below this. |
+| | `--until WHEN` | The page ending at this moment, in whatever session that was: epoch seconds, `30m`/`2h`/`1d`/`1w` ago, or an ISO date (UTC). |
+| | `--limit N` | Records per page (default 200). |
+| `data export` | `--device-id ID`, `--topic TOPIC` | The device and the topic (default `console`). |
+| | `--since WHEN`, `--until WHEN` | The window (default: the day before `--until`, and now). |
+| | `--limit N` | At most this many records, the newest when the window holds more (default 5000, at most 20000). |
+| | `--format {csv,ndjson}` | `csv` (default: `time_utc`, `session`, `seq`, `line`) or `ndjson` (the records). |
+| | `--out FILE` | Write here instead of stdout. |
+| `data series` | `--device-id ID` | The device to read. |
+| | `--product-id ID` | Every device of this product together. |
+| | `--topic TOPIC` | The topic, e.g. `telemetry`. |
+| | `--field FIELD` | The field under `data`, dotted for nested (`imu.ax`); with `--format csv`, several, comma-separated. |
+| | `--since WHEN`, `--until WHEN` | The window (default: the data's span). |
+| | `--buckets N` | Time buckets across the window (default 200). |
+| | `--format {json,csv}` | `json` (default), or `csv`: one row per bucket, avg/min/max/n per field. |
+
 
 ## Watching live
 

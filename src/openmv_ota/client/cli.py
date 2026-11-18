@@ -564,7 +564,7 @@ def register(parser: argparse.ArgumentParser) -> None:
     p_whu.add_argument("--description", default=None, help="a new label")
     g = p_whu.add_mutually_exclusive_group()
     g.add_argument("--enable", action="store_true", help="switch the endpoint on (clears its failure count)")
-    g.add_argument("--disable", action="store_true", help="switch the endpoint off; pending deliveries wait")
+    g.add_argument("--disable", action="store_true", help="switch the endpoint off; its pending deliveries are dropped")
     _creds(p_whu)
     p_whu.set_defaults(func=cmd_webhook, _command="client webhook update", action="update")
     p_whd = whsub.add_parser("delete", help="remove an endpoint and its delivery history")

@@ -137,6 +137,14 @@ own root token, `openmv-ota client account delete --account-id ...`, or the serv
 shell, `openmv-ota server account delete`. Either
 way it takes a deactivated account only; an active one is refused.
 
+| Command | Flag | Effect |
+|---|---|---|
+| `account create` | `--name NAME` | The account's name. |
+| | `--client-ref REF` | Your own id for this account; it makes the call idempotent: the same ref returns the account you already made. |
+| `account list` | `--q TEXT` | Only accounts whose name, id or client reference contains TEXT. |
+| | `--active`, `--inactive` | Only accounts that are switched on, or only deactivated ones. |
+| | `--limit N`, `--offset N` | Page size (default: all) and page start. |
+
 
 ### Device limits
 
@@ -156,6 +164,12 @@ the account that checks in under it while the account is at its limit is turned 
 way, recorded once per device id. Cameras the account already
 holds are never affected — they keep checking in and updating. This is the hook a hosting
 layer uses to map a plan onto an account.
+
+| Flag | Effect |
+|---|---|
+| `--account-id ID` | The account. |
+| `--devices N` | The most devices it may register. |
+| `--unlimited` | Lift the limit. |
 
 ## Tokens and scopes
 
@@ -188,6 +202,13 @@ That credential sees those products' releases, devices, rollouts and audit histo
 nothing else in the account — not the other products, and not the account-level record
 of tokens and limits. It is how you hand a customer a view of their own line without a
 view of the fleet.
+
+| Flag | Effect |
+|---|---|
+| `--account-id ID` | The account the token acts for. |
+| `--name NAME` | A label for the token, e.g. `ci`. |
+| `--scope SCOPE` | The highest rung, implying the ones below: `publish`, `manage` or `observe` (default: all three); or an operator scope, `accounts` or `accounts.all`; or `register`. |
+| `--product-id ID` | Limit the token to this product (repeatable; default: the whole account). |
 
 A name is unique among an account's live tokens (it is what the audit log records as
 the actor); revoking a token frees its name. The secret is shown **once** — the server
