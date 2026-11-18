@@ -38,6 +38,7 @@ int qspi_flash_init(void);
 int qspi_flash_deinit(void);
 int qspi_flash_read(uint32_t addr, uint8_t *buf, uint32_t size);
 int qspi_flash_write(uint32_t addr, const uint8_t *buf, uint32_t size);
+int qspi_flash_erase(uint32_t addr);                        // one 4 KiB sector
 #endif
 
 // mce.c: the N6's memory cipher engine over the firmware area (STUB_CRYPT_START/END).

@@ -45,6 +45,18 @@
 #define STUB_QSPI_BASE              0x90000000
 #define STUB_QSPI_FLASH_SIZE        0x2000000
 
+// The booted slot's body is ciphertext at rest (verify.c, install.c). The chip has no engine
+// to decipher it and no key of its own to give: the cipher runs in software (port.c), the
+// firmware reads the booted slot into RAM through it, and the key is the camera's own, made
+// by the firmware on its first boot and kept at the head of the key area (the last 4 KiB of
+// the bootloader's sector, boards.json's secure_element.key_area): until then the slots run
+// as flashed. The firmware, in the chip's own flash, is not ciphered.
+#define STUB_SLOT_CRYPT             1
+#define STUB_CRYPT_KEY_LATE         1
+#define STUB_CRYPT_GRAIN            0x1000          // what a manifest's crypt_size is rounded to
+#define STUB_SLOT_BLOCK             0x1000          // the QSPI part's erase sector
+#define STUB_KEY_AREA               0x0801F000
+
 // Where firmware may put its stack (the vector-table plausibility check): DTCM, AXI
 // SRAM, the D2/D3 SRAMs.
 #define STUB_RAM_START              0x20000000

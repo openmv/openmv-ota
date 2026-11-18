@@ -51,6 +51,7 @@ LDFLAGS += -mthumb \
 SRC_C += $(PORT_DIR)/port.c \
          $(PORT_DIR)/alif_ospi.c \
          $(PORT_DIR)/ecb_slot.c \
+         lib/aes/flash_key.c \
          lib/aes/aes128.c
 
 CFLAGS += -Ilib/aes

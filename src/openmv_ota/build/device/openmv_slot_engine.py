@@ -11,13 +11,19 @@ The key is the camera's own: sixteen random bytes made here, on the first boot, 
 blank place of the key area's first 256 bytes (the stub's ecb_slot.h has the layout). A camera
 that has just made its key resets: the stub then ciphers the slot it was flashed with.
 
-Frozen beside boot.py, and only into a firmware that keys its engine itself: a board with no
-flash to spare does not pay for it.
+The STM32H743 boards (the OpenMV Cam H7 Plus, the Pure Thermal) have no engine: their flash
+key is made here the same way, and :func:`copier` gives boot.py a reader that deciphers the
+booted slot into RAM once (``flash_crypt.load``), which is what gets hashed and mounted.
+
+Frozen beside boot.py, and only into a firmware whose flash key is the camera's own: a board
+with no flash to spare does not pay for it.
 
 RAM BUDGET: this module runs inside your application, so its memory is your memory. Every
 buffer here has a ceiling. Nothing is sized by a file's length, a response body, a length field
 off the wire, or a queue that grows while the network is down: it reads one control block (a
-slot's trailer) and 64-byte places of the key area, and nothing else.
+slot's trailer) and 64-byte places of the key area, and nothing else. The RAM copy of the
+booted slot is not Python's: it is one block of the firmware's frame-buffer pool, as big as
+the image the slot holds (its trailer says how big, and the slot's size bounds it).
 """
 
 import hashlib
@@ -28,6 +34,7 @@ _FLASH_KEY_MAGIC = b"OMVF\x01"
 _FLASH_KEY_PLACE = 64                              # bytes per place: the commit word, the key word
 _FLASH_KEY_PLACES = 4
 _ROMFS_MAGIC = b"\xd2\xcd1"                        # a slot body stored in the clear starts with it
+_CRYPT_GRAIN = 4096                                # the cipher's reach is rounded up to it
 
 
 def slot_tweak(index, trailer, parse):
@@ -102,3 +109,54 @@ def start(crypt, ob, store, random, reset, log, parse):
         log.info("boot: slot engine on")
     except Exception as e:
         log.error("boot: slot engine failed: %r" % (e,))
+
+
+def reach(t, body_end):
+    """How far the cipher reaches from the start of a slot holding the parsed trailer ``t``:
+    the body and every component, to the cipher's grain, never past ``body_end`` (the status
+    sector). (Mirror of ``slot_crypt.crypt_size``.)"""
+    used = t.body_size
+    for c in t.components:
+        if c[1] + c[2] > used:
+            used = c[1] + c[2]
+    used = (used + _CRYPT_GRAIN - 1) // _CRYPT_GRAIN * _CRYPT_GRAIN
+    return used if used < body_end else body_end
+
+
+def copier(crypt, store, random, reset, log, parse, read, base, block):
+    """The slot-body reader for a board with no engine (``crypt`` is its ``flash_crypt``, with
+    ``load``): ``copy(off, size, stored)`` returns the body of the slot at partition offset
+    ``off`` in the clear -- ``stored`` itself (the bytes as the flash holds them) when the slot
+    was flashed and not yet ciphered by the stub, else a RAM copy deciphered under the slot's
+    tweak. ``read`` is boot.py's reader (for the trailer), ``base`` the partition's address.
+    A camera with no flash key makes one and resets (``reset`` does not return on a device).
+    Returns None when the camera has no key and none could be made. Never raises, and neither
+    does ``copy``: a slot that cannot be read into RAM comes back as stored, and does not
+    verify."""
+    try:
+        crypt.forget()                                  # a soft reset gave the last copy's memory back
+        if not crypt.keyed():
+            if make_flash_key(store, random) and crypt.keyed():
+                log.info("boot: flash key made, restarting")
+                reset()
+                return None
+            log.error("boot: no flash key, and none could be made")
+            return None
+    except Exception as e:
+        log.error("boot: slot engine failed: %r" % (e,))
+        return None
+
+    def copy(off, size, stored):
+        if bytes(stored[:len(_ROMFS_MAGIC)]) == _ROMFS_MAGIC:
+            log.info("boot: slot engine off (no ciphered slot)")
+            return stored
+        try:
+            trailer = read(off + size + block, block)
+            tweak = slot_tweak(0 if off == 0 else 1, trailer, parse)
+            body = crypt.load(base + off, reach(parse(trailer), size), tweak)
+            log.info("boot: slot engine on")           # in software: the slot is in RAM, in the clear
+            return body
+        except Exception as e:
+            log.error("boot: slot engine failed: %r" % (e,))
+            return stored
+    return copy

@@ -1124,3 +1124,103 @@ def test_start_slot_engine_never_stops_the_boot():
     crypt, log = _Crypt(fail=OSError(5)), _Log()
     E.start(crypt, ob, _KeyStore(), os.urandom, lambda: None, log, B.parse_trailer)
     assert not crypt.enabled() and log.lines == ["boot: slot engine failed: OSError(5)"]
+
+
+# --- a board with no cipher engine: the booted slot is read into RAM (the H7 Plus) ---------
+
+class _Copy:
+    """The H7 Plus's ``flash_crypt`` as boot.py sees it: ``load`` deciphers into one RAM copy."""
+
+    def __init__(self, keyed=True, fail=None):
+        self._keyed, self.fail, self.loads, self.forgot = keyed, fail, [], 0
+
+    def keyed(self):
+        return self._keyed
+
+    def forget(self):
+        self.forgot += 1
+
+    def load(self, addr, size, tweak):
+        if self.fail is not None:
+            raise self.fail
+        self.loads.append((addr, size, bytes(tweak)))
+        return memoryview(b"P" * size)
+
+
+def _copier(crypt, dev, store=None, resets=None):
+    log, resets = _Log(), resets if resets is not None else []
+    copy = E.copier(crypt, store or _KeyStore(), os.urandom, lambda: resets.append(1),
+                    log, B.parse_trailer, dev.read, 0x91800000, BLOCK)
+    return copy, log
+
+
+def test_the_ciphers_reach_is_the_hosts():
+    from openmv_ota.ota import slot_crypt
+    from openmv_ota.ota import trailer as T
+    _ob, dev = _engine_ob()
+    trailer_b = bytes(dev.read(PARTITION_SIZE - BLOCK, BLOCK))
+    body_end = FRONT_SIZE - 2 * BLOCK
+    want = slot_crypt.crypt_size(T.parse_trailer(trailer_b), slot_body_end=body_end)
+    assert E.reach(B.parse_trailer(trailer_b), body_end) == want and want % 4096 == 0 or want == body_end
+    assert E.reach(B.parse_trailer(trailer_b), 16) == 16                 # never past the status sector
+
+    class _T:                                                            # a component past the body
+        body_size, components = 100, [(0, 5000, 3000, 0, b"", b"")]
+    assert E.reach(_T, 1 << 20) == 8192
+
+
+def test_the_copier_reads_a_ciphered_slot_into_ram_and_leaves_a_clear_one():
+    _ob, dev = _engine_ob()
+    crypt = _Copy()
+    copy, log = _copier(crypt, dev)
+    assert crypt.forgot == 1 and log.lines == []                         # the last boot's copy is forgotten first
+    size = FRONT_SIZE - 2 * BLOCK
+    stored = dev.read(FRONT_SIZE, size)                                  # slot B, as the flash holds it
+    body = copy(FRONT_SIZE, size, stored)
+    trailer_b = bytes(dev.read(PARTITION_SIZE - BLOCK, BLOCK))
+    n = E.reach(B.parse_trailer(trailer_b), size)
+    assert crypt.loads == [(0x91800000 + FRONT_SIZE, n, E.slot_tweak(1, trailer_b, B.parse_trailer))]
+    assert bytes(body) == b"P" * n and log.lines == ["boot: slot engine on"]
+    # slot A: its own tweak, its own address
+    copy(0, size, dev.read(0, size))
+    assert crypt.loads[-1][0] == 0x91800000
+    assert crypt.loads[-1][2] == E.slot_tweak(0, bytes(dev.read(FRONT_SIZE - BLOCK, BLOCK)), B.parse_trailer)
+    # a slot stored in the clear (flashed, not yet ciphered by the stub) is what the flash holds
+    _ob, dev = _engine_ob(body=b"\xd2\xcd1" + b"b" * 117)
+    crypt = _Copy()
+    copy, log = _copier(crypt, dev)
+    stored = dev.read(FRONT_SIZE, size)
+    assert copy(FRONT_SIZE, size, stored) is stored and crypt.loads == []
+    assert log.lines == ["boot: slot engine off (no ciphered slot)"]
+
+
+def test_the_copier_never_stops_the_boot():
+    _ob, dev = _engine_ob()
+    size = FRONT_SIZE - 2 * BLOCK
+    stored = dev.read(FRONT_SIZE, size)
+    # no memory for the copy, or a trailer that does not parse: the slot comes back as stored
+    copy, log = _copier(_Copy(fail=OSError(12)), dev)
+    assert copy(FRONT_SIZE, size, stored) is stored and log.lines == ["boot: slot engine failed: OSError(12)"]
+    blank = _Dev(bytearray(b"\xff" * PARTITION_SIZE))
+    copy, log = _copier(_Copy(), blank)
+    stored = blank.read(0, size)
+    assert copy(0, size, stored) is stored and log.lines[0].startswith("boot: slot engine failed: ")
+
+    class _Dead(_Copy):
+        def forget(self):
+            raise OSError(5)
+    copy, log = _copier(_Dead(), dev)
+    assert copy is None and log.lines == ["boot: slot engine failed: OSError(5)"]
+
+
+def test_the_copier_makes_the_key_on_the_first_boot_and_resets():
+    _ob, dev = _engine_ob(body=b"\xd2\xcd1" + b"b" * 117)
+    crypt, resets = _Copy(keyed=False), []
+    store = _KeyStore(crypt)
+    copy, log = _copier(crypt, dev, store, resets)
+    assert copy is None and len(resets) == 1 and store.area[:5] == b"OMVF\x01"
+    assert log.lines == ["boot: flash key made, restarting"]
+    for store in (_KeyStore(crypt=None, full=True), _KeyStore(crypt=None)):
+        crypt, resets = _Copy(keyed=False), []
+        copy, log = _copier(crypt, dev, store, resets)
+        assert copy is None and not resets and log.lines == ["boot: no flash key, and none could be made"]

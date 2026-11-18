@@ -246,7 +246,7 @@ _Static_assert((STUB_WRITE_UNIT % 16) == 0, "the cipher works on whole 16-byte b
 int port_crypt_init(void) {
     // The camera's own key, from the key area in MRAM. A camera that has not made it yet
     // (its first boot) is not an error: its slots run as flashed until it has.
-    crypt_keyed = ecb_flash_key((const uint8_t *) STUB_KEY_AREA, crypt_flash_key);
+    crypt_keyed = flash_key_read((const uint8_t *) STUB_KEY_AREA, crypt_flash_key);
     return 0;
 }
 

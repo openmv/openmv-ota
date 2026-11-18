@@ -315,9 +315,9 @@ static int write_record(const slot_t *s, uint32_t reason) {
 
 
 #if defined(STUB_CRYPT_START) || defined(STUB_SLOT_CRYPT)
-// Is the erase block at addr blank, as stored?
-static bool block_blank(uint32_t addr) {
-    for (uint32_t off = 0; off < STUB_FLASH_BLOCK; off += IN_CHUNK) {
+// Are the n bytes at addr (one erase block) blank, as stored?
+static bool block_blank_n(uint32_t addr, uint32_t n) {
+    for (uint32_t off = 0; off < n; off += IN_CHUNK) {
         if (port_flash_read_stored(addr + off, cmp_chunk, IN_CHUNK) != 0) {
             return false;
         }
@@ -328,6 +328,12 @@ static bool block_blank(uint32_t addr) {
         }
     }
     return true;
+}
+#endif
+
+#ifdef STUB_CRYPT_START
+static bool block_blank(uint32_t addr) {
+    return block_blank_n(addr, STUB_FLASH_BLOCK);
 }
 #endif
 
@@ -427,16 +433,24 @@ done:
 }
 
 #ifdef STUB_SLOT_CRYPT
+// The erase block of the part the slots are on: the install window's, unless the board's
+// slots live on another part (the H7 Plus: 128 KiB sectors inside the chip, 4 KiB ones on
+// the QSPI part).
+#ifndef STUB_SLOT_BLOCK
+#define STUB_SLOT_BLOCK             STUB_FLASH_BLOCK
+#endif
+_Static_assert(STUB_SLOT_BLOCK <= STUB_FLASH_BLOCK && (STUB_SLOT_BLOCK % IN_CHUNK) == 0, "a slot block fits the block buffer");
+
 // A slot's control data -- the status sector, then the trailer -- is its last 8 KiB: one
 // erase block where blocks are that big or bigger, two where they are 4 KiB.
-#define SLOT_CONTROL_SIZE           ((STUB_FLASH_BLOCK > 2 * TRAILER_BLOCK) ? STUB_FLASH_BLOCK : 2 * TRAILER_BLOCK)
-_Static_assert((SLOT_CONTROL_SIZE % STUB_FLASH_BLOCK) == 0, "a slot's control data is whole erase blocks");
+#define SLOT_CONTROL_SIZE           ((STUB_SLOT_BLOCK > 2 * TRAILER_BLOCK) ? STUB_SLOT_BLOCK : 2 * TRAILER_BLOCK)
+_Static_assert((SLOT_CONTROL_SIZE % STUB_SLOT_BLOCK) == 0, "a slot's control data is whole erase blocks");
 
 // Erase a slot's control blocks, the one that holds the trailer first: the slot stops
 // verifying at once.
 static int erase_slot_control(const slot_t *s) {
     uint32_t end = s->start + s->size;
-    for (uint32_t off = STUB_FLASH_BLOCK; off <= SLOT_CONTROL_SIZE; off += STUB_FLASH_BLOCK) {
+    for (uint32_t off = STUB_SLOT_BLOCK; off <= SLOT_CONTROL_SIZE; off += STUB_SLOT_BLOCK) {
         if (port_flash_erase(end - off) != 0) {
             return -1;
         }
@@ -451,8 +465,8 @@ static int erase_slot_blocks(const slot_t *s) {
     if (erase_slot_control(s) != 0) {
         return -1;
     }
-    for (uint32_t addr = s->start; addr < s->start + s->crypt_size && addr < last; addr += STUB_FLASH_BLOCK) {
-        if (!block_blank(addr)) {
+    for (uint32_t addr = s->start; addr < s->start + s->crypt_size && addr < last; addr += STUB_SLOT_BLOCK) {
+        if (!block_blank_n(addr, STUB_SLOT_BLOCK)) {
             port_led_blink(50);
             if (port_flash_erase(addr) != 0) {
                 return -1;
@@ -496,10 +510,10 @@ int convert_slot(slot_t *src, slot_t *dst) {
     if (erase_slot_control(dst) != 0) {
         goto done;
     }
-    for (uint32_t off = 0; off < src->crypt_size; off += STUB_FLASH_BLOCK) {
+    for (uint32_t off = 0; off < src->crypt_size; off += STUB_SLOT_BLOCK) {
         uint32_t n = src->crypt_size - off;
-        if (n > STUB_FLASH_BLOCK) {
-            n = STUB_FLASH_BLOCK;
+        if (n > STUB_SLOT_BLOCK) {
+            n = STUB_SLOT_BLOCK;
         }
         if (dst->start + off >= last) {
             break;                              // the control blocks carry the tail
@@ -511,18 +525,18 @@ int convert_slot(slot_t *src, slot_t *dst) {
     // Nothing else may be left in the copy: the pad between the body and the control
     // block, from whatever the slot held before -- every whole block after the last one the
     // copy wrote (the body's last block carries pad too, blank from its erase).
-    uint32_t pad = (dst->start + src->crypt_size + STUB_FLASH_BLOCK - 1) & ~(uint32_t) (STUB_FLASH_BLOCK - 1);
-    for (uint32_t addr = pad; addr < last; addr += STUB_FLASH_BLOCK) {
-        if (!block_blank(addr)) {
+    uint32_t pad = (dst->start + src->crypt_size + STUB_SLOT_BLOCK - 1) & ~(uint32_t) (STUB_SLOT_BLOCK - 1);
+    for (uint32_t addr = pad; addr < last; addr += STUB_SLOT_BLOCK) {
+        if (!block_blank_n(addr, STUB_SLOT_BLOCK)) {
             port_led_blink(50);
             if (port_flash_erase(addr) != 0) {
                 goto done;
             }
         }
     }
-    for (uint32_t off = 0; off < SLOT_CONTROL_SIZE; off += STUB_FLASH_BLOCK) {
-        if (port_flash_read(src->start + src->size - SLOT_CONTROL_SIZE + off, out_block, STUB_FLASH_BLOCK) != 0 ||
-            flush_block(last + off, out_block, STUB_FLASH_BLOCK) != 0) {
+    for (uint32_t off = 0; off < SLOT_CONTROL_SIZE; off += STUB_SLOT_BLOCK) {
+        if (port_flash_read(src->start + src->size - SLOT_CONTROL_SIZE + off, out_block, STUB_SLOT_BLOCK) != 0 ||
+            flush_block(last + off, out_block, STUB_SLOT_BLOCK) != 0) {
             goto done;
         }
     }

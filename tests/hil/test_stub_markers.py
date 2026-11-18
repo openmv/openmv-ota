@@ -19,7 +19,7 @@ import ota_cycle  # noqa: E402
 
 @pytest.fixture
 def stub_boards(monkeypatch):
-    monkeypatch.setattr(ota_cycle, "_has_stub", lambda b: b in ("OPENMV_N6", "OPENMV4P"))
+    monkeypatch.setattr(ota_cycle, "_has_stub", lambda b: b in ("OPENMV_N6", "OPENMV4P", "ARDUINO_PORTENTA_H7"))
 
 
 def test_a_stub_board_expects_the_stubs_boot_and_trial_lines(stub_boards):
@@ -77,7 +77,7 @@ def test_enable_stub_uart_rewrites_the_projects_log_module(tmp_path, monkeypatch
     dev = tmp_path / "device"
     dev.mkdir()
     mod = dev / "openmv_log.py"
-    mod.write_text("LEVEL = 1\nENABLED = False        # master switch\n"
+    mod.write_text("# the log module\nLEVEL = logging.INFO\nENABLED = False        # master switch\n"
                    "UART = None            # your board's machine.UART id\nBAUD = 115200\n")
     logged = []
     monkeypatch.setattr(ota_cycle, "log", logged.append)
@@ -87,6 +87,7 @@ def test_enable_stub_uart_rewrites_the_projects_log_module(tmp_path, monkeypatch
     assert "\nENABLED = True        # master switch\n" in text
     assert "\nUART = 3            # your board's machine.UART id\n" in text    # the 4P's marker UART
     assert "BAUD = 115200" in text and logged and "UART=3" in logged[0]
+    assert "\nLEVEL = logging.DEBUG\n" in text            # the 4P keeps its slots ciphered: bench mode comes from the module
     # ...and the stub build opens that same UART before the slots are read, so a stub that
     # rejects both slots is heard rather than silent
     assert os.environ["STUB_DEBUG_UART"] == "3"
@@ -109,7 +110,7 @@ def test_enable_stub_uart_puts_an_encrypting_boards_bench_build_at_debug(tmp_pat
     assert ota_cycle._enable_stub_uart(str(tmp_path), "OPENMV_N6") is True
     assert "\nLEVEL = logging.DEBUG   # emit this level and above\n" in "\n" + mod.read_text()
     mod.write_text(text)
-    assert ota_cycle._enable_stub_uart(str(tmp_path), "OPENMV4P") is True
+    assert ota_cycle._enable_stub_uart(str(tmp_path), "ARDUINO_PORTENTA_H7") is True
     assert "LEVEL = logging.INFO" in mod.read_text()                    # a board in the clear: the file decides
     mod.write_text("# the log module\nLEVEL = 1\nENABLED = False\nUART = None\n")
     with pytest.raises(RuntimeError, match="LEVEL"):

@@ -2323,6 +2323,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     # the clear: the stub would erase a plaintext slot, so the install is refused up front.
     crypt = None
     crypt_size = 0
+    base_plain = None                                 # the running slot in RAM, in the clear (the H7 Plus)
     if getattr(cfg, "SLOT_CRYPT", False):
         import flash_crypt   # hil-residual: the firmware's C module (openmv-ota build firmware drops it on an encrypting board)
         if xip_base is None:  # hil-residual: a block-device partition on an encrypting board (the RT1062)
@@ -2335,6 +2336,11 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
         # A counter-mode engine's module XORs its keystream (xor: the N6, the RT1062); the
         # AE3's ciphers whole blocks (encrypt). Either way: plaintext in, what the flash holds out.
         _cipher = getattr(flash_crypt, "encrypt", None) or flash_crypt.xor  # hil-residual: witnessed by the stub's `slot ok` on the trial boot
+        # A board with no engine (the H7 Plus) runs from a copy of its slot that boot.py
+        # deciphered into RAM: that copy, not the map, is the delta base as far as it reaches.
+        _loaded = getattr(flash_crypt, "loaded", None)  # hil-residual: None on every board with an engine
+        if _loaded is not None:  # hil-residual: the H7 Plus alone; witnessed by install.delta there
+            base_plain = _loaded()  # hil-residual: same
 
         def crypt(off, buf, _slot=1 if target == "B" else 0):   # hil-residual: a def line; its body is witnessed by the stub's `slot ok` on the trial boot
             _cipher(xip_base + target_off + off, buf, _tweak[_slot])  # hil-residual: witnessed by the stub's `slot ok` on the trial boot
@@ -2369,6 +2375,17 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
             both[:k] = base_read_at(base_off + off, k)  # hil-residual: same
             both[k:] = base_stored(base_off + base_reach, n - k)  # hil-residual: same
             return both  # hil-residual: same
+        if base_plain is not None:  # hil-residual: the H7 Plus alone; witnessed by install.delta there
+            # The copy holds the slot as far as its image is ciphered; the pad after it is
+            # stored blank, and is read as stored.
+            reach = len(base_plain)  # hil-residual: same
+            if off + n <= reach:  # hil-residual: same
+                return base_plain[off:off + n]  # hil-residual: same
+            if off < reach:  # hil-residual: a read across the edge: the two halves, joined
+                both = bytearray(n)  # hil-residual: same
+                both[:reach - off] = base_plain[off:reach]  # hil-residual: same
+                both[reach - off:] = base_read_at(base_off + reach, n - (reach - off))  # hil-residual: same
+                return both  # hil-residual: same
         return base_read_at(base_off + off, n)  # hil-residual: bare return of the slot-relative base read
 
     # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the
