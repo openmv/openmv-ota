@@ -4,7 +4,8 @@ A camera embeds only the project's roots; every signing key reaches it as a cert
 a root signed, carried in each image. The key set is provisioned at ``project new --ota``,
 and "rotation" advances which key in that pool the build signs with. Normal state is
 implicit in ``[ota].signing_key_id``: OTA keys with a lower id are used, it is the current
-signer, higher ids are available. Old releases keep verifying.
+signer, higher ids are available. Old releases keep verifying. :func:`add_keys` grows the
+pool: the roots certify a new key at any time, and cameras accept it as they are.
 
 **Revocation** is for a *compromised* private key: it marks a key ``revoked`` in
 ``keys/trusted_keys.json`` (kept, never deleted) so the host refuses to sign with it and
@@ -241,3 +242,57 @@ def retire_revoked(root: Path, *, key_passphrase_file=None) -> tuple[int, list[i
     certify(root_priv, 0, live, epoch=epoch + 1)
     write_trusted_keys(paths.trusted_keys, trusted)
     return epoch + 1, retired
+
+
+def add_keys(root: Path, *, n_ota: int = 0, n_factory: int = 0, provisioner=None,
+             key_passphrase_file=None) -> list[int]:
+    """Grow the key set: mint ``n_ota`` OTA and ``n_factory`` factory keys, certified by root 0
+    at the project's current epoch, so cameras accept them as they are. The new ids follow
+    the highest of their role (an id is never reused). With ``provisioner`` the keys are made
+    inside that external backend; otherwise each is an encrypted PEM in ``keys/private``.
+    Returns the new key ids. The signer does not move: ``rotate`` reaches the new OTA keys."""
+    from openmv_ota.ota.keys import (
+        FACTORY_KEY_ID_BASE,
+        OTA_KEY_ID_BASE,
+        TrustedKey,
+        certify,
+        generate_private_key,
+        private_key_pem,
+        public_point_hex,
+    )
+
+    from .backends import read_backends, write_backends
+    if n_ota < 0 or n_factory < 0 or n_ota + n_factory == 0:
+        raise ProjectError("nothing to add: give --ota-keys N and/or --factory-keys N")
+    _config, trusted, paths = _load(root)
+    alg = algorithm_for(trusted[0].alg)
+    # (role, how many, first id of its range, one past its last id)
+    ranges = (("factory", n_factory, FACTORY_KEY_ID_BASE, OTA_KEY_ID_BASE),
+              ("ota", n_ota, OTA_KEY_ID_BASE, 0x10000))
+    plan: list[tuple[int, str]] = []
+    for role, count, base, end in ranges:
+        first = max([k.key_id + 1 for k in trusted if k.role == role], default=base)
+        if first + count > end:
+            raise ProjectError("no room for %d more %s keys: ids 0x%04x-0x%04x are the %s "
+                               "range and 0x%04x is the next free" % (count, role, base, end - 1,
+                                                                    role, first))
+        plan += [(first + i, role) for i in range(count)]
+    phrase, root_priv = _root_key(paths, root, key_passphrase_file)
+    new: list = []
+    pems: dict[str, bytes] = {}
+    records = read_backends(root)
+    for key_id, role in plan:
+        if provisioner is not None:
+            pubkey, records[key_id] = provisioner.provision(key_id, role, alg)
+        else:
+            priv = generate_private_key(alg)
+            pubkey = public_point_hex(priv.public_key())
+            pems["%s-%04x.pem" % (role, key_id)] = private_key_pem(priv, phrase)
+        new.append(TrustedKey(key_id, alg.cose_id, role, pubkey))
+    certify(root_priv, 0, new, epoch=current_epoch(trusted))
+    for name, pem in pems.items():
+        (paths.private_keys_dir / name).write_bytes(pem)
+    if provisioner is not None:
+        write_backends(root, records)
+    write_trusted_keys(paths.trusted_keys, sorted(trusted + new, key=lambda k: k.key_id))
+    return [k.key_id for k in new]

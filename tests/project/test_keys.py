@@ -331,3 +331,89 @@ def test_keys_retire_cli(tmp_path, make_firmware, make_sdk, capsys):
     assert "epoch:        1\n" in capsys.readouterr().out
     assert main(["project", "keys", "unrevoke", "0x0102", str(root)]) == 2
     assert "was retired" in capsys.readouterr().err
+
+
+# --- keys add: the pool grows -----------------------------------------------------------------
+
+def test_add_keys_follow_their_roles_and_carry_the_epoch(tmp_path, make_firmware, make_sdk):
+    from openmv_ota.ota import certificate
+    from openmv_ota.ota.keys import load_private_key_pem, public_point_hex, read_root_keys, root_keys_map
+    from openmv_ota.project import passphrase as passphrase_mod
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=2, factory_keys=1)
+    keys_mod.revoke_key(root, 0x0101)
+    keys_mod.retire_revoked(root)                               # the project signs at epoch 1 now
+    assert keys_mod.add_keys(root, n_ota=2, n_factory=1) == [0x0002, 0x0102, 0x0103]
+    trusted = _trusted(root)
+    assert list(trusted) == [0x0001, 0x0002, 0x0100, 0x0101, 0x0102, 0x0103]
+    assert (trusted[0x0002].role, trusted[0x0103].role) == ("factory", "ota")
+    paths = proj.ProjectPaths(root)
+    roots = root_keys_map(read_root_keys(paths.root_keys))
+    phrase, _ = passphrase_mod.resolve_passphrase(root)
+    for key_id, name in ((0x0002, "factory-0002.pem"), (0x0102, "ota-0102.pem"),
+                         (0x0103, "ota-0103.pem")):
+        cert = certificate.verify(bytes.fromhex(trusted[key_id].cert), roots,
+                                  kinds=(certificate.KIND_OTA, certificate.KIND_FACTORY))
+        assert cert.epoch == 1
+        priv = load_private_key_pem((paths.private_keys_dir / name).read_bytes(), phrase)
+        assert public_point_hex(priv.public_key()) == trusted[key_id].pubkey
+    assert _signing_id(root) == 0x0100                          # the signer stayed put
+    assert keys_mod.rotate_signing_key(root)[:2] == (0x0100, 0x0102)   # 0x0101 is revoked
+    st = keys_mod.key_status(root)
+    assert st.remaining == 1 and st.private_present == st.private_total == 6
+    assert keys_mod.add_keys(root, n_ota=1) == [0x0104]         # an id is never reused
+
+
+def test_add_keys_in_a_backend(tmp_path, make_firmware, make_sdk):
+    from openmv_ota.project.backends import read_backends
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=1, factory_keys=1)
+    fake = _FakeProvisioner()
+    assert keys_mod.add_keys(root, n_ota=1, provisioner=fake) == [0x0101]
+    assert fake.calls == [(0x0101, "ota")]
+    assert read_backends(root) == {0x0101: {"backend": "aws-kms", "uri": "res:ota-0101"}}
+    assert not (proj.ProjectPaths(root).private_keys_dir / "ota-0101.pem").exists()
+    assert dict(((k, b) for k, _r, b in keys_mod.backend_summary(root))) == {
+        0x0001: "encrypted-pem", 0x0100: "encrypted-pem", 0x0101: "aws-kms"}
+
+
+def test_add_keys_refusals(tmp_path, make_firmware, make_sdk):
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=1, factory_keys=1)
+    before = proj.ProjectPaths(root).trusted_keys.read_text()
+    with pytest.raises(ProjectError, match="nothing to add"):
+        keys_mod.add_keys(root)
+    with pytest.raises(ProjectError, match="nothing to add"):
+        keys_mod.add_keys(root, n_ota=-1, n_factory=1)
+    with pytest.raises(ProjectError, match="no room for 255 more factory keys"):
+        keys_mod.add_keys(root, n_factory=255)                  # 0x0002 + 255 runs into the OTA ids
+    (proj.ProjectPaths(root).private_keys_dir / "root-0.pem").unlink()
+    with pytest.raises(ProjectError, match="no root-0.pem"):
+        keys_mod.add_keys(root, n_ota=1)
+    assert proj.ProjectPaths(root).trusted_keys.read_text() == before
+
+
+def test_keys_add_cli(tmp_path, make_firmware, make_sdk, capsys, monkeypatch):
+    from openmv_ota.cli import main
+    from openmv_ota.ota import signer
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=1, factory_keys=1)
+    assert main(["project", "keys", "add", str(root)]) == 2
+    assert "nothing to add" in capsys.readouterr().err
+    assert main(["project", "keys", "add", "--set", "a=b", "--ota-keys", "1", str(root)]) == 2
+    assert "give --backend with it" in capsys.readouterr().err
+    assert main(["project", "keys", "add", "--ota-keys", "2", str(root)]) == 0
+    out = capsys.readouterr().out
+    assert "Added 0x0101, 0x0102 (encrypted PEMs in keys/private)." in out
+    assert "Commit keys/trusted_keys.json. Back the new private keys up" in out
+    captured = {}
+
+    def _fake_build(record):
+        captured["record"] = record
+        return _FakeProvisioner(tag="gcp-kms")
+
+    monkeypatch.setattr(signer, "build_provisioner", _fake_build)
+    assert main(["project", "keys", "add", "--factory-keys", "1", "--backend", "gcp-kms",
+                 "--set", "key_ring=r", str(root)]) == 0
+    assert captured["record"] == {"backend": "gcp-kms", "key_ring": "r"}
+    out = capsys.readouterr().out
+    assert "Added 0x0002 (in the gcp-kms backend)." in out
+    assert "Commit keys/trusted_keys.json and keys/backends.json." in out
+    assert main(["project", "keys", "status", str(root)]) == 0
+    assert "2 remaining" in capsys.readouterr().out

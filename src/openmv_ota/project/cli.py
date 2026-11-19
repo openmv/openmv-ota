@@ -129,6 +129,22 @@ def register(project_parser: argparse.ArgumentParser):
     p_kret.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_kret.set_defaults(func=cmd_keys_retire, _command="project keys retire")
 
+    p_kadd = keys_sub.add_parser("add", help="mint more signing keys, certified by root 0: "
+                                             "cameras accept them as they are")
+    p_kadd.add_argument("--ota-keys", type=int, default=0, metavar="N",
+                        help="OTA keys to add (default: 0)")
+    p_kadd.add_argument("--factory-keys", type=int, default=0, metavar="N",
+                        help="factory keys to add (default: 0)")
+    p_kadd.add_argument("--backend", choices=["pkcs11", "aws-kms", "gcp-kms", "azure-kms"],
+                        help="make the keys inside this external backend (default: encrypted "
+                             "PEMs in keys/private)")
+    p_kadd.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", dest="settings",
+                        help="a backend config field (repeatable); with --backend")
+    p_kadd.add_argument("--key-passphrase-file", metavar="FILE",
+                        help="file holding the project passphrase")
+    p_kadd.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kadd.set_defaults(func=cmd_keys_add, _command="project keys add")
+
     p_kun = keys_sub.add_parser("unrevoke", help="clear a key's revoked flag")
     p_kun.add_argument("key_id", type=lambda s: int(s, 0), help="key id (e.g. 0x0100 or 256)")
     p_kun.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
@@ -848,6 +864,35 @@ def cmd_keys_retire(args: argparse.Namespace) -> int:
     print("  A camera refuses the retired keys, and every image signed before this, once it")
     print("  confirms a release built after it: rebuild and publish one. Until then nothing")
     print("  on a camera changes. This cannot be undone. Commit keys/trusted_keys.json.")
+    return 0
+
+
+def cmd_keys_add(args: argparse.Namespace) -> int:
+    from openmv_ota.ota import signer
+    from openmv_ota.ota.errors import OtaError
+
+    from . import keys as keys_mod
+    try:
+        if args.settings and not args.backend:
+            raise ProjectError("--set configures a backend: give --backend with it")
+        provisioner = (signer.build_provisioner(
+            {"backend": args.backend, **_parse_settings(args.settings)})
+            if args.backend else None)
+        added = keys_mod.add_keys(
+            Path(args.dir), n_ota=args.ota_keys, n_factory=args.factory_keys,
+            provisioner=provisioner, key_passphrase_file=args.key_passphrase_file)
+    except (ProjectError, OtaError) as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    history.record(args.dir, "keys-add", key_ids=added, backend=args.backend or "encrypted-pem")
+    print("Added %s (%s)." % (", ".join("0x%04x" % k for k in added),
+                              "in the %s backend" % args.backend if args.backend
+                              else "encrypted PEMs in keys/private"))
+    print("  Root 0 certified them at the project's epoch, so cameras accept them as they are.")
+    print("  The signing key has not moved: `project keys rotate` reaches the new OTA keys.")
+    print("  Commit keys/trusted_keys.json%s%s"
+          % (" and keys/backends.json." if args.backend else ".",
+             "" if args.backend else " Back the new private keys up: `project keys backup`."))
     return 0
 
 
