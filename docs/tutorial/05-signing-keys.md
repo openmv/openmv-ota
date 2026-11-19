@@ -125,6 +125,34 @@ openmv-ota project keys rotate   # advance to the next OTA key
   when the pool is exhausted. Commit
   `openmv-ota.toml` — git is your rotation log.
 
+## A bigger pool: `add`
+
+```bash
+openmv-ota project keys add --ota-keys 2
+```
+
+`add` mints more keys and has root 0 certify them, so it needs
+`keys/private/root-0.pem` on this machine. A camera embeds the roots, not the
+signing keys, so every camera in the field accepts the new keys as they are: no
+firmware change, no release. The new ids follow the highest of their role, and the
+signing key does not move.
+
+```
+$ openmv-ota project keys add --ota-keys 2
+Added 0x0120, 0x0121 (encrypted PEMs in keys/private).
+  Root 0 certified them at the project's epoch, so cameras accept them as they are.
+  The signing key has not moved: `project keys rotate` reaches the new OTA keys.
+  Commit keys/trusted_keys.json. Back the new private keys up: `project keys backup`.
+```
+
+| Flag | Effect |
+|---|---|
+| `--ota-keys N` | OTA keys to add (default 0). |
+| `--factory-keys N` | Factory keys to add (default 0). Factory ids end at `0x00ff`. |
+| `--backend {pkcs11,aws-kms,gcp-kms,azure-kms}` | Make the keys inside an external backend. Without it each key is an encrypted PEM in `keys/private`. |
+| `--set KEY=VALUE` | A backend config field (repeatable); with `--backend`. |
+| `--key-passphrase-file FILE` | File holding the project passphrase, which unlocks the root key. |
+
 ## Compromise: `revoke` and `retire`
 
 ```bash
@@ -281,7 +309,8 @@ different, flat-rate pooled model, not per-key.)
 
 So on **AWS** or **GCP-HSM** a large idle pool is real recurring money: size it to the
 rotations you expect over the product's service life and no more — but not too small either,
-since the pool is what `rotate` draws from (4 is a floor, not a target). On
+since the pool is what `rotate` draws from (4 is a floor, not a target), and
+`keys add --backend` mints more when it runs low. On
 **GCP-software** and **Azure software keys** the per-key cost is negligible, so the on-disk
 default of 32 is essentially free. Signing volume is trivial everywhere — an OTA build signs
 a handful of times a release, far under any free tier.

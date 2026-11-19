@@ -15,6 +15,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   after that refuses the revoked keys, and every image signed before, for good. `keys status`
   shows the epoch and any revoked key cameras still accept; a retired key cannot be unrevoked;
   keys provisioned into an external backend are certified at the project's current epoch.
+- **`project keys add`: the key pool grows.** The pool was fixed at `project new`. `keys add
+  --ota-keys N --factory-keys N` mints more keys, certified by root 0 at the project's
+  current epoch, as encrypted PEMs or inside an external backend (`--backend`). Cameras embed
+  only the roots, so they accept the new keys with no firmware change.
 - **The AE3's app is ciphertext at rest.** On the Alif Ensemble E3 the two ROMFS slots live on
   an OSPI flash part beside the chip, and the booted slot is now stored encrypted there,
   deciphered by the OSPI controller's AES engine as it is read. The key is the camera's own:

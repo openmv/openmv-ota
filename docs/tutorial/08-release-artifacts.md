@@ -185,6 +185,13 @@ Two properties keep deltas safe:
 published one — a dev-loop convenience; the server enforces the same rule on
 upload, with the same override.
 
+`build ota-romfs` takes the flags of `build romfs`, and:
+
+| Flag | Effect |
+|---|---|
+| `--delta-from PATH` | An image to build a delta against (repeatable): a factory image, a previous release's `-ota.img.gz`, or a directory of either. |
+| `--allow-republish` | Allow a version at or below the last published one. |
+
 ## build sbom
 
 ```
@@ -281,6 +288,12 @@ certificate it carries, so running from a project root just works.
 It deliberately does **not** check the device-relative fields — `product_id`
 against a device, `payload_version` against the installed image — those need a
 device, and remain `boot.py`'s job.
+
+| Flag | Effect |
+|---|---|
+| `--root-keys FILE` | The roots an image's or manifest's certificate must chain to (default `keys/root_keys.json`). |
+| `--base FILE` | For a delta: the base image it applies to. |
+| `--target FILE` | For a delta: the expected new image, to confirm the delta reconstructs it. |
 
 ## See also
 

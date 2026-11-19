@@ -21,8 +21,6 @@ file's own history has the longer design notes behind each line.
 - **A fleet run of a key retirement** — `project keys retire` and the camera's epoch floor
   are each tested on the host and under QEMU; no HIL scenario yet retires a key and shows a
   camera refusing an image signed before it.
-- **Adding signing keys** — the pool is fixed at `project new` (or a backend provision). The
-  roots can certify a new key at any time; no command does it yet.
 
 ## Before the hosted cloud goes live (required)
 

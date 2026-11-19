@@ -37,6 +37,10 @@ would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60400000 0x
 would run: blhost -u 0x15A2,0x0073 -- reset
 ```
 
+| Flag | Effect |
+|---|---|
+| `--romfs` | OPENMV_RT1060 only: erase the whole OTA romfs region (both slots) instead of the filesystem, so no slot is bootable and the firmware's recovery runs. |
+
 ## flash read
 
 `flash read` copies a partition out of the flash part into a file, through the
@@ -62,6 +66,11 @@ reset (OPENMV_RT1060)
 ```
 
 The firmware area takes about 17 s to read, the two slots (8 MiB) about 44 s.
+
+| Flag | Effect |
+|---|---|
+| `--part {firmware,romfs}` | The partition to read: the firmware area, or both app slots. |
+| `--to FILE` | The file to write the bytes to. |
 
 ## flash bootloader
 

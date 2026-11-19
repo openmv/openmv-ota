@@ -46,6 +46,16 @@ directory, re-clone the repo, hand the release to a colleague — the bases are 
 there. (`release bases --last N` fetches the N most recent releases instead, when you
 want an old image itself rather than the fleet's plan.)
 
+| Flag | Effect |
+|---|---|
+| `-b BOARD`, `--board BOARD` | The board these bases are for (it names the files). |
+| `--product-id ID` | Only this product's releases (required with `--fleet`). |
+| `--fleet` | Fetch the bases the fleet is running, from the server's fleet report, instead of the most recent releases. |
+| `--last N` | How many recent releases to fetch (default 3). |
+| `-o DIR`, `--output DIR` | The directory to write into (default `build/bases`). |
+| `--project DIR` | The project whose payload keys decrypt the bases (default `.`). |
+| `--key-passphrase-file FILE` | Passphrase (read from FILE) for the project's payload keys (else the `OPENMV_OTA_KEY_PASSPHRASE` environment variable, or a prompt). |
+
 **The first base is the factory image.** A fresh-from-manufacture fleet runs bytes
 that were never published, so its first OTA could never be a delta — which is why
 `build factory-romfs` also renders its exact bytes in release form,
