@@ -30,7 +30,7 @@ def test_status_fresh(tmp_path, make_firmware, make_sdk):
     root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=4, factory_keys=2)
     st = keys_mod.key_status(root)
     assert st.signing_key_id == 0x0100 and not st.signer_revoked
-    assert st.retired == 0 and st.remaining == 3 and st.revoked == 0
+    assert st.used == 0 and st.remaining == 3 and st.revoked == 0
     assert len(st.ota_ids) == 4 and len(st.factory_ids) == 2
     assert st.private_present == 6 and st.private_total == 6  # all PEMs on the signer
 
@@ -253,3 +253,81 @@ def test_prompt_new_passphrase_match_and_mismatch():
 
     with pytest.raises(ProjectError, match="empty passphrase"):
         prompt_new_passphrase(_getpass=lambda _p: "  ")
+
+
+# --- retirement: what makes a revocation reach the fleet -------------------------------------
+
+def _trusted(root):
+    from openmv_ota.ota import read_trusted_keys
+    return {k.key_id: k for k in read_trusted_keys(proj.ProjectPaths(root).trusted_keys)}
+
+
+def test_retire_moves_the_live_keys_to_the_next_epoch(tmp_path, make_firmware, make_sdk):
+    from openmv_ota.ota import certificate
+    from openmv_ota.ota.keys import read_root_keys, root_keys_map
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=3, factory_keys=1)
+    st = keys_mod.key_status(root)
+    assert st.epoch == 0 and st.unretired == 0
+    keys_mod.revoke_key(root, 0x0101)
+    assert keys_mod.key_status(root).unretired == 1            # revoked, and cameras still take it
+    before = _trusted(root)
+
+    assert keys_mod.retire_revoked(root) == (1, [0x0101])
+    after = _trusted(root)
+    roots = root_keys_map(read_root_keys(proj.ProjectPaths(root).root_keys))
+    for kid, k in after.items():
+        c = certificate.verify(bytes.fromhex(k.cert), roots)   # still a certificate root 0 signed
+        assert c.epoch == (0 if kid == 0x0101 else 1)          # the revoked key is left behind
+        assert c.pubkey == bytes.fromhex(before[kid].pubkey)   # same keys: only the epoch moved
+    assert after[0x0101].cert == before[0x0101].cert
+    st = keys_mod.key_status(root)
+    assert st.epoch == 1 and st.unretired == 0 and st.revoked == 1
+
+    with pytest.raises(ProjectError, match="no revoked key to retire"):
+        keys_mod.retire_revoked(root)                          # nothing is waiting now
+    with pytest.raises(ProjectError, match="was retired"):
+        keys_mod.unrevoke_key(root, 0x0101)                    # and nothing brings it back
+    keys_mod.revoke_key(root, 0x0001)                          # a factory key, later
+    assert keys_mod.retire_revoked(root) == (2, [0x0001])
+    assert keys_mod.key_epoch(_trusted(root)[0x0101]) == 0
+
+
+def test_retire_refuses_with_nothing_left_to_sign_and_without_the_root(tmp_path, make_firmware,
+                                                                       make_sdk):
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=2, factory_keys=1)
+    with pytest.raises(ProjectError, match="no revoked key to retire"):
+        keys_mod.retire_revoked(root)
+    keys_mod.revoke_key(root, 0x0100)
+    (proj.ProjectPaths(root).private_keys_dir / "root-0.pem").rename(tmp_path / "root-0.pem")
+    with pytest.raises(ProjectError, match="no root-0.pem in keys/private"):
+        keys_mod.retire_revoked(root)
+    (tmp_path / "root-0.pem").rename(proj.ProjectPaths(root).private_keys_dir / "root-0.pem")
+    keys_mod.revoke_key(root, 0x0101)
+    with pytest.raises(ProjectError, match="every OTA key is revoked"):
+        keys_mod.retire_revoked(root)
+
+
+def test_provision_backend_keeps_the_epoch(tmp_path, make_firmware, make_sdk):
+    """New keys certified at an old epoch would be refused by every camera past it."""
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=2, factory_keys=1)
+    keys_mod.revoke_key(root, 0x0100)
+    keys_mod.retire_revoked(root)
+    keys_mod.provision_backend(root, _FakeProvisioner(), n_factory=1, n_ota=2)
+    assert {keys_mod.key_epoch(k) for k in _trusted(root).values()} == {1}
+
+
+def test_keys_retire_cli(tmp_path, make_firmware, make_sdk, capsys):
+    from openmv_ota.cli import main
+    root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=3, factory_keys=1)
+    assert main(["project", "keys", "retire", str(root)]) == 2
+    assert "no revoked key to retire" in capsys.readouterr().err
+    assert main(["project", "keys", "revoke", "0x0102", str(root)]) == 0
+    assert "Cameras still accept it until" in capsys.readouterr().out
+    assert main(["project", "keys", "status", str(root)]) == 0
+    assert "epoch:        0  (1 revoked key(s) cameras still accept" in capsys.readouterr().out
+    assert main(["project", "keys", "retire", str(root)]) == 0
+    assert "Retired 0x0102: releases are signed at epoch 1 from now on." in capsys.readouterr().out
+    assert main(["project", "keys", "status", str(root)]) == 0
+    assert "epoch:        1\n" in capsys.readouterr().out
+    assert main(["project", "keys", "unrevoke", "0x0102", str(root)]) == 2
+    assert "was retired" in capsys.readouterr().err

@@ -99,11 +99,12 @@ reference, so they can't drift from the code:
   that appeared (`STUB_FAULT_ONLY` in `ota_cycle.py` lists those, each with its
   reason).
 - **`hil/at_rest.py`** — judges a read-back of a board's FIRMWARE partition: is
-  the firmware ciphertext where it is stored? On a board whose stub encrypts,
-  `delta` ends with that read, made through the bootloader (which runs before
+  the firmware ciphertext where it is stored? On a board whose stub encrypts the
+  firmware (the N6, the RT1062), `delta` ends with that read, made through the bootloader (which runs before
   the stub, with the cipher engine off), and fails if the flash chip holds
   anything else. The ROMFS partition is read back and judged the same way,
-  slot by slot: the update the scenario installed and the factory image the
+  slot by slot, on every board that encrypts its slots (those two, the AE3 and the
+  H7 Plus): the update the scenario installed and the factory image the
   stub converted must both be ciphertext, with the status sector and trailer
   readable and the pad blank.
 - **`hil/recover.py`** — brings a board back when its USB-CDC is gone, including
@@ -146,13 +147,13 @@ unprivileged runner cannot set it up. Nothing OTA-specific — only what *any*
 consuming repo needs on a self-hosted runner:
 
 - **The runner** — the GitHub Actions runner registered as user `runner`, labelled
-  `board-openmv-{n6,ae3,rt1062}` in the `hil` group.
+  with its node's `board-*` label (the legs in `hil-ota.yml` name them) in the `hil` group.
 - **Board access** — `runner` in `dialout` (for `/dev/ttyACM*` = the board USB-CDC, and
   `/dev/ttyUSB*` = the coverage-UART bridge) and `plugdev` (for `hidraw` = blhost/J-Link),
   plus generic `usb`/`hidraw` udev granting the group access (no per-VID rules needed).
 - **git hygiene** — `git config --system --add safe.directory '*'`, so a build reading any
   checked-out tree isn't blocked by cross-owner "dubious ownership".
-- **System packages** — `git`, `python3` (>=3.10) + `python3-venv`, `curl`, `tar`, `openssl`,
+- **System packages** — `git`, `python3` (>=3.11) + `python3-venv`, `curl`, `tar`, `openssl`,
   and a host toolchain for the firmware build (`build-essential` = gcc/make + the usual headers).
   The cross-compiler + vela/signing tools come from the OpenMV SDK, which the workflow installs.
 

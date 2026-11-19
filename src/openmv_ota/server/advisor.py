@@ -1,7 +1,6 @@
 """CVE monitoring: scan stored SBOMs against a vulnerability database.
 
-The scanner walks every release an account's fleet still runs (or an active
-rollout still offers), queries each SBOM component against OSV.dev, and
+The scanner walks every release an account's fleet still runs, queries each SBOM component against OSV.dev, and
 reconciles the findings into the ``advisories`` table -- new findings appear,
 repeats refresh, and findings a later scan no longer reports are cleared (the
 row history is the CRA-facing evidence that monitoring ran). Every scan is

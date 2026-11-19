@@ -1,18 +1,21 @@
-"""OTA signing-key lifecycle for a project: status, rotation, revocation.
+"""OTA signing-key lifecycle for a project: status, rotation, revocation, retirement.
 
-The full key set is provisioned once at ``project new --ota`` — you can't add a
-trusted key later without re-flashing firmware with a new baked-in set. So
-"rotation" doesn't mint a key; it advances which key in the **pre-provisioned**
-OTA pool the build signs with. Normal state is implicit in ``[ota].signing_key_id``:
-OTA keys with a lower id are retired, it is the current signer, higher ids are
-available. Old releases keep verifying — their key stays trusted.
+A camera embeds only the project's roots; every signing key reaches it as a certificate
+a root signed, carried in each image. The key set is provisioned at ``project new --ota``,
+and "rotation" advances which key in that pool the build signs with. Normal state is
+implicit in ``[ota].signing_key_id``: OTA keys with a lower id are used, it is the current
+signer, higher ids are available. Old releases keep verifying.
 
-**Revocation** is the rare exception, for a *compromised* private key: it marks a
-key ``revoked`` in ``keys/trusted_keys.json`` (kept, never deleted) so the host
-refuses to sign with it and ``rotate`` skips it. The device-side reject-list is
-honored by a future firmware build, so revocation only fully protects devices once
-they update — already-fielded devices keep trusting the key until then. It is
-reversible with :func:`unrevoke_key`.
+**Revocation** is for a *compromised* private key: it marks a key ``revoked`` in
+``keys/trusted_keys.json`` (kept, never deleted) so the host refuses to sign with it and
+``rotate`` skips it. That alone changes nothing on a camera, and is reversible with
+:func:`unrevoke_key`.
+
+**Retirement** (:func:`retire_revoked`) is what reaches the fleet. Every certificate carries
+an epoch, and a camera refuses a certificate below the highest epoch it has confirmed a
+release at. Retiring re-issues the certificate of every key that is not revoked at the next
+epoch and leaves the revoked keys' behind: once a camera confirms a release signed after
+that, it refuses the revoked keys, and every image signed before, for good.
 """
 
 from __future__ import annotations
@@ -35,11 +38,13 @@ class KeyStatus:
     signer_revoked: bool     # the current signer has been revoked -> rotate before building
     ota_ids: list[int]       # the OTA rotation pool, sorted
     factory_ids: list[int]   # factory keys, sorted
-    retired: int             # OTA keys before the current signer
+    used: int                # OTA keys before the current signer
     remaining: int           # non-revoked OTA keys after the current signer
     revoked: int             # revoked keys in the whole set
     private_present: int     # private PEMs on this machine
     private_total: int       # total keys in the set
+    epoch: int = 0           # the certificate epoch releases are signed at
+    unretired: int = 0       # revoked keys cameras still accept (`keys retire` not run since)
 
 
 def _load(root: Path) -> tuple[config_mod.OtaConfig, list, ProjectPaths]:
@@ -60,6 +65,31 @@ def _find(trusted: list, key_id: int):
     if key is None:
         raise ProjectError("no key with id 0x%04x in keys/trusted_keys.json" % key_id)
     return key
+
+
+def key_epoch(key) -> int:
+    """The epoch of ``key``'s certificate."""
+    from openmv_ota.ota import certificate
+    return certificate.parse(bytes.fromhex(key.cert)).epoch
+
+
+def current_epoch(trusted: list) -> int:
+    """The epoch the project signs at: the highest any key's certificate carries."""
+    return max(key_epoch(k) for k in trusted)
+
+
+def _root_key(paths: ProjectPaths, root: Path, key_passphrase_file):
+    """Root 0's private key: what signs certificates."""
+    from openmv_ota.ota.keys import load_private_key_pem, root_pem_name
+
+    from . import passphrase as passphrase_mod
+    phrase, _ = passphrase_mod.resolve_passphrase(root, passphrase_file=key_passphrase_file)
+    try:
+        return phrase, load_private_key_pem(
+            (paths.private_keys_dir / root_pem_name(0)).read_bytes(), phrase)
+    except OSError:
+        raise ProjectError("no %s in keys/private: the root key signs the keys' "
+                           "certificates, and nothing can take its place" % root_pem_name(0)) from None
 
 
 def _ota_index(trusted: list, signing_key_id: int) -> tuple[list[int], int]:
@@ -97,22 +127,14 @@ def provision_backend(root: Path, provisioner, *, n_factory: int, n_ota: int,
     project's issuer there too (``keys/issuer.json``). Keeps the current signing algorithm and the
     project's roots: the new keys are certified by root 0, so devices that embed the roots trust
     them with no firmware change. Returns the new signing key id."""
-    from openmv_ota.ota.keys import load_private_key_pem, root_pem_name
     from openmv_ota.ota.signer import provision_external_key_set
 
-    from . import passphrase as passphrase_mod
     from .backends import write_backends
     _config, existing, paths = _load(root)
     alg = algorithm_for(existing[0].alg)
-    phrase, _ = passphrase_mod.resolve_passphrase(root, passphrase_file=key_passphrase_file)
-    try:
-        root_priv = load_private_key_pem(
-            (paths.private_keys_dir / root_pem_name(0)).read_bytes(), phrase)
-    except OSError:
-        raise ProjectError("no %s in keys/private: the root key signs the new keys' "
-                           "certificates, and nothing can take its place" % root_pem_name(0)) from None
+    phrase, root_priv = _root_key(paths, root, key_passphrase_file)
     trusted, records, signing_key_id = provision_external_key_set(
-        alg, n_factory, n_ota, provisioner, root_priv)
+        alg, n_factory, n_ota, provisioner, root_priv, epoch=current_epoch(existing))
     write_trusted_keys(paths.trusted_keys, trusted)
     write_backends(root, records)
     config_mod.set_signing_key_id(paths.config, signing_key_id)
@@ -139,11 +161,13 @@ def key_status(root: Path) -> KeyStatus:
         signer_revoked=signer.revoked,
         ota_ids=ota_ids,
         factory_ids=sorted(k.key_id for k in trusted if k.role == "factory"),
-        retired=idx,
+        used=idx,
         remaining=sum(1 for kid in ota_ids[idx + 1:] if not by_id[kid].revoked),
         revoked=sum(1 for k in trusted if k.revoked),
         private_present=present,
         private_total=len(trusted),
+        epoch=current_epoch(trusted),
+        unretired=sum(1 for k in trusted if k.revoked and key_epoch(k) == current_epoch(trusted)),
     )
 
 
@@ -156,8 +180,7 @@ def rotate_signing_key(root: Path) -> tuple[int, int, list[str]]:
     new = next((kid for kid in ota_ids[idx + 1:] if not by_id[kid].revoked), None)
     if new is None:
         raise ProjectError(
-            "no more OTA keys in the pool (all later keys used or revoked); adding keys "
-            "needs a firmware re-flash with a new trusted set", exit_code=1)
+            "no more OTA keys in the pool (all later keys used or revoked)", exit_code=1)
     old = config.signing_key_id
     warnings: list[str] = []
     pem = paths.private_keys_dir / ("ota-%04x.pem" % new)
@@ -190,6 +213,31 @@ def unrevoke_key(root: Path, key_id: int) -> tuple[object, bool]:
     key = _find(trusted, key_id)
     if not key.revoked:
         return key, False
+    if key_epoch(key) < current_epoch(trusted):
+        raise ProjectError(
+            "key 0x%04x was retired: its certificate was left at epoch %d and the project "
+            "signs at %d, so cameras refuse it and nothing brings it back"
+            % (key_id, key_epoch(key), current_epoch(trusted)))
     key.revoked = False
     write_trusted_keys(paths.trusted_keys, trusted)
     return key, True
+
+
+def retire_revoked(root: Path, *, key_passphrase_file=None) -> tuple[int, list[int]]:
+    """Make the fleet refuse every revoked key: re-issue the certificate of each key that is
+    not revoked at the next epoch (signed by root 0), leaving the revoked keys' at the old one.
+    Returns ``(new_epoch, retired_key_ids)``. A camera refuses the retired keys from the
+    moment it confirms a release signed after this; raises when no revoked key is waiting."""
+    from openmv_ota.ota.keys import certify
+    _config, trusted, paths = _load(root)
+    epoch = current_epoch(trusted)
+    retired = sorted(k.key_id for k in trusted if k.revoked and key_epoch(k) == epoch)
+    if not retired:
+        raise ProjectError("no revoked key to retire: `project keys revoke` one first")
+    live = [k for k in trusted if not k.revoked]
+    if not any(k.role == "ota" for k in live):
+        raise ProjectError("every OTA key is revoked: nothing would be left to sign a release")
+    _phrase, root_priv = _root_key(paths, root, key_passphrase_file)
+    certify(root_priv, 0, live, epoch=epoch + 1)
+    write_trusted_keys(paths.trusted_keys, trusted)
+    return epoch + 1, retired

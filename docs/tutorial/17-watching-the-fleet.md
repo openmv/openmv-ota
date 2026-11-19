@@ -169,7 +169,7 @@ Versions appear twice on purpose: the packed number is what the device reports a
 comparisons use; the decoded form (`current_version`, `fallback_version`) is for you.
 `stub_version` and `stub_reason` describe the boot stub on a board that has one: the stub
 that installed the running firmware, and why it installed (`normal`, `trial`, `reverted`,
-`reinstalled`). Both are `null` on a board without a stub. `firmware_updates` is the board
+`reinstalled`, `repaired`). Both are `null` on a board without a stub. `firmware_updates` is the board
 table's answer to whether a firmware release will ever reach this camera: `true` on a board
 with a boot stub, `false` on the discontinued M4, M7 and H7 (their releases carry the app
 alone; the firmware is flashed over USB), `null` for a board the table does not know.
@@ -182,8 +182,7 @@ openmv-ota client device show --device-id OPENMV_N6:30003d000851303436313832
 ```
 
 A device that is *not* yours answers 404 to that, like everything else. The one
-credential that can find a camera without knowing whose it is, is the server's own root
-([The admin API](23-admin-api.md)): `client device lookup --q 3d0008` searches every
+credential that can find a camera without knowing whose it is, is the server's own root: `client device lookup --q 3d0008` searches every
 account by a fragment of the id or the display name, and each row names its
 `account_id`.
 
@@ -300,13 +299,12 @@ saved OPENMV_N6-ota.delta-1.3.0.gz (183214 bytes)
 
 ## Vulnerability monitoring
 
-The server scans the SBOMs of every release the fleet still runs (or an active
-rollout still offers) against [OSV.dev](https://osv.dev), daily by default
+The server scans the SBOMs of every release the fleet still runs against [OSV.dev](https://osv.dev), daily by default
 (`OPENMV_OTA_ADVISORY_SCAN_INTERVAL_S`; `0` disables the loop). Findings land in
 the advisories table — new ones appear with a `first_seen`, and a finding a later
 scan no longer reports is cleared, never deleted, so the history shows monitoring
-ran. `release publish` triggers a scan of the new release immediately and prints
-what it carries:
+ran. A new release is scanned by the scheduled pass once a camera runs it;
+`advisories scan` asks now:
 
 ```
 $ openmv-ota client advisories scan
@@ -346,7 +344,8 @@ $ openmv-ota client audit --since 41
       "entry_hash": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
       "account_id": "acct_7bd21c50e83a94f1"
     }
-  ]
+  ],
+  "total": 1
 }
 ```
 
@@ -373,6 +372,10 @@ capture it has to mint another. A script that creates accounts should also pass
 account it already made back rather than making a second one. `publish --percent` is two API calls, so its JSON nests
 the rollout under `rollout` and leaves the release fields where a plain `publish` puts
 them — no special case for parsers.
+
+## See also
+
+- [The admin API](23-admin-api.md) — the server's root, and what only it can read.
 
 ---
 

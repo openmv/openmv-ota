@@ -33,8 +33,7 @@ openmv-ota client release publish ./my-product -b OPENMV_N6 -o build/factory
 — because it is the fleet's **first delta base**. Every device leaves the factory
 running exactly these bytes, and the server can only build-plan deltas against images
 it stores; skip this and the fleet's first update silently downloads in full instead
-of as a small patch. (`client release publish` is covered in
-[The client](15-the-client.md).)
+of as a small patch.
 
 It composes the same compiled body into both slots:
 
@@ -111,11 +110,12 @@ The project's OTA flag steers the build automatically:
   would be a key anyone who can reach the artifact already has. On a multi-core board
   only the main core carries any of this — the helper core runs no OTA.
 
-  On a board with a **boot stub** (the N6, the AE3, the RT1062, the STM32H7 cameras) the
+  On a board with a **boot stub** (the N6, the AE3, the RT1062, the H7 Plus, the Pure Thermal and the Arduino boards) the
   build also produces `<board>-stub.bin`, the stub's whole flash sector: its code, then
   a signed footer that names the code's hash, the stub version and the product id under
   the project's factory key — the key that signs the factory image the stub is flashed
-  with. Nothing on the camera checks it yet; it is there for the bootloader that will.
+  with. Nothing on the camera checks it yet; it is there for the bootloader that will, on the
+  boards where device lockdown is planned (the N6, the AE3 and the RT1062).
   The same passphrase opens that key, and a `--dev` project's throwaway key is refused
   without `--allow-dev-key`, as for every signing build. `openmv-ota build inspect
   build/<board>-stub.bin` decodes the footer; `build verify` checks it against
@@ -138,7 +138,7 @@ turn into a confusing link-time failure; pass `--incremental` to skip the clean
 when the tree is known good. Even then the tool cleans when its *own* inputs to
 the build changed since the last build of that board -- the board overlay, the
 frozen manifest, the modules it injects -- because `make` cannot see those (they
-live in a per-build temporary directory) and would otherwise keep objects compiled
+are rewritten into the build directory on every build) and would otherwise keep objects compiled
 against the old configuration. Building firmware needs the firmware toolchain
 (`make` + the board's cross compiler).
 
@@ -151,6 +151,10 @@ against the old configuration. Building firmware needs the firmware toolchain
 | `--key-passphrase-file FILE` | Passphrase that decrypts the project's payload keys (OTA projects; else the env var or a prompt). |
 | `-f, --firmware PATH` | Firmware checkout override. |
 | `--keep-build-dir` | Print the path of the generated wrapper dir (OTA builds): `build/openmv-ota-<board>/` in the firmware tree, left in place after every build. |
+
+## See also
+
+- [The client](15-the-client.md) — `client release publish`.
 
 ---
 

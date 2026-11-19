@@ -14,8 +14,7 @@ spread over several versions, and one delta reaches only the devices on its base
 deltas must be built **locally** — a delta is named in the *signed* manifest, and the
 server never holds signing keys. So the client asks and fetches, and the build stays
 local — `build` never talks to the server for this (the one thing a build does take from
-the server is a platform project's publish counter,
-[Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter)):
+the server is a platform project's publish counter):
 
 ```
 $ openmv-ota client release bases --fleet -b OPENMV_N6 --product-id 5553380507785669254 -o build/bases
@@ -67,6 +66,10 @@ but the image itself is the evidence — so the server keeps every artifact for 
 long as the release row exists. Images are small; only you know how long a version
 stays in the field. (A release that must stop reaching devices is a rollout
 question — stop its rollouts — not a deletion question.)
+
+## See also
+
+- [Integrating as a platform](25-platform-integration.md) — the publish counter a platform project's build takes from the server.
 
 ---
 

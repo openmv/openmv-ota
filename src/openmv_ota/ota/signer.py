@@ -105,11 +105,14 @@ class KeyProvisioner(abc.ABC):
 
 
 def provision_external_key_set(alg: AlgSpec, n_factory: int, n_ota: int,
-                               provisioner: KeyProvisioner, root_private_key, root_id: int = 0):
+                               provisioner: KeyProvisioner, root_private_key, root_id: int = 0,
+                               epoch: int = 0):
     """Mint the whole pool in an external backend and certify it with the project's root.
     Returns ``(trusted_keys, backend_records, signing_key_id)`` -- the public set for
     ``keys/trusted_keys.json`` and the per-key records for ``keys/backends.json``. No signing
-    key's private PEM is ever produced; the root stays the local, offline one."""
+    key's private PEM is ever produced; the root stays the local, offline one. ``epoch`` is the
+    certificates' (the project's current one, so cameras that have left an earlier epoch
+    behind accept the new keys)."""
     from .keys import FACTORY_KEY_ID_BASE, OTA_KEY_ID_BASE, TrustedKey, certify
     trusted: list = []
     records: dict[int, dict] = {}
@@ -123,7 +126,7 @@ def provision_external_key_set(alg: AlgSpec, n_factory: int, n_ota: int,
         _mint(FACTORY_KEY_ID_BASE + i, "factory")
     for i in range(n_ota):
         _mint(OTA_KEY_ID_BASE + i, "ota")
-    certify(root_private_key, root_id, trusted)
+    certify(root_private_key, root_id, trusted, epoch=epoch)
     return trusted, records, OTA_KEY_ID_BASE
 
 

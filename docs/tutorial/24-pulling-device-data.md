@@ -8,7 +8,7 @@ Everything a camera sends besides check-ins — its console lines, its telemetry
 lands in the **datalake**, a separate service with its own API. Your admin token never
 opens it directly. Instead the update server mints a short-lived **viewer grant** for one
 device, and that grant's own token opens the datalake's read endpoints. The CLI hides the
-hand-off; the raw calls are below for scripts in other languages.
+hand-off; scripts in other languages make the raw calls themselves.
 
 
 ## Sending data from the camera

@@ -17,13 +17,13 @@ openmv-ota flash factory  ./my-product -b OPENMV4
 
 | command | flashes | from |
 | --- | --- | --- |
-| `flash firmware` | the firmware image | `<board>-firmware.bin` |
+| `flash firmware` | the firmware image | `<board>-firmware.bin`; on a board with a boot stub, the stub and firmware together (`<board>-firmware-with-stub.bin`) and, where the board has one, the firmware's second region (`<board>-firmware-text2.bin`) |
 | `flash romfs` | the app romfs image | `<board>-romfs.img` |
-| `flash factory` | firmware **+** the factory image (the manufacturing program) | `<board>-firmware.bin`, `<board>-factory-romfs.img` |
+| `flash factory` | firmware **+** the factory image (the manufacturing program) | the firmware files, `<board>-factory-romfs.img` |
 | `flash register` | nothing: registers the keys of a camera already flashed | — |
-| `flash erase` | the onboard filesystem — [next page](10-erase-and-bootloader.md) | — (no artifact) |
-| `flash read` | nothing: reads a partition back as stored (OPENMV_RT1060) — [next page](10-erase-and-bootloader.md) | — |
-| `flash bootloader` | the bootloader — [next page](10-erase-and-bootloader.md) | `<board>-bootloader.bin` |
+| `flash erase` | the onboard filesystem | — (no artifact) |
+| `flash read` | nothing: reads a partition back as stored (OPENMV_RT1060) | — |
+| `flash bootloader` | the bootloader | `<board>-bootloader.bin` |
 | `flash list` | *(query)* connected boards + the state each is in | — |
 
 A multi-partition write (`flash factory`) resets the board only after the final
@@ -78,17 +78,21 @@ On an alt-addressed board, each partition is one `dfu-util` call:
 $ openmv-ota flash factory ./my-product -b OPENMV4 --dry-run
 would run: dfu-util -d ,37c5:9204 -a 2 -D build/OPENMV4-firmware.bin
 would run: dfu-util -w -d ,37c5:9204 -a 3 --reset -D build/OPENMV4-factory-romfs.img
+would run: send 'OMVKEYS ...' to the camera's console at boot
+would run: register its keys, signed by the desk key
 ```
 
 An Arduino board flashes by address, wifi/bt blobs first:
 
 ```
 $ openmv-ota flash factory ./my-product -b ARDUINO_PORTENTA_H7 --dry-run
-would run: dfu-util -d ,2341:035b -a 1 -s 0x90F00000 -D .../cyw4343_7_45_98_102.bin
-would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90FC0000 -D .../cyw4343_btfw.bin
-would run: dfu-util -w -d ,2341:035b -a 0 -s 0x08040000 -D ARDUINO_PORTENTA_H7-firmware.bin
-would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90B00000:leave -D ARDUINO_PORTENTA_H7-factory-romfs.img
+would run: dfu-util -d ,2341:035b -a 1 -s 0x90F00000 -D build/cyw4343_7_45_98_102.bin
+would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90FC0000 -D build/cyw4343_btfw.bin
+would run: dfu-util -w -d ,2341:035b -a 0 -s 0x08020000 -D build/ARDUINO_PORTENTA_H7-firmware-text2.bin
+would run: dfu-util -w -d ,2341:035b -a 0 -s 0x08040000 -D build/ARDUINO_PORTENTA_H7-firmware-with-stub.bin
+would run: dfu-util -w -d ,2341:035b -a 1 -s 0x90B00000:leave -D build/ARDUINO_PORTENTA_H7-factory-romfs.img
 would run: send 'OMVKEYS ...' to the camera's console at boot
+would run: register its keys, signed by the desk key
 ```
 
 The RT1060 goes through the resident secure bootloader every shipped camera
@@ -97,11 +101,12 @@ has, entered with `machine.bootloader()` like the other boards:
 ```
 $ openmv-ota flash factory ./my-product -b OPENMV_RT1060 --dry-run
 would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60040000 ...
-would run: blhost -u 0x15A2,0x0073 -- write-memory 0x60040000 build/OPENMV_RT1060-firmware.bin
+would run: blhost -u 0x15A2,0x0073 -- write-memory 0x60040000 build/OPENMV_RT1060-firmware-with-stub.bin
 would run: blhost -u 0x15A2,0x0073 -t 120000 -- flash-erase-region 0x60800000 ...
 would run: blhost -u 0x15A2,0x0073 -- write-memory 0x60800000 build/OPENMV_RT1060-factory-romfs.img
 would run: blhost -u 0x15A2,0x0073 -- reset
 would run: send 'OMVKEYS ...' to the camera's console at boot
+would run: register its keys, signed by the desk key
 ```
 
 `flash factory` ends, on the boards that have keys, by provisioning them. The

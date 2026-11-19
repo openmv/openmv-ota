@@ -60,16 +60,15 @@ its `ROOT_KEYS` table: root `0` (the primary, which certifies the keys above) an
 
 | Flag | Effect |
 |---|---|
-| `--sig-alg {ES256,ES384,ES512}` | Signature algorithm for the whole set (default `ES256`). |
+| `--sig-alg {ES256,ES384,ES512}` | Signature algorithm for the whole set (default `ES256`, and the only one that works: certificates carry P-256 keys, so the others are refused). |
 | `--ota-keys N` | Rotation-pool size to provision (default 32). |
 | `--factory-keys N` | Factory-key reserve, one per manufacturing site (default 8). |
 | `--key-passphrase-file FILE` | Passphrase (read from FILE) that encrypts the private keys at rest. |
 | `--dev` | Throwaway dev keys with a cached random passphrase — nothing to manage, and the production build rail refuses them. |
-| `--keys-from PROJECT` | Provision nothing: copy another project's whole key set instead, so cameras can move between the two products ([Integrating as a platform](25-platform-integration.md#keys-one-set-for-the-whole-fleet)). |
+| `--keys-from PROJECT` | Provision nothing: copy another project's whole key set instead, so cameras can move between the two products. |
 
-**Provision generously.** Because keys can't be added without re-flashing firmware,
-the rotation pool is your entire future supply of OTA keys — `--ota-keys` below 4
-warns.
+**Provision generously.** The rotation pool is the project's supply of OTA keys —
+`--ota-keys` below 4 warns.
 
 **Backed up at birth.** `new` always writes the one-file key backup
 (`keys-backup.bin`, the same artifact as `project keys backup`) in the very step
@@ -116,38 +115,76 @@ openmv-ota project keys rotate   # advance to the next OTA key
 ```
 
 - **`status`** reports the current signing key + algorithm, how far through the
-  pool you are (`#3 of 32`), how many keys are retired / remaining / revoked, the
-  factory-key count, and how many private PEMs are on this machine (so you know if
+  pool you are (`#3 of 32`), how many keys are used / remaining / revoked, the
+  factory-key count, the certificate epoch releases are signed at, and how many private PEMs are on this machine (so you know if
   you're on the signing machine).
 
 - **`rotate`** advances `[ota].signing_key_id` to the next key in the
   pre-provisioned pool — it doesn't mint a key. Old releases keep verifying (their
   key stays trusted); rotation just limits how much any one key signs. It errors
-  when the pool is exhausted (you'd need a firmware reflash with a new set). Commit
+  when the pool is exhausted. Commit
   `openmv-ota.toml` — git is your rotation log.
 
-## Compromise: `revoke`
+## Compromise: `revoke` and `retire`
 
 ```bash
-openmv-ota project keys revoke 0x0100     # mark a compromised key (reversible)
+openmv-ota project keys revoke 0x0100     # stop signing with a compromised key (reversible)
 openmv-ota project keys unrevoke 0x0100
+openmv-ota project keys retire            # make cameras refuse the revoked keys (permanent)
 ```
 
 **`revoke`** is the rare exception, for a **compromised** private key (HSM
 breach, leaked CI secret). For normal hygiene you just rotate; revoke is for "an
 attacker has this key and could forge images." It sets `revoked` on the key in
 `keys/trusted_keys.json` (kept, never deleted), so `build romfs` refuses to sign
-with it and `rotate` skips it. It's deliberately **not** auto-applied to fielded
-devices: the trusted/revoked set is baked into the **firmware** by `build
-firmware` — a romfs OTA update never changes it — so a revoked key only stops
-being trusted once a device's firmware is re-flashed (today a physical reflash;
-there is no firmware-over-OTA). It's reversible with `unrevoke` (for a
-fat-fingered id or false alarm). Revoking the current signer doesn't move it —
-`build romfs` will refuse until you `rotate`.
+with it and `rotate` skips it. On its own it changes nothing on a camera, whose
+copy of the key's certificate is in every image the key ever signed. It's
+reversible with `unrevoke` (for a fat-fingered id or false alarm). Revoking the
+current signer doesn't move it — `build romfs` will refuse until you `rotate`.
+
+```
+$ openmv-ota project keys revoke 0x0100
+Revoked key 0x0100 (ota).
+  This project no longer signs with it. Cameras still accept it until
+  `openmv-ota project keys retire` and the release after. Commit keys/trusted_keys.json.
+  Undo with: openmv-ota project keys unrevoke 0x0100
+```
+
+**`retire`** is what reaches the fleet. Every certificate carries an **epoch**, and
+a camera refuses any certificate below the highest epoch it has confirmed a release
+at. `retire` has the root sign a new certificate, one epoch up, for every key that
+is not revoked, and leaves the revoked keys' certificates where they were:
+
+```
+$ openmv-ota project keys retire
+Retired 0x0100: releases are signed at epoch 1 from now on.
+  A camera refuses the retired keys, and every image signed before this, once it
+  confirms a release built after it: rebuild and publish one. Until then nothing
+  on a camera changes. This cannot be undone. Commit keys/trusted_keys.json.
+```
+
+Three things follow from how the epoch works:
+
+- **It takes a release.** A camera moves to the new epoch when it confirms an image
+  signed after the `retire`. Build and publish one; a camera that has not taken it
+  yet still accepts the revoked key.
+- **It takes the older releases with it.** Every image signed before the `retire`
+  carries a certificate at the old epoch, the good keys' included. A camera past the
+  new epoch refuses them all: it cannot be given an older release again, and the
+  slot holding its previous release stops being a fallback until the next update
+  fills it.
+- **It is permanent.** No command lowers an epoch, on the host or on a camera, and
+  a retired key cannot be unrevoked.
+
+`retire` needs the root key (`keys/private/root-0.pem`) and the project passphrase.
+
+| Flag | Effect |
+|---|---|
+| `--key-passphrase-file FILE` | Passphrase (read from FILE) that opens the root key. |
 
 ## Custody: backups and external backends
 
-Unless an external backend holds them (below), the private keys exist in exactly
+Unless an external backend holds them, the private keys exist in exactly
 one place — your signing machine — so custody has its own verbs:
 
 ```bash
@@ -193,9 +230,8 @@ fresh key set *inside* the backend (`C_GenerateKeyPair` on a token, the provider
 create-key API in a KMS) and rewrites `keys/trusted_keys.json` +
 `keys/backends.json` from the returned public halves, so the private half **never
 exists on this machine**. It defaults to `--ota-keys 4 --factory-keys 1` because
-external keys are often billable. Note what provisioning means: **it re-keys the
-fleet** — fielded devices trust the new set only after a firmware update carries
-it, exactly like the `--force` hazard above. Commit both files.
+external keys are often billable. The new keys are certified by the project's root
+at its current epoch, so cameras accept what they sign as they are. Commit both files.
 
 Each backend's record, and the pip extra that enables it — extras rather than
 default dependencies because the cloud SDKs are heavy, conflict-prone, and each
@@ -245,10 +281,15 @@ different, flat-rate pooled model, not per-key.)
 
 So on **AWS** or **GCP-HSM** a large idle pool is real recurring money: size it to the
 rotations you expect over the product's service life and no more — but not too small either,
-since you can't add keys later without a firmware reflash (4 is a floor, not a target). On
+since the pool is what `rotate` draws from (4 is a floor, not a target). On
 **GCP-software** and **Azure software keys** the per-key cost is negligible, so the on-disk
 default of 32 is essentially free. Signing volume is trivial everywhere — an OTA build signs
 a handful of times a release, far under any free tier.
+
+## See also
+
+- [Integrating as a platform](25-platform-integration.md) — one key set for a fleet that moves between products.
+- [The trailer](../reference/trailer.md#certificate) — the certificate and its epoch, field by field.
 
 ---
 

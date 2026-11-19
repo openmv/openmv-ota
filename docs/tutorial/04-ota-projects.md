@@ -83,8 +83,7 @@ at boot an *unproven* image below the floor is rejected too. The floor starts at
 the factory image's version and rises by itself each time your app calls
 `confirm()`, so a replayed old release — even a validly signed one — cannot come
 back. (A camera built with `product_id = 0`, which a platform's stock hardware is,
-orders images by a different number for the same purpose — see
-[Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter).)
+orders images by a different number for the same purpose.)
 
 How the floor survives is the one place the two modes differ:
 
@@ -143,7 +142,7 @@ The generated `.gitignore` already excludes `keys/private/` (and `keys/*.pem`,
 `keys/private/`** —
 only the signing machine holds the private keys, and there is no recovery if they
 leak (an attacker could sign images your devices would trust) or are lost (you can
-rotate to another provisioned key, but a key never provisioned can't be added).
+rotate to another key in the pool only while you hold its private half).
 Back the private keys up out-of-band.
 
 The `[ota]` section records the mode, the current signing key, and the server
@@ -206,7 +205,7 @@ through them) — and `install()` uses it automatically.
 ## What a release reaches on each board
 
 A release updates the app on every board. On a board with a **boot stub** it carries the
-firmware too, and the stub installs it before the app runs ([Building](06-building.md));
+firmware too, and the stub installs it before the app runs;
 on a board without one the firmware is flashed over USB and a release carries the app
 alone. Whether a failed update has a fallback depends on the ROMFS partition: two slots
 fit on every board but the three discontinued classics, whose single slot re-downloads
@@ -294,6 +293,11 @@ travels *with* the main, `sync()` always writes the helper image that matches th
 that's actually running — so it stays consistent even across a rollback to the previous
 image. (The standalone `-coprocessor-romfs.img` is for flashing the helper partition
 directly at the factory; the nested copy is byte-identical.)
+
+## See also
+
+- [Integrating as a platform](25-platform-integration.md) — cameras that move between products, and the publish counter that orders their images.
+- [Building](06-building.md) — what a release carries on a board with a boot stub.
 
 ---
 

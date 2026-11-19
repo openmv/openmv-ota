@@ -4,7 +4,7 @@
 
 ---
 
-What a camera actually speaks to the server: three endpoints, and no account credential
+What a camera actually speaks to the server: four endpoints, and no account credential
 — a camera proves which camera it is with a signature from its own key, never a token.
 Device calls are rate-limited per IP and gated by device registration, and downloads are
 authorized by expiring capability tokens — nothing here can be used to write anything.
@@ -17,10 +17,10 @@ authorized by expiring capability tokens — nothing here can be used to write a
 | `device_id`, `board` | the registration pair — the MCU's unique id + the board name |
 | `product_id`, `account_id` | which product/tenant this camera belongs to (baked into its firmware) |
 | `app_version`, `payload_version` | the running release, twice: the human string ("1.2.0") and its packed numeric form, which is what the machines compare (the offer gate, anti-rollback). You never set or interpret the number — read the string |
-| `publish_seq`, `orders_by_seq` | the running image's account publish counter, and whether this camera orders images by it (its firmware's `product_id` is 0, so it can be moved between products and a per-product version cannot order what it may run — see [Integrating as a platform](25-platform-integration.md)). The server cannot work this out: `product_id` above is the running *image's*, so a stock-lineage camera running a customer's image looks like any other. An ordinary camera sends `0` and `false` |
+| `publish_seq`, `orders_by_seq` | the running image's account publish counter, and whether this camera orders images by it (its firmware's `product_id` is 0, so it can be moved between products and a per-product version cannot order what it may run). The server cannot work this out: `product_id` above is the running *image's*, so a stock-lineage camera running a customer's image looks like any other. An ordinary camera sends `0` and `false` |
 | `slot`, `representation`, `confirmed`, `fallback_reason` | trial state: which slot booted, how it was installed, whether it confirmed, why the other slot was rejected (if it was) |
-| `slots` | the device's own account of both flash slots, newest first (detailed below) |
-| `stub` | on a board whose firmware is installed by the boot stub: `{version, reason}` — the stub that chose the running firmware and why it installed (`0` normal, `1` trial, `2` reverted, `3` reinstalled). Stored on the device row as `stub_version` and `stub_reason` (the reason decoded to a word). A stub never updates itself, so the fleet carries mixed versions forever, and a release reaches only cameras whose stub meets its `min_stub`: the server does not offer it to the others, and a camera offered one anyway refuses the manifest (`stub`) before downloading. Absent or `null` from a board with no stub |
+| `slots` | the device's own account of both flash slots, newest first |
+| `stub` | on a board whose firmware is installed by the boot stub: `{version, reason}` — the stub that chose the running firmware and why it installed (`0` normal, `1` trial, `2` reverted, `3` reinstalled, `4` repaired). Stored on the device row as `stub_version` and `stub_reason` (the reason decoded to a word). A stub never updates itself, so the fleet carries mixed versions forever, and a release reaches only cameras whose stub meets its `min_stub`: the server does not offer it to the others, and a camera offered one anyway refuses the manifest (`stub`) before downloading. Absent or `null` from a board with no stub |
 | `streams` | the live image stream names this camera publishes (a multi-camera board, or virtual streams an app defines). Names are sanitized and capped; empty means the single default stream `"0"`. Stored on the device row and used to build the Live grant's per-stream URLs |
 
 Each `slots` entry is
@@ -48,7 +48,8 @@ answer's `Date` header sets the clock for the next one. Only a signed check-in g
 treatment (a fleet row, telemetry, Live and ingest); an unsigned one, or one signed at a stale
 time, gets update offers only, and one whose signature doesn't verify gets nothing.
 
-The answer is `{"update": false, "poll_after_s": 3600}` in the common case. On an offer:
+The answer is `{"update": false, "poll_after_s": 3600}` in the common case (the server spreads
+`poll_after_s` by ±15% so a fleet does not poll in step). On an offer:
 
 ```json
 {
@@ -85,7 +86,7 @@ boot install fails, the camera retries in place on later check-ins and reboots f
 release again at most once an hour.
 
 **`GET /d/{token}/{filename}`** — the capability gateway. The token is a signed, expiring
-credential minted only when a registered device is offered a release, and **one token
+credential minted only when a device is offered a release, and **one token
 authorizes the whole bundle**: the manifest and every image/delta beside it resolve under
 the same `/d/{token}/` prefix, which is why the signed manifest's artifact URLs are
 relative filenames. A filename must match something the signed manifest declares —
@@ -103,15 +104,18 @@ resumes an interrupted download instead of restarting it.
 
 **`POST /api/v1/feedback`** — the explicit terminal outcome of an offered update:
 `device_id`, `board`, `product_id`, `release_id`, and `status` (`installed` or `failed`,
-optionally a `reason`). Recorded only for registered devices; these reports are the
-`reported` counts in a rollout's status.
+optionally a `reason`). Recorded only for registered devices. The stock device library does
+not send it: the server reads the outcome of an offer from the camera's next check-in. Both
+count as `reported` in a rollout's status.
 
-**`GET /healthz`** — liveness: `{"ok": true}`.
+**`GET /healthz`** — liveness: `{"ok": true, "commit": "8b12ee7"}` (the commit the server was built from; empty
+when it was not recorded).
 
 ## See also
 
 - [Device keys](../reference/device-keys.md) — the camera's keys, its registration, what
   the server answers each kind of check-in, and the lockbox format.
+- [Integrating as a platform](25-platform-integration.md) — cameras that order images by the publish counter.
 
 ---
 

@@ -123,6 +123,12 @@ def register(project_parser: argparse.ArgumentParser):
     p_krev.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
     p_krev.set_defaults(func=cmd_keys_revoke, _command="project keys revoke")
 
+    p_kret = keys_sub.add_parser("retire", help="make cameras refuse the revoked keys: the "
+                                                "next release moves them to a new epoch")
+    p_kret.add_argument("--key-passphrase-file", help="file holding the project passphrase")
+    p_kret.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
+    p_kret.set_defaults(func=cmd_keys_retire, _command="project keys retire")
+
     p_kun = keys_sub.add_parser("unrevoke", help="clear a key's revoked flag")
     p_kun.add_argument("key_id", type=lambda s: int(s, 0), help="key id (e.g. 0x0100 or 256)")
     p_kun.add_argument("dir", nargs="?", default=".", help="project directory (default: .)")
@@ -359,8 +365,8 @@ def cmd_keys_backend_provision(args: argparse.Namespace) -> int:
     print("Provisioned %d factory + %d ota keys in the %s backend -> keys/trusted_keys.json + "
           "keys/backends.json (no private key on disk). Now signing with 0x%04x."
           % (args.factory_keys, args.ota_keys, args.backend, signing))
-    print("IMPORTANT: this re-keyed the fleet — fielded devices trust the new keys only after a "
-          "firmware update carrying the new trusted set. Commit both files.")
+    print("The new keys are certified by the project's root, so cameras accept them as they are. "
+          "Commit both files.")
     return 0
 
 
@@ -535,10 +541,12 @@ def cmd_keys_status(args: argparse.Namespace) -> int:
         return e.exit_code
     flag = "  (REVOKED - rotate before building)" if st.signer_revoked else ""
     print("signing key:  ota 0x%04x  (#%d of %d, %s)%s"
-          % (st.signing_key_id, st.retired + 1, len(st.ota_ids), st.alg_name, flag))
-    print("ota pool:     %d retired, %d remaining, %d revoked"
-          % (st.retired, st.remaining, st.revoked))
+          % (st.signing_key_id, st.used + 1, len(st.ota_ids), st.alg_name, flag))
+    print("ota pool:     %d used, %d remaining, %d revoked"
+          % (st.used, st.remaining, st.revoked))
     print("factory keys: %d" % len(st.factory_ids))
+    print("epoch:        %d%s" % (st.epoch, "  (%d revoked key(s) cameras still accept: "
+                                  "`project keys retire`)" % st.unretired if st.unretired else ""))
     print("private keys: %d of %d present on this machine" % (st.private_present, st.private_total))
     return 0
 
@@ -817,12 +825,29 @@ def cmd_keys_revoke(args: argparse.Namespace) -> int:
         return 0
     history.record(args.dir, "keys-revoke", key_id=key.key_id, role=key.role)
     print("Revoked key 0x%04x (%s)." % (key.key_id, key.role))
-    print("  Takes effect on the next firmware build; already-fielded devices keep")
-    print("  trusting it until they update. Commit keys/trusted_keys.json.")
+    print("  This project no longer signs with it. Cameras still accept it until")
+    print("  `openmv-ota project keys retire` and the release after. Commit keys/trusted_keys.json.")
     print("  Undo with: openmv-ota project keys unrevoke 0x%04x" % key.key_id)
     if is_signer:
         print("warning: this was the current signing key - run "
               "`openmv-ota project keys rotate` before building.", file=sys.stderr)
+    return 0
+
+
+def cmd_keys_retire(args: argparse.Namespace) -> int:
+    from . import keys as keys_mod
+    try:
+        epoch, retired = keys_mod.retire_revoked(Path(args.dir),
+                                                 key_passphrase_file=args.key_passphrase_file)
+    except ProjectError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return e.exit_code
+    history.record(args.dir, "keys-retire", epoch=epoch, key_ids=retired)
+    print("Retired %s: releases are signed at epoch %d from now on."
+          % (", ".join("0x%04x" % k for k in retired), epoch))
+    print("  A camera refuses the retired keys, and every image signed before this, once it")
+    print("  confirms a release built after it: rebuild and publish one. Until then nothing")
+    print("  on a camera changes. This cannot be undone. Commit keys/trusted_keys.json.")
     return 0
 
 

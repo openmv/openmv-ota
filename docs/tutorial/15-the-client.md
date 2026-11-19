@@ -10,8 +10,7 @@ hosts your releases and stages them across the fleet — and **`openmv-ota clien
 you drive it. Everything the client does goes through the server's admin HTTP API,
 so anything it can do, your own scripts and dashboards can do too.
 
-This page is the entry point: logging in and publishing. The pages after it stage
-releases to cohorts, operate and watch the live fleet, and manage accounts. You need
+This page is the entry point: logging in and publishing. You need
 two things — a **server URL** and an **admin token**.
 On the OpenMV-hosted service (the default) both come with your account; a self-hosted
 server issues its own.
@@ -50,7 +49,7 @@ full image, and every delta the manifest declares:
 
 ```
 $ openmv-ota client release publish ./my-product -b OPENMV_N6
-published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl)
+published rel_4f9c2a81d06b73ee  version 1.2.0  (full, ocdl; reaches app + firmware)
 ```
 
 The parenthetical lists the release's **representations** — the forms a device can
@@ -91,6 +90,16 @@ format's name). Step by step:
 
 A published release is **inert**: no device is offered it until a rollout (or a pin)
 points at it.
+
+| Flag | Effect |
+|---|---|
+| `-b BOARD`, `--board BOARD` | The board to publish. |
+| `-o DIR`, `--output DIR` | Where the build's artifacts are (default `<project>/build`). |
+| `--percent PERCENT` | Also stage the release: create a rollout at this percent. |
+| `--cohort COHORT` | The cohort for that rollout (default `__default__`, the unassigned devices). |
+| `--name NAME` | A display name for the release: a label, renamed any time. |
+| `--allow-republish` | Re-upload a version the server already has (the dev loop). |
+| `--json` | Print the server's response as JSON instead of the summary. |
 
 ---
 

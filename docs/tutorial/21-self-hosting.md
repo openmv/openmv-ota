@@ -84,6 +84,7 @@ serves:
 | `OPENMV_OTA_CHECKIN_RATE_PER_MIN` | per-IP device rate limit (default 60; 0 disables) |
 | `OPENMV_OTA_CHECKIN_RATE_PER_PREFIX_PER_MIN` | ceiling on one IPv6 /64 as a whole (default 600; 0 disables): stops rotating through a /64 from defeating the per-IP limit, while each IPv6 device keeps its own per-IP budget |
 | `OPENMV_OTA_CHECKIN_RATE_BACKEND` | where those limits are counted: `auto` (default: in the database on Postgres, in memory on SQLite), `shared` (the database, so every server instance enforces one limit together) or `memory` (per instance: with N instances, N times the rate). A database error falls back to an in-memory count rather than refusing devices |
+| `OPENMV_OTA_POLL_JITTER` | how far each answer's `poll_after_s` is spread around the value below, so a fleet does not poll in step (default 0.15 = ±15%; `0` disables) |
 | `OPENMV_OTA_POLL_AFTER_S` | the backoff devices are told before polling again (default 3600). A device whose app sets its own check-in interval (the generated `main.py`'s `CHECK_IN_S`) keeps that instead; only a throttled answer can lengthen it |
 | `OPENMV_OTA_CAPABILITY_TTL` | lifetime of a download token (default 3600 s) |
 | `OPENMV_OTA_CAPABILITY_SECRET` | the HMAC secret that signs download (capability) tokens. It's what lets the capability gateway verify a download with no database lookup — so it must be the same for every worker (a token is usually verified by a different worker than minted it) and survive restarts (or a deploy would kill every in-flight download). `init` generates and persists one in the database if unset |
@@ -248,7 +249,8 @@ openmv-ota server token issue --name ci --scope publish --account-id acct_7bd21c
 openmv-ota server token list | revoke <hash> | rotate <hash>
 ```
 
-`account delete` is the one hard delete the server has, and it exists only here: it
+`account delete` is the one hard delete the server has, and it takes the server's root
+(here, or `client account delete` with the root token): it
 refuses an active account (deactivate first), removes everything the account owned --
 tokens, products, releases and their artifacts, rollouts, cohorts, devices, webhooks --
 and keeps the account's audit history, since the log is one hash chain for the whole

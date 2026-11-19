@@ -43,7 +43,7 @@ context comes from the project:
 - **Signed with the current OTA key.** The signer is `[ota].signing_key_id` from
   `openmv-ota.toml`; the trailer carries that key's root-signed certificate, which
   is how the device comes to trust it.
-- **Carries the firmware.** On a board with a boot stub (the N6, the AE3, the RT1062 and the STM32H7 boards), the image is
+- **Carries the firmware.** On a board with a boot stub (the N6, the AE3, the RT1062, the H7 Plus, the Pure Thermal and the Arduino boards), the image is
   the filesystem followed by the firmware `build firmware` left in `build/`,
   LZMA-compressed and listed in the trailer as a component the stub installs
   ([the trailer format](../reference/trailer.md#components)). Build the firmware
@@ -92,8 +92,10 @@ machine.
 
 Be clear about what this buys. It puts the store, the URL, a leaked bucket and a
 copy of a backup out of reach — everything cheaper than holding one of your boards.
-It does not survive someone reading the flash off a board: the key is a constant in
-the firmware, and one firmware image serves a board type. That boundary is recorded
+It does not survive someone reading the firmware out of a board: the key is a constant in
+the firmware, and one firmware image serves a board type. The N6 and the RT1062 store
+their firmware encrypted, so there it takes an open debug port; on the other boards a
+flash dump is enough. That boundary is recorded
 in [the residual-threats register](../compliance/residual-threats.md). Each camera
 also holds keys of its own, made when it is flashed; they are described in
 [device keys](../reference/device-keys.md).

@@ -1,6 +1,6 @@
 # Integrating as a platform
 
-*[← 24 · Pulling device data](24-pulling-device-data.md) · [Index](00-introduction.md)*
+*[← 24 · Pulling device data](24-pulling-device-data.md) · [Index](00-introduction.md) · [26 · Webhooks →](26-webhooks.md)*
 
 ---
 
@@ -30,8 +30,7 @@ operate, and its audit log is the record of everything you did on their behalf.
 Inside that account, the **product** is what you carve by. A product id is the low 63
 bits of `sha256("<product>:<board>")`, computed by your project config. For an ordinary
 camera it is also the cross-flash guard — the firmware refuses an image whose product id
-is not its own. Your cameras will run with that guard off, for reasons the next sections
-get to, so for you a product is a way of *organising* releases and devices rather than a
+is not its own. Your cameras will run with that guard off, so for you a product is a way of *organising* releases and devices rather than a
 wall between them.
 
 That gives you two ways to arrange customers, and they differ in how much of the camera's
@@ -60,8 +59,9 @@ ships.
 
 A camera verifies an image against the root keys **baked into its firmware** (every
 signing key reaches it as a certificate those roots signed), and
-decrypts a payload with the payload keys baked in beside them. Firmware is not replaced
-over the air, so those are the keys that camera has for its whole life. A stock camera
+decrypts a payload with the payload keys baked in beside them. The boot stub checks every
+image against the same roots and is never replaced over the air (and a camera without a stub
+never has its firmware replaced), so those are the roots that camera has for its whole life. A stock camera
 carries the *stock project's* keys — and it is going to be asked to install customer A's
 image, then customer B's.
 
@@ -91,7 +91,7 @@ Two things follow that are worth being explicit about with anyone reviewing this
   image in it. That is the same trust domain by construction — they are all your images —
   but it is not a wall, and it should not be described as one.
 - A camera built for this arrangement has the cross-flash guard off permanently. What
-  protects it is the signature, the account binding, and the publish counter below. That
+  protects it is the signature, the account binding, and the publish counter. That
   is a coherent story; it is just a different one from a normal product's.
 
 The **stock image deserves particular care**, because it is the one artifact every camera
@@ -136,8 +136,8 @@ is bound to, so "any product" means any of yours.
 The build refuses `product_id = 0` unless `platform` is set, and the two really are one
 decision: a camera that can change product cannot have its images ordered by a per-product
 version, so it needs the publish counter that `platform` turns on. Setting one without the
-other is always a mistake. And it is permanent — firmware is not replaced over the air, so
-the id a camera leaves the factory with is the id it has forever.
+other is always a mistake. And it is permanent — the boot stub carries the id and is never replaced over
+the air, so the id a camera leaves the factory with is the id it has forever.
 
 Assigning one to a customer is then an ordinary device pin, to a release of a *different*
 product:
@@ -410,8 +410,9 @@ from current source is a real requirement and not a style note.
 the keys section says.
 
 **None of it survives physical access.** The keys are in firmware that is identical across
-your fleet, so a flash dump recovers them. That is true of payload encryption too, and it
-stays true until readout protection and fuses land.
+your fleet. On a camera that stores its firmware in the clear a flash dump recovers them; on
+one that stores it encrypted (the N6, the RT1062) an open debug port does. That is true of
+payload encryption too, and it stays true until device lockdown lands.
 
 ## If you provision accounts as well
 
@@ -443,4 +444,4 @@ accounts is a rebind, not a pin, and it crosses a boundary the device itself enf
 
 ---
 
-*[← 24 · Pulling device data](24-pulling-device-data.md) · [Index](00-introduction.md)*
+*[← 24 · Pulling device data](24-pulling-device-data.md) · [Index](00-introduction.md) · [26 · Webhooks →](26-webhooks.md)*

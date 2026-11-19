@@ -53,13 +53,29 @@ def test_erase_downloads_a_4kb_zero_sector(erase_project, monkeypatch):
     assert seen["data"] == b"\x00" * 4096
 
 
-def test_erase_arduino_walks_both_targets_leave_on_last(erase_project):
+def test_erase_arduino_leaves_the_firmware_alone(erase_project):
+    # 0x08020000 was the stock firmware's internal filesystem; an OTA firmware keeps code there
+    # (its second text region), so the only erase target is the QSPI filesystem.
     root, ran = erase_project
     steps = fl.flash_erase(str(root), board="ARDUINO_PORTENTA_H7")
+    assert len(ran) == 1
+    assert ran[0][3:7] == ["-a", "1", "-s", "0x90000000:leave"]
+    assert [s.label for s in steps] == ["erase alt 1"]
+    for board in ("ARDUINO_PORTENTA_H7", "ARDUINO_GIGA", "ARDUINO_NICLA_VISION"):
+        raw = fl.flash_config(board).raw
+        assert raw["text2"]["addr"] not in [t.get("addr") for t in raw["erase"]]
+
+
+def test_erase_walks_every_target_leave_on_last(erase_project, monkeypatch):
+    root, ran = erase_project
+    cfg = fl.flash_config("ARDUINO_PORTENTA_H7")
+    cfg.raw["erase"] = [{"alt": 1, "addr": "0x90000000"}, {"alt": 1, "addr": "0x90001000"}]
+    monkeypatch.setattr(fl, "flash_config", lambda board: cfg)
+    steps = fl.flash_erase(str(root), board="ARDUINO_PORTENTA_H7")
     assert len(ran) == 2
-    assert ran[0][3:7] == ["-a", "0", "-s", "0x08020000"] and "--reset" not in ran[0]
-    assert ran[1][4:8] == ["-a", "1", "-s", "0x90000000:leave"]
-    assert [s.label for s in steps] == ["erase alt 0", "erase alt 1"]
+    assert ran[0][3:7] == ["-a", "1", "-s", "0x90000000"] and "--reset" not in ran[0]
+    assert ran[1][4:8] == ["-a", "1", "-s", "0x90001000:leave"]
+    assert [s.label for s in steps] == ["erase alt 1", "erase alt 1"]
 
 
 def test_erase_no_reset_leaves_board_in_bootloader(erase_project):

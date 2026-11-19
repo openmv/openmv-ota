@@ -8,6 +8,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`project keys retire`: a revoked key is refused by the fleet.** Cameras have checked a
+  certificate epoch since trailer v4, but no command ever raised it, so `keys revoke` only
+  stopped the project signing with a key. `keys retire` has the root re-issue the certificate
+  of every key that is not revoked at the next epoch; a camera that confirms a release signed
+  after that refuses the revoked keys, and every image signed before, for good. `keys status`
+  shows the epoch and any revoked key cameras still accept; a retired key cannot be unrevoked;
+  keys provisioned into an external backend are certified at the project's current epoch.
 - **The AE3's app is ciphertext at rest.** On the Alif Ensemble E3 the two ROMFS slots live on
   an OSPI flash part beside the chip, and the booted slot is now stored encrypted there,
   deciphered by the OSPI controller's AES engine as it is read. The key is the camera's own:
@@ -106,9 +113,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   runs from it, and encrypts the firmware as it installs it; the engine is locked before the
   firmware starts. Firmware written over USB is in the clear until the first boot, when the
   stub installs the slot's copy encrypted, and an install erases whatever else the area held.
-  The app's ROMFS slots, which carry the same firmware compressed, are not encrypted yet, and
-  until the device is closed a debug probe can derive the same key: this is the first piece
-  of [encryption at rest](docs/design/flash-encryption.md), not the whole of it.
+  Until the device is closed a debug probe can derive the same key
+  ([encryption at rest](docs/design/flash-encryption.md)).
 - **The boot stub proves an install before it runs it.** After an install the stub hashes
   what it wrote through the memory map, the way the firmware will read it, and tries the
   other slot when it does not match (`stub: installed area verified` on the debug UART).
@@ -387,6 +393,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`flash erase` on the Portenta H7 and the Giga no longer erases firmware code.** Its first
+  step wrote zeros at `0x08020000`: the internal filesystem of the stock firmware, and part of
+  the firmware (its second text region) on an OTA build, which keeps the filesystem on the
+  QSPI part. The camera did not boot until it was flashed again. The erase is the QSPI
+  filesystem alone now, as on the Nicla Vision.
 - **A slot conversion copies the whole of a slot's control data.** The boot stub copied the
   last erase block of a clear slot as its status sector and trailer. That is both on a 64 KiB
   block; on 4 KiB blocks it was the trailer alone, and the converted slot was refused for its

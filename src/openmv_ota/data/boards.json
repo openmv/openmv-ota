@@ -343,7 +343,7 @@
       "cloud": "full",
       "live_framesize": "QVGA",
       "arch": "PORTENTA H7 8192 SDRAM",
-      "flash": {"backend": "arduino", "usb": "2341:035b", "erase": [{"alt": 0, "addr": "0x08020000"}, {"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:005b", "pids": ["0x005b", "0x045b", "0x025b", "0x805b"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "text2": {"alt": 0, "addr": "0x08020000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
+      "flash": {"backend": "arduino", "usb": "2341:035b", "erase": [{"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:005b", "pids": ["0x005b", "0x045b", "0x025b", "0x805b"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "text2": {"alt": 0, "addr": "0x08020000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],
@@ -378,7 +378,7 @@
       "cloud": "full",
       "live_framesize": "QVGA",
       "arch": "GIGA H7 8192 SDRAM",
-      "flash": {"backend": "arduino", "usb": "2341:0366", "erase": [{"alt": 0, "addr": "0x08020000"}, {"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:0066", "pids": ["0x0066", "0x0466", "0x0266", "0x8066"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "text2": {"alt": 0, "addr": "0x08020000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
+      "flash": {"backend": "arduino", "usb": "2341:0366", "erase": [{"alt": 1, "addr": "0x90000000"}], "app": {"usb": "2341:0066", "pids": ["0x0066", "0x0466", "0x0266", "0x8066"]}, "firmware": {"alt": 0, "addr": "0x08040000"}, "text2": {"alt": 0, "addr": "0x08020000"}, "romfs": {"alt": 1, "addr": "0x90B00000"}, "wifi_dir": "drivers/cyw4343/firmware", "wifi": [{"alt": 1, "addr": "0x90F00000", "file": "cyw4343_7_45_98_102.bin"}, {"alt": 1, "addr": "0x90FC0000", "file": "cyw4343_btfw.bin"}], "bootloader": {"backend": "arduino_mcuboot", "note": "Arduino boards keep their factory MCUboot bootloader -- it's updated with Arduino's own tooling, not this one"}},
       "mpy_args": [
         "-march=armv7emdp"
       ],

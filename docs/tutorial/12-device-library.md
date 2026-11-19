@@ -28,7 +28,7 @@ packs it to `/rom/lib/openmv_ota/`. It exposes:
     (`tried` is informational only — the attempt region is what `boot.py` counts.)
   - `stub` — on a board whose firmware the boot stub installs: `{'version', 'reason'}`,
     the stub that chose this boot and why it installed (`0` normal, `1` trial, `2`
-    reverted, `3` reinstalled), read from the install record. `None` on a board without
+    reverted, `3` reinstalled, `4` repaired), read from the install record. `None` on a board without
     a stub. It rides in the check-in too, so the fleet view shows which stub each camera
     carries.
 - **`slots()`** — every slot, newest first: `slot`, `running`, `payload_version`,
@@ -255,7 +255,7 @@ Two properties make this safe for sensitive resources (keys, fuses):
 | Never strand the device | `boot.py` boots the newest slot that *verifies*, so a bad update is simply not chosen — including a trial whose attempt it can't record. With no valid slot at all it hands off to firmware-resident recovery |
 | Auto-rollback of a bad update | a trial that never `confirm()`s is rejected once its attempts run out, and the previous release runs instead. The attempt is recorded *before* the image runs, so a hang counts too |
 | Writes can't fail silently | every on-device write is read back and verified; failures raise `OSError` |
-| Bounded memory | slot bodies are `uctypes` views (no copy); SHA, resource compare, and the download/install all stream a chunk at a time |
+| Bounded memory | slot bodies are `uctypes` views (no copy; the H7 Plus and the Pure Thermal decipher the running slot into SDRAM at boot instead); SHA, resource compare, and the download/install all stream a chunk at a time |
 | Trustworthy resources | bundled resources live in the signed ROMFS body and are applied only from a verified image |
 | A proven fallback is never traded for an unproven one | an offered update is deferred while the running image is still an un-confirmed trial — enforced on the device, and mirrored on the server so the offer isn't wasted |
 | The rollback floor can't regress | it is the max across both slots, and every install copies the current floor into the slot it writes |

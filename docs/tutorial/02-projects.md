@@ -40,7 +40,7 @@ in a non-default location.
 | `--install-sdk` | Download + install the SDK if it is missing. |
 | `--allow-dirty` | Don't warn when the checkout has uncommitted changes. |
 | `--force` | Re-run `new` over an existing project (refused otherwise). An existing `app/` is never overwritten. |
-| `--keys-from PROJECT` | Share another project's signing and payload keys instead of minting a fresh set (OTA projects). A camera trusts only the keys baked into its firmware, so every project a camera can be moved between must sign with the same ones — see [Integrating as a platform](25-platform-integration.md#keys-one-set-for-the-whole-fleet). The passphrase must be the source project's. |
+| `--keys-from PROJECT` | Share another project's signing and payload keys instead of minting a fresh set (OTA projects). A camera trusts only the keys baked into its firmware, so every project a camera can be moved between must sign with the same ones. The passphrase must be the source project's. |
 
 ## Layout
 
@@ -105,8 +105,7 @@ It is packed into the ROMFS image, so the app can read it on-device (e.g.
 version or carrying configuration. Bump `app_version` for each release: a
 `major.minor.patch` semver, each component 0-255, with an optional fourth
 `.build` component when a release number of your own is easier to drive than a
-patch bump (see
-[Integrating as a platform](25-platform-integration.md#the-build-byte)).
+patch bump.
 
 For a **multi-core board** (e.g. AE3), `new` also scaffolds a second folder,
 `app-coprocessor/`, holding the slaved helper core's app. It has the same shape
@@ -209,6 +208,10 @@ partition is built from a second folder, **`app-coprocessor/`**, which `new`
 scaffolds whenever a selected board has a coprocessor partition. Outputs are named
 by role: the main partition keeps the bare board name (`OPENMV_AE3-romfs.img`), and
 the coprocessor partition is suffixed (`OPENMV_AE3-coprocessor-romfs.img`).
+
+## See also
+
+- [Integrating as a platform](25-platform-integration.md) — sharing one key set between projects, and the build byte.
 
 ---
 

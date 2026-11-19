@@ -2,20 +2,19 @@
 
 ## Context
 
-OpenMV cameras can update their ROMFS app over the air today, but not the C
-firmware. The Arduino boards (Portenta H7, Giga, Nicla Vision) have bootloaders we
+Before this, OpenMV cameras could update their ROMFS app over the air, but not
+the C firmware. The Arduino boards (Portenta H7, Giga, Nicla Vision) have bootloaders we
 cannot change, so firmware updates must work from where the firmware normally
-starts. The plan: a small C **stub** at the firmware address installs the firmware
+starts. The design: a small C **stub** at the firmware address installs the firmware
 carried inside the active ROMFS slot, so one signed ROMFS release becomes the
 complete thing a camera runs (platform + app), riding the A/B, delta, trial and
-confirm machinery that exists. The same mechanism will later host full-drive
-encryption and other pre-boot work.
+confirm machinery that exists. The same mechanism hosts at-rest encryption
+([flash-encryption.md](flash-encryption.md)).
 
 Trailer v4 is a clean break (nothing is shipped yet): every OTA board gets a stub,
 and no board stays on v3.
 
-Status: **design approved 2026-10-20**. *Open* items need a decision before the
-code that depends on them.
+Status: **built on every stub board** (design approved 2026-10-20).
 
 ## Settled decisions
 
@@ -121,7 +120,8 @@ slot start                                                           slot end
   `pad_size`). `pad_size` goes; each component carries its own offset and size.
 - `body_sha256` covers the filesystem image only (what `boot.py` mounts).
 - Blob offsets are absolute in the slot and may move every release.
-- On a board whose stub keeps the slots encrypted (the N6), the filesystem image and
+- On a board whose stub keeps the slots encrypted (the N6, the RT1062, the AE3, the
+  H7 Plus and the Pure Thermal), the filesystem image and
   the blobs, rounded up to the cipher's 4 KiB grain, are stored as ciphertext; the pad,
   the status sector and the trailer stay in the clear. The manifest names that range
   (`crypt_size`) and the trailer hash the slot's tweak is derived from (`trailer_sha256`);
@@ -134,7 +134,7 @@ component table and the certificate, then the JSON meta. Everything before the
 signature is signed. Codec: `src/openmv_ota/ota/trailer.py`.
 
 ```
-[ header (96) ][ components (n × 48) ][ certificate (160) ][ json_meta ][ signature ][ crc32 ]
+[ header (96) ][ components (n × 80) ][ certificate (160) ][ json_meta ][ signature ][ crc32 ]
 └─────────────────────── signed region ──────────────────────┘
 ```
 
@@ -339,7 +339,7 @@ no verified slot, so the installed firmware was not booted).
 The stub is flashed over USB and never updates itself, so nothing in the field verifies
 it today. Its image still carries a signature, so that a bootloader can check it under
 the project's root later without a stub change. `build firmware` and `build stub` write
-`<board>-stub.bin` as the stub's whole sector (`stub_max` in `boards.json`): the code,
+`<board>-stub.bin` as the stub's whole sector (up to the firmware's start in `boards.json`): the code,
 0xFF padding, and a 512-byte footer at the sector's end. The stub itself never reads it.
 
 ```
@@ -413,7 +413,8 @@ The install window is ciphertext at rest: the stub derives a key from the chip's
 hardware key, has the memory cipher engine in front of the flash decipher the
 window, and encrypts what it installs
 ([flash-encryption.md](flash-encryption.md)). `boards.json` marks such a board
-with `"encrypted": true` in its `stub` entry.
+with `"encrypted": true` in its `stub` entry; a board that encrypts only its slots
+(the AE3, the H7 Plus, the Pure Thermal) carries `"slots_encrypted": true`.
 
 Provisioning over USB: `build firmware` emits the stub beside the firmware (sealed
 with its [footer](#stub-image-footer), so `<board>-stub.bin` is the whole sector), and
@@ -525,7 +526,8 @@ order and nothing sits dirty in a cache; the firmware programs it the same way.
 The slots are read through the OSPI controller in 1-line SPI (READ 0x13 / PAGE
 PROGRAM 0x12, 4-byte addresses, 50 MHz), after a hardware reset of the part — the
 bootloader's driver, and the state it leaves the part in. The stub never uses the
-XIP window, and never erases the part: status marks are 16-byte programs. Before
+XIP window, and erases the part only when it converts a factory slot to ciphertext: status
+marks are 16-byte programs. Before
 the jump the controller is turned off and the part reset again, as the bootloader
 does; the firmware's own driver brings up octal DDR XIP from there. The stub runs
 from SRAM0 with its data in DTCM and the decoder in SRAM1, caches on (the
@@ -608,16 +610,16 @@ case, unlike the STM32 boards' QSPI).
 
 ## Open questions
 
-1. Desk-key certification path.
+1. (settled: desk-key certification, see Trailer v4)
 2. (settled: RT1062 copies like every other board; see its section)
 3. Write-protect the stub's sector? (little gain: MicroPython cannot easily write
    internal flash)
 4. Monotonic counter in the SE050/ATECC608 for the version/epoch floor — later.
 5. (settled: LZMA1 via LzmaDec, 256 KB dictionary)
-6. The stub's per-board UART/WDT id table (follow the firmware's `machine` ids).
+6. (built: the stub's per-board UART/WDT ids are in each board's `stub_config.h`)
 7. IWDG stop/standby freeze option per chip, for products that deep sleep.
 
-## Work plan
+## Work plan (done)
 
 1. Settle the formats here (trailer v4, certificate, marks, install record).
 2. Tool: trailer v4 codec + component packing + LZMA blob + fit check +

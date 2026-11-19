@@ -25,9 +25,9 @@ For a **non-OTA** project the output is the ROMFS body,
 partition as a plain `<board>-coprocessor-romfs.img`, and an OTA build nests that
 image inside the main one for
 [`openmv_ota.sync()`](04-ota-projects.md#multi-core-boards-a-coprocessor-partition)
-to apply on-device. On a board with a boot stub (the N6, the AE3, the RT1062 and the STM32H7 boards) an OTA image also carries
+to apply on-device. On a board with a boot stub (the N6, the AE3, the RT1062, the H7 Plus, the Pure Thermal and the Arduino boards) an OTA image also carries
 the firmware its stub installs, taken from `build/<board>-firmware.bin`, so run
-[`build firmware`](07-factory-and-firmware.md) first; `build romfs` refuses to sign
+`build firmware` first; `build romfs` refuses to sign
 without it.
 
 Every image carries the generated, read-only
@@ -96,6 +96,10 @@ openmv-ota build romfs ./my-product --vela-arg=--verbose-all --mpy-arg=-O2
 | `-f, --firmware PATH` | Firmware checkout override. |
 | `--allow-oversize` | Warn instead of failing when an image exceeds the budget. |
 | `--keep-build-dir` | Keep the staging directory for inspection. |
+
+## See also
+
+- [Factory and firmware](07-factory-and-firmware.md) — `build firmware`, which a release on a boot-stub board needs first.
 
 ---
 
