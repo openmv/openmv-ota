@@ -713,6 +713,29 @@ SCENARIOS = {
             "by_marker": True,
         },
     },
+    "retire": {
+        # A certificate's epoch is the one thing that takes a signing key away from a camera in
+        # the field. Phase 1 revokes the project's signer, rotates and runs `keys retire`, so
+        # 1.1.0 is signed by the next key at epoch 1; the camera installs it, and confirming it
+        # raises the camera's epoch floor to 1. Phase 2 offers 1.2.0 signed the way an attacker
+        # holding the retired key would sign it: by that key, under its epoch 0 certificate,
+        # which a root did sign. The camera must refuse it before it erases anything.
+        "desc": "a release signed after `keys retire` installs and promotes, THEN one signed by "
+                "the retired key is refused",
+        "publish": "retire", "app": "confirm", "end": "promoted",
+        "expect": ["boot.mount", "run.offer", "install.start", "install.armed",
+                   "confirm.promoted"],
+        "forbid": ["install.fallback", "install.reject"],
+        "then": {
+            "desc": "1.2.0 signed by the retired key (epoch 0 certificate) -> refused pre-erase",
+            "publish": "retired_key", "version": "1.2.0", "end": "golden",
+            "expect": ["run.offer", "install.reject", "install.reject_key"],
+            "forbid": ["install.start", "install.armed", "confirm.promoted", "boot.fallback"],
+            # The camera stays on 1.1.0, which is not the "golden" a version check would look
+            # for: the markers are the assertion.
+            "by_marker": True, "phase": "retired_key",
+        },
+    },
     "corrupt_sha": {
         # Distinct from `corrupt`: `corrupt` flips a COMPRESSED byte so the download fails mid-
         # decompress (a bare deflate error, before the integrity check). `corrupt_sha` flips a
@@ -1274,7 +1297,7 @@ def regression_scenarios(board, network):
         return ["delta", "full", "rollback", "corrupt", "corrupt_sha",
                 "bad_sig", "bad_key", "bad_version", "watchdog", "watchdog_recover"]
     scs = ["delta", "full", "rollback", "corrupt", "corrupt_sha", "bad_sig", "bad_key",
-           "bad_version", "reinstall"]
+           "bad_version", "retire", "reinstall"]
     # no_slot BEFORE the watchdog group. It has no golden flash of its own: it seeds its marker file
     # over the REPL on whatever app the previous scenario left running, and on an armed-watchdog app
     # taking the REPL stops the feed -- the board bites, reboots, re-arms, and the seed never lands.
@@ -3591,9 +3614,46 @@ def coproc_he_boot_check(board, nonce):
         nonce, COPROC_BLOB_BYTES)
 
 
+def _key_files():
+    """The two files a key rotation, revocation or retirement rewrites."""
+    return [CFG["project"] + "/keys/trusted_keys.json", CFG["project"] + "/openmv-ota.toml"]
+
+
+_KEYS_SAVED = ".hil-before-retire"
+
+
+def retire_signer():
+    """Revoke the project's signing key, rotate to the next and retire the revoked one, so the
+    next build is signed at the next certificate epoch. The key files are saved beside
+    themselves first: restore_keys() puts them back, which is also how the `retire` scenario
+    signs with the retired key in its second phase."""
+    restore_keys()                                   # a run that died after its retirement
+    for f in _key_files():
+        shutil.copyfile(f, f + _KEYS_SAVED)
+    rc, out = sh("%s project keys status %s" % (ota("openmv-ota"), CFG["project"]))
+    signer = re.search(r"signing key:\s+ota (0x[0-9a-f]{4})", out).group(1)
+    for cmd in ("revoke %s" % signer, "rotate", "retire"):
+        rc, out = sh("%s project keys %s %s" % (ota("openmv-ota"), cmd, CFG["project"]))
+        log("keys %s: %s" % (cmd, out.strip().splitlines()[0]))
+
+
+def restore_keys():
+    """Put back the key files retire_signer() saved (nothing to do when it never ran). The
+    bench project outlives the run, so a retirement left in place would cost the pool a key
+    every run and move every later golden to a new epoch."""
+    for f in _key_files():
+        if os.path.exists(f + _KEYS_SAVED):
+            os.replace(f + _KEYS_SAVED, f)
+            log("keys: restored %s" % os.path.basename(f))
+
+
 def publish_update(board, version, variant="delta"):
     log("publish: %s (variant=%s, rollout 100%%)" % (version, variant))
     set_version(version)
+    if variant == "retire":
+        retire_signer()                # this release: the next key, at the next epoch
+    elif variant == "retired_key":
+        restore_keys()                 # this one: the retired key, under its old certificate
     penv = dict(os.environ, PATH=CFG["sdk"] + "/make:" + os.environ["PATH"],
                 SSL_CERT_FILE=CFG["ca_node"])
     # --allow-republish: the bench server accumulates versions across runs, so this
@@ -4604,6 +4664,7 @@ def main():
             # a stub installs what USB just wrote (and, on a board that encrypts, where it finds
             # the area in the clear). Not scored; read for the stub's line coverage.
             trace["log_setup"] = cap.setup
+        restore_keys()                            # `retire` rewrote the project's key files
         bench_server.stop(srv)                    # tear the per-run server + store down
         trace["elapsed_s"] = round(time.time() - t0, 1)
         # CREATE THE TRACE DIRECTORY. A whole scenario -- provision, flash, install, confirm, the

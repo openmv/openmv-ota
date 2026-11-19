@@ -80,7 +80,7 @@ def test_reinstall_is_in_the_stable_boards_suite_and_dispatchable():
     for board in ("OPENMV_N6", "OPENMV_RT1060"):
         assert "reinstall" in ota_cycle.regression_scenarios(board, ota_cycle.BOARDS[board]["network"])
     wf = (Path(__file__).resolve().parents[2] / ".github/workflows/hil-ota.yml").read_text()
-    assert "reinstall]" in wf, "must be selectable from workflow_dispatch"
+    assert "reinstall," in wf, "must be selectable from workflow_dispatch"
 
 
 def test_every_scenario_with_a_second_phase_declares_what_it_needs():
@@ -242,3 +242,51 @@ def test_phase1_also_publishes_after_the_window_reset():
     # the eager call must be gone: no bare phase("publish", ...) outside that callable
     body = seg.split("def publish():")[1] if "def publish():" in seg else ""
     assert "artifact_sizes" in body, "metrics must move with the publish, not run before it"
+
+
+# --- retire: a key the project retired is refused by a camera that took the next release ------
+
+def test_retire_promotes_at_the_new_epoch_then_refuses_the_retired_key_pre_erase():
+    spec = ota_cycle.SCENARIOS["retire"]
+    assert spec["publish"] == "retire" and spec["end"] == "promoted"
+    assert "confirm.promoted" in spec["expect"]          # the confirm is what raises the floor
+    then = spec["then"]
+    assert then["publish"] == "retired_key" and then["by_marker"]
+    assert {"install.reject", "install.reject_key"} <= set(then["expect"])
+    assert "install.start" in then["forbid"]             # refused before anything is erased
+
+
+def test_retire_runs_before_reinstall_and_is_dispatchable():
+    """Before reinstall, whose golden flash follows: what runs after reinstall inherits a
+    plain app on an image the project's restored keys signed."""
+    for board in ("OPENMV_N6", "OPENMV_RT1060"):
+        scs = ota_cycle.regression_scenarios(board, ota_cycle.BOARDS[board]["network"])
+        assert scs[scs.index("reinstall") - 1] == "retire"
+    wf = (Path(__file__).resolve().parents[2] / ".github/workflows/hil-ota.yml").read_text()
+    assert "retire]" in wf
+
+
+def test_retire_signer_saves_the_key_files_and_restore_puts_them_back(tmp_path, monkeypatch):
+    (tmp_path / "keys").mkdir()
+    keys, toml = tmp_path / "keys" / "trusted_keys.json", tmp_path / "openmv-ota.toml"
+    keys.write_text("before-keys")
+    toml.write_text("before-toml")
+    monkeypatch.setitem(ota_cycle.CFG, "project", str(tmp_path))
+    monkeypatch.setitem(ota_cycle.CFG, "venv", "/venv")
+    ran = []
+
+    def fake_sh(cmd, **_kw):
+        ran.append(cmd.split("/venv/bin/openmv-ota project keys ")[1].split(" " + str(tmp_path))[0])
+        keys.write_text("after-" + ran[-1])
+        return 0, "signing key:  ota 0x0100  (#1 of 32, ES256)\n"
+
+    monkeypatch.setattr(ota_cycle, "sh", fake_sh)
+    monkeypatch.setattr(ota_cycle, "log", lambda *_a: None)
+    ota_cycle.retire_signer()
+    assert ran == ["status", "revoke 0x0100", "rotate", "retire"]
+    assert keys.read_text() == "after-retire"
+    ota_cycle.restore_keys()
+    assert (keys.read_text(), toml.read_text()) == ("before-keys", "before-toml")
+    assert not list(tmp_path.rglob("*.hil-before-retire"))
+    ota_cycle.restore_keys()                              # nothing saved: nothing to do
+    assert keys.read_text() == "before-keys"
