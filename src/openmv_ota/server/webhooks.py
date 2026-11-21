@@ -96,6 +96,21 @@ def sign(secret: str, ts: int, body: bytes) -> str:
     return f"t={ts},v1={mac}"
 
 
+# IPv6 ranges that are a wrapper around an IPv4 address and that `is_global` calls public:
+# NAT64 (a gateway forwards them to the IPv4 inside, private or not) and the old
+# IPv4-compatible form.
+_V4_WRAPPERS = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("::/96"))
+
+
+def _public(addr) -> bool:
+    """Whether ``addr`` is somewhere on the public internet. `is_global`, and not a list of
+    the private kinds: a list missed 100.64.0.0/10, the carrier-grade NAT range overlay
+    networks hand out."""
+    if addr.version == 6 and any(addr in net for net in _V4_WRAPPERS):
+        return False
+    return addr.is_global and not addr.is_multicast
+
+
 def check_url(url: str, *, allow_private: bool = False, resolve=None) -> str:
     """The endpoint URL, or a WebhookError. HTTPS only (HTTP is allowed to loopback for a
     self-host that opted in); the host must resolve, and to no private, loopback,
@@ -116,9 +131,7 @@ def check_url(url: str, *, allow_private: bool = False, resolve=None) -> str:
         raise WebhookError("the host does not resolve") from None
     for info in infos:
         addr = ipaddress.ip_address(info[4][0])
-        # `not is_global` and not a list of the private kinds: the list missed 100.64.0.0/10,
-        # the carrier-grade NAT range overlay networks hand out.
-        if not allow_private and (not addr.is_global or addr.is_multicast):
+        if not allow_private and not _public(addr):
             raise WebhookError("the host resolves to a private address")
     return url.strip()
 
@@ -138,8 +151,7 @@ def pinned(url: str, *, allow_private: bool = False, resolve=None) -> tuple[str,
     except OSError:
         raise WebhookError("the host does not resolve") from None
     for a in addrs:                                 # again: this is the lookup that is USED
-        addr = ipaddress.ip_address(a)
-        if not allow_private and (not addr.is_global or addr.is_multicast):
+        if not allow_private and not _public(ipaddress.ip_address(a)):
             raise WebhookError("the host resolves to a private address")
     if not addrs:
         raise WebhookError("the host does not resolve")
@@ -179,8 +191,13 @@ class Deliverer:
     def _client(self):
         if self._http is None:                     # pragma: no cover - wired in prod only
             import httpx
+            # NO CONNECTION REUSE. A delivery goes to an ADDRESS, with the endpoint's name as
+            # the TLS server name; the pool keys a connection by the address alone, so a kept
+            # connection made (and its certificate checked) for one name would carry the next
+            # delivery to another name at the same address.
             self._http = httpx.Client(timeout=self._settings.webhook_timeout_s,
-                                      follow_redirects=False)
+                                      follow_redirects=False, trust_env=False,
+                                      limits=httpx.Limits(max_keepalive_connections=0))
         return self._http
 
     def run_once(self, now: float | None = None) -> dict:
@@ -215,7 +232,8 @@ class Deliverer:
                 # and the connection goes to the address that was checked.
                 url, host, name = pinned(hook["url"],
                                          allow_private=self._settings.webhook_allow_private)
-                r = self._client().post(url, content=body, headers=dict(headers, Host=host),
+                r = self._client().post(url, content=body,
+                                        headers=dict(headers, Host=host, Connection="close"),
                                         timeout=self._settings.webhook_timeout_s,
                                         extensions={"sni_hostname": name})
                 code = r.status_code

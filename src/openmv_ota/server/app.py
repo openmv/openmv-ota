@@ -43,6 +43,7 @@ from . import datalog as datalog_mod
 from . import keykeeper as keykeeper_mod
 from . import live as live_mod
 from .auth import TokenAuth
+from .scopes import allows
 from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter, SharedRateLimiter
@@ -116,9 +117,10 @@ that list, every entity outside it answers 404 — the same answer another accou
 would give, so the error cannot be used to discover product ids — and any write
 naming another product is refused. That is the credential a platform hands its own
 customer: `scopes` says what it may do, `products` says what it may do it to. The
-audit log is the one exception: its rows record actions, not products, so a
-product-limited token is refused it (403) rather than shown the account's whole
-history. Such a token cannot also carry the operator `accounts` scope.
+audit log shows such a token the rows that name one of its products and no others,
+and the routes that act on the account as a whole (webhooks, roots, desk keys,
+registrations, cohort labels) refuse it with a 403. Such a token cannot also carry
+the operator `accounts` scope.
 
 **Product** — a `(product, board)` pair, identified by a 32-bit `product_id` that is
 **computed, not assigned**: the low 63 bits of `sha256("<product>:<board>")`, so the
@@ -764,6 +766,9 @@ def keykeeper_chain(request: Request):
     kk = request.app.state.keykeeper
     if kk is None:
         raise HTTPException(status_code=404, detail="this server has no keykeeper")
+    ip = request.client.host if request.client else "-"
+    if not request.app.state.ratelimit.allow(ip):      # each call is a call to keykeeper
+        raise HTTPException(status_code=429, detail="too many requests")
     chain = kk.chain()
     if chain is None:
         raise HTTPException(status_code=503, detail="keykeeper is unavailable")
@@ -1075,6 +1080,9 @@ def feedback(report: Feedback, request: Request, raw: bytes = Depends(_raw_body)
     rel = ms.get_release(report.release_id)
     if rel is None or (rel.get("account_id") or "") != account_id:
         return {"ok": False}
+    dev = ms.get_device(report.device_id)
+    if dev is not None and dev.get("product_id") != rel["product_id"]:
+        return {"ok": False}                 # not a release of the product this camera runs
     reason = (report.reason or "")[:_REASON_MAX] or None
     ms.record_deployment(device_id=report.device_id, release_id=report.release_id,
                          product_id=rel["product_id"], status=report.status, reason=reason,
@@ -1150,6 +1158,7 @@ def _ranged(data: bytes, media_type: str, header: str | None) -> Response:
 _DEVICE_BODY_MAX = 64 * 1024       # a check-in is a few hundred bytes; slots and streams, a few KiB
 _ADMIN_BODY_MAX = 1024 * 1024      # the admin API's JSON: device id lists, a registration record
 _PUBLISH_PATH = "/api/v1/admin/releases"
+_PUBLISH_DELTAS_MAX = 1          # delta parts are small beside an image: room for one image's worth
 
 
 class _BodyLimit:
@@ -1170,13 +1179,20 @@ class _BodyLimit:
         path = (scope.get("path") or "").rstrip("/")
         headers = dict(scope.get("headers") or ())
         if path.endswith(_PUBLISH_PATH) and scope.get("method") == "POST":
+            state = scope["app"].state
             try:
-                scope["app"].state.admin_auth.authenticate(
+                who = state.admin_auth.authenticate(
                     headers.get(b"authorization", b"").decode("latin-1"))
             except HTTPException as e:
                 return await self._answer(send, e.status_code, str(e.detail))
-            return await self.app(scope, receive, send)
-        cap = _DEVICE_BODY_MAX if path.endswith(self._DEVICE) else _ADMIN_BODY_MAX
+            if not allows(who.scopes, "publish"):      # the route's own check, before the body
+                return await self._answer(send, 403, "missing scope: publish")
+            # the image, as many deltas again, the manifest and the SBOM: what one release is
+            st = state.settings
+            cap = (st.max_manifest_bytes + st.max_sbom_bytes
+                   + st.max_image_bytes * (1 + _PUBLISH_DELTAS_MAX) + 1024 * 1024)
+        else:
+            cap = _DEVICE_BODY_MAX if path.endswith(self._DEVICE) else _ADMIN_BODY_MAX
         declared = headers.get(b"content-length")
         if declared is not None and declared.isdigit() and int(declared) > cap:
             return await self._answer(send, 413, "request body too large")

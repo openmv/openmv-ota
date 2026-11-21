@@ -253,3 +253,38 @@ def test_no_route_reads_a_body_larger_than_it_could_use_before_it_knows_the_call
                         "Authorization": "Bearer nope"})
     assert r.status_code == 401 and read == []
     assert c.get("/healthz").status_code == 200
+
+
+def test_a_release_upload_is_refused_by_scope_and_by_size_before_it_is_read(tmp_path):
+    """The framework spools a multipart body before the route's scope check runs: any valid
+    token, an observe-only one included, could have the server write as much as it sent."""
+    c, store = _app(tmp_path)
+    store.add_token(hash_token("ro"), "viewer", ["observe"], account_id=ACCT)
+    store.add_token(hash_token("pub"), "ci", ["publish"], account_id=ACCT)
+    read = []
+
+    def parts():
+        read.append(1)
+        yield b"x" * 4096
+    ct = {"Content-Type": "multipart/form-data; boundary=b"}
+    r = c.post("/api/v1/admin/releases", content=parts(), headers=dict(ct, Authorization="Bearer ro"))
+    assert r.status_code == 403 and r.json() == {"detail": "missing scope: publish"} and read == []
+    st = c.app.state.settings
+    cap = st.max_manifest_bytes + st.max_sbom_bytes + 2 * st.max_image_bytes + 1024 * 1024
+    r = c.post("/api/v1/admin/releases", content=parts(),
+               headers=dict(ct, Authorization="Bearer pub", **{"Content-Length": str(cap + 1)}))
+    assert r.status_code == 413 and read == []
+    r = c.post("/api/v1/admin/releases", content=parts(), headers=dict(ct, Authorization="Bearer pub"))
+    assert r.status_code in (400, 422) and read == [1]          # a publisher's body is read
+
+
+def test_the_keykeeper_chain_is_rate_limited_like_the_other_open_routes(tmp_path):
+    c, _store = _app(tmp_path)
+
+    class _KK:
+        def chain(self):
+            return [{"record": "{}", "signature": "00"}]
+    c.app.state.keykeeper = _KK()
+    assert c.get("/api/v1/keykeeper/chain").status_code == 200
+    c.app.state.ratelimit.allow = lambda ip: False
+    assert c.get("/api/v1/keykeeper/chain").status_code == 429

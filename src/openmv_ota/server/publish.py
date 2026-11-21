@@ -318,8 +318,17 @@ async def publish_release(request: Request, background: BackgroundTasks,
     # device patches against the release it is RUNNING -- one delta reaches only the devices
     # that never updated. Each is matched to its representation by filename.
     uploads = list(delta or [])
-    deltas = {(u.filename or "").rsplit("/", 1)[-1]:
-              await _read_capped(u, settings.max_image_bytes, "delta") for u in uploads}
+    # Only what the manifest declares is read at all: each part is held in memory, so an
+    # upload of undeclared parts was a way to make the server hold as much as it would take.
+    declared = {rep["url"].rsplit("/", 1)[-1] for rep in body["representations"]
+                if rep.get("format") == DELTA_FORMAT}
+    names = [(u.filename or "").rsplit("/", 1)[-1] for u in uploads]
+    extra = sorted(set(names) - declared)
+    if extra or len(names) != len(set(names)):
+        raise HTTPException(status_code=400, detail="delta part(s) the manifest does not "
+                            "declare, or sent twice: %s" % ", ".join(extra or names))
+    deltas = {name: await _read_capped(u, settings.max_image_bytes, "delta")
+              for name, u in zip(names, uploads, strict=True)}
     _verify_artifacts(body, image_bytes, deltas)
 
     # The SBOM rides beside the artifacts when the client sends one: the dependency evidence

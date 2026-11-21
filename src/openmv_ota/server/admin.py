@@ -580,6 +580,14 @@ def rotate_token(token_hash: str, request: Request, body: TokenActor | None = No
     if old is None:
         raise HTTPException(status_code=404)
     _active_account(ms, old["account_id"], principal)          # nor into one that is not ours
+    if old["revoked"]:
+        # a revoked token is finished: rotating it would hand back a live one, with its scopes
+        raise HTTPException(status_code=409, detail="this token is revoked; issue a new one")
+    if ACCOUNT_ROOT not in principal.scopes and \
+            any(s in (ACCOUNT_ADMIN, ACCOUNT_ROOT) for s in old["scopes"]):
+        # the same rule as issuing: only the server's root makes (or re-makes) an operator
+        raise HTTPException(status_code=403, detail="only a token that holds %s can rotate "
+                            "a token with an operator scope" % ACCOUNT_ROOT)
     fresh = _mint(ms, principal, old["name"], expand(old["scopes"]), old["account_id"], "token.rotate",
                   extra={"replaced": token_hash}, actor=body.actor if body else None,
                   products=list(old.get("products") or ()))   # a limited token stays limited

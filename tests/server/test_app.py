@@ -500,6 +500,13 @@ def test_feedback_takes_the_cameras_signature_its_own_account_and_a_release_of_i
     assert camera.feedback(c, _feedback(release_id="mine", status="failed",
                                         reason="x" * 5000)).json() == {"ok": True}
     assert store.deployment_counts("mine") == {"installed": 0, "failed": 1}
+    # ...and of the product the camera runs: a camera that has checked in reports on its own
+    store.add_release(release_id="sibling", product_id=BID + 1, product="Q", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[], manifest_key="m2", image_key="i2")
+    store.upsert_device(device_id="dev1", product_id=BID)
+    assert camera.feedback(c, _feedback(release_id="sibling", status="failed")).json() == {"ok": False}
+    assert store.deployment_counts("sibling") == nothing
     events = store.read_audit(account_id="")
     assert [len(e["data"]["reason"]) for e in events if e["action"] == "install.failed"] == [200]
 

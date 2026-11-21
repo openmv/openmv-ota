@@ -202,9 +202,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a board name in any case or with space around it; the server kept each spelling as its
   own device, free to claim another account and be offered its release. A board name, id
   and account now have to be spelled as a camera spells them.
+- **A release upload is refused by scope and by size before it is read**, and a delta part
+  the manifest does not declare is refused before it is held in memory. `rotate` refuses a
+  revoked token (it handed back a live one) and a token with an operator scope unless the
+  caller is the root. A feedback report has to be about a release of the product the camera
+  runs. The keykeeper chain route is rate-limited.
 - **A webhook delivery connects to the address it checked**, with the name as the Host
   header and TLS server name: checking a name and then handing the name to the HTTP client
-  was two lookups.
+  was two lookups. Each delivery is its own connection (a kept one is keyed by address,
+  so it would carry the next delivery to another name there), and NAT64 addresses, which
+  wrap an IPv4 address, are not public.
 
 - **An `accounts` token could make itself the server's root.** `POST /accounts/{id}/tokens`
   let an operator issue any scope into an account it created: `accounts.all`, which sees and

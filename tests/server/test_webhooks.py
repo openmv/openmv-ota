@@ -333,3 +333,11 @@ def test_a_delivery_connects_to_the_address_it_checked():
         "https://[2606:2800:220:1:248:1893:25c8:1946]/h"
     with pytest.raises(wh.WebhookError, match="does not resolve"):
         wh.pinned("https://x.example/h", resolve=lambda h, p: [] if p else None)
+
+
+@pytest.mark.parametrize("addr", ["64:ff9b::a00:1", "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe", "::a00:1"])
+def test_an_ipv6_wrapper_around_an_ipv4_address_is_not_public(addr):
+    """NAT64 forwards 64:ff9b::/96 to the IPv4 address inside, private or not."""
+    with pytest.raises(wh.WebhookError, match="private address"):
+        wh.check_url("https://x.example/", resolve=lambda h, p: [(0, 0, 0, 0, (addr, p))])
+    assert wh._public(__import__("ipaddress").ip_address("2606:2800:220:1:248:1893:25c8:1946"))
