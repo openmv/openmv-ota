@@ -178,7 +178,8 @@ def make_firmware(tmp_path):
                     "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"
                     "#define IMLIB_ENABLE_QRCODES\n#define IMLIB_ENABLE_DATAMATRICES\n"
                     "#define IMLIB_ENABLE_BARCODES\n#define IMLIB_ENABLE_FIND_DISPLACEMENT\n"
-                    "#define IMLIB_ENABLE_FIND_LBP\n#endif\n")
+                    "#define IMLIB_ENABLE_FIND_LBP\n#define IMLIB_ENABLE_LINPOLAR\n"
+                    "#define IMLIB_ENABLE_LOGPOLAR\n#define IMLIB_ENABLE_GET_SIMILARITY\n#endif\n")
             if board in ("OPENMV4P", "OPENMVPT"):   # the LAB LUT moves to the second region;
                 (d / "imlib_config.h").write_text(   # the H7 Plus also drops datamatrices
                     "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"

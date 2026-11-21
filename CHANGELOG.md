@@ -219,6 +219,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The OpenMV Cam H7's OTA firmware drops `linpolar()`, `logpolar()` and
+  `get_similarity()`.** It was 704 bytes from the top of its flash, and the installer and
+  boot fixes in this release are more than that. With the three off it has about 5 KB.
+
 - **Five boards' OTA firmware uses the small TFLM op set.** The firmware's TensorFlow Lite
   Micro library grew (openmv, 2026-11-19) and the OTA firmware stopped fitting on the
   OpenMV Cam M7, the H7 Plus, the Pure Thermal, the Arduino Portenta H7 and the Arduino
