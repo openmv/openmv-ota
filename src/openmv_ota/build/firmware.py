@@ -404,11 +404,19 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
     error and not a NameError in the field."""
     board = get_board(name)
     drops, stub = board.ota_firmware_drops, board.stub
-    if not drops and stub is None:
+    if not drops and stub is None and not board.ota_firmware_small_tflm:
         return None
     src = repo / "boards" / name
     overlay = tmp / "board"
     shutil.copytree(src, overlay)
+    if board.ota_firmware_small_tflm:
+        # The firmware's own switch for a board short of flash: the TFLM op resolver without
+        # the comparison ops, SelectV2 and SquaredDifference. A later `=` in the board's
+        # makefile wins, and a firmware from before the switch ignores it.
+        mk = overlay / "board_config.mk"
+        mk.write_text(mk.read_text(encoding="utf-8")
+                      + "\n# openmv-ota: the full TFLM op set does not fit an OTA firmware "
+                      "on this board.\nMICROPY_PY_ML_TFLM_SMALL = 1\n", encoding="utf-8")
     if stub is not None:
         _relink_for_stub(overlay, name, stub)
         if _firmware_keys_engine(name):
@@ -431,6 +439,8 @@ def _board_overlay(repo: Path, name: str, tmp: Path) -> Path | None:
         text, n = re.subn(r"(?m)^[ \t]*#define[ \t]+%s\b.*$" % re.escape(define),
                           "// #define %s  // dropped by openmv-ota: %s() does not fit an OTA "
                           "firmware on this board" % (define, method), text)
+        if not n and re.search(r"(?m)^[ \t]*//[ \t]*#define[ \t]+%s\b" % re.escape(define), text):
+            continue                     # the firmware already ships it off on this board
         if not n:
             raise BuildError("boards/%s/imlib_config.h does not define %s, which the OTA "
                              "firmware build expects to turn off -- the board table and the "
