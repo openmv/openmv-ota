@@ -70,7 +70,7 @@ from .schemas import (
     TokenRevoked,
     ViewerGrant,
 )
-from .scopes import ACCOUNT_ROOT, ALL_SCOPES, SCOPES, expand
+from .scopes import ACCOUNT_ADMIN, ACCOUNT_ROOT, ALL_SCOPES, SCOPES, expand
 
 log = logging.getLogger(__name__)
 
@@ -521,6 +521,14 @@ def issue_token(account_id: str, body: TokenIssue, request: Request,
     bad = [s for s in scopes if s not in ALL_SCOPES]
     if bad:
         raise HTTPException(status_code=400, detail="unknown scope(s): %s" % ", ".join(bad))
+    operator = [s for s in scopes if s in (ACCOUNT_ADMIN, ACCOUNT_ROOT)]
+    if operator and ACCOUNT_ROOT not in principal.scopes:
+        # An operator provisions customers and hands them fleet scopes; only the server's
+        # root makes another operator. `accounts.all` would be every account on the server,
+        # and an `accounts` token is filed under its NAME -- one minted here under another
+        # operator's name would be that operator.
+        raise HTTPException(status_code=403, detail="only a token that holds %s can grant %s"
+                            % (ACCOUNT_ROOT, ", ".join(operator)))
     if ms.token_name_in_use(account_id, body.name):
         raise HTTPException(status_code=409, detail="token name already in use: %s" % body.name)
     products = body.products or []
