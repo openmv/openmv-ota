@@ -49,4 +49,22 @@ budget for now; these are the free/cheap passes to run first, in order.
 - **Internal red-team passes** — `/security-review`, and `/code-review ultra` on the
   signing/verify/installer/anti-rollback path and the camera-identity path (registration,
   signed check-ins, lockboxes).
+- **Left from the 2026-11 security review** (low severity, each needs a design call):
+  - Registration at a desk: the camera signs the desk's challenge and nothing else, so the
+    device id and exchange key it reports ride unsigned. A rogue USB device at a desk could
+    claim another camera's id. Sign the whole report.
+  - An issuer certificate cannot be revoked: `issuer replace` drops the old PEM and the old
+    certificate stays valid. Re-pinning the account's roots is the only remedy today.
+  - `keys/keykeeper.json` is its own anchor once written: the configured pin is not read
+    again, so whoever can rewrite that file can seal later releases to a key of theirs.
+    Verify the kept chain from the configured pin every time.
+  - `OPENMV_OTA_TRUSTED_PROXY_IPS=*` (what the self-hosting page says to set behind a PaaS)
+    takes the leftmost `X-Forwarded-For` entry, which a client chooses when the proxy
+    appends: the per-IP rate limit is then per header. Document the proxy requirement or
+    take the rightmost untrusted hop.
+  - A refused check-in signature is audited when its reason changes, so alternating two bad
+    signatures for a known camera id writes one audit row a request.
+  - `keys/backends.json` names code to load (a `custom` signer's module, a PKCS#11 `.so`):
+    building someone else's project runs it. Same trust as `make` in their firmware
+    checkout, but it fires at `build romfs`.
 - **When there is budget** — a targeted pentest of the update + signing chain only.
