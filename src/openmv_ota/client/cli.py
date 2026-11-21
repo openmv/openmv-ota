@@ -906,7 +906,7 @@ class _BaseDecryptor:
 
 
 
-_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x9b]")
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")      # C0 (bar \t \n \r) and all of C1
 
 
 def _file_part(text) -> str:

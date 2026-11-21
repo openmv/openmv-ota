@@ -67,4 +67,27 @@ budget for now; these are the free/cheap passes to run first, in order.
   - `keys/backends.json` names code to load (a `custom` signer's module, a PKCS#11 `.so`):
     building someone else's project runs it. Same trust as `make` in their firmware
     checkout, but it fires at `build romfs`.
+  - A camera names its own `product_id` on every check-in, and the fleet row follows it. On
+    an account that models each customer as a product, a customer's camera can report a
+    sibling product: it is offered that product's release, shows in its fleet, and a
+    fallback from it counts against that rollout. Make the product sticky per device for a
+    nonzero id (with an admin move), which changes what a USB reflash to another product
+    does.
+  - A product-limited token lists every cohort label in the account, and assigning by
+    product declares a label account-wide.
+  - Whoever answers the check-in can reboot a camera once a poll: an offer after the boot
+    check-in makes it reboot to install from a fresh heap, before the manifest is fetched
+    and vetted. Vet the manifest in place first, so only a signed, newer release costs a
+    reboot.
+  - On a stub board whose trial slot spent the stub's own budget and whose other slot does
+    not verify, the stub jumps by its record and `boot.py` mounts the spent trial on every
+    boot, never reaching recovery. `boot.py` should read the stub journal's no-slot reason.
+  - Recovery on a stub board sends no stub version, so it could never take a release with
+    `min_stub` set. Nothing sets `min_stub` today.
+  - The publish counter a platform build signs comes from the server and is only bounded
+    (below 2**48). Record it in the project ledger and refuse a jump.
+  - Keys minted before 2026-11 keep their 2048-round encryption until rewritten: add a
+    `keys rewrap`.
+  - The signed check-in replay cache is per process: with several workers, or across a
+    restart, a capture replays once inside its five-minute window.
 - **When there is budget** — a targeted pentest of the update + signing chain only.

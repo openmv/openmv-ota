@@ -1900,3 +1900,15 @@ def test_ota_trailer_carries_the_stub_uart_and_watchdog(make_project):
     t = parse_trailer(trailer_bytes)
     assert (t.uart_en, t.uart_id, t.baud) == (1, 3, 115200)
     assert (t.wdt_en, t.wdt_id, t.wdt_timeout_ms) == (1, 0, 8000)
+
+
+def test_a_build_does_not_sign_a_publish_counter_from_the_top_of_the_range():
+    """The counter is the server's answer, and a camera that confirms the release it is
+    signed into takes nothing below it afterwards."""
+    from openmv_ota.build import romfs as R
+    assert R.checked_publish_seq(None) == 0 and R.checked_publish_seq(0) == 0
+    assert R.checked_publish_seq(4242) == 4242
+    assert R.checked_publish_seq(R.PUBLISH_SEQ_MAX - 1) == R.PUBLISH_SEQ_MAX - 1
+    for bad in (R.PUBLISH_SEQ_MAX, 2 ** 64 - 1, -1, "7", 7.0, True):
+        with pytest.raises(R.BuildError, match="not a counter this build will sign"):
+            R.checked_publish_seq(bad)

@@ -25,6 +25,24 @@ from .errors import BuildError
 from .staging import iter_files, stage_app
 
 
+PUBLISH_SEQ_MAX = 1 << 48      # the publish counter a build signs is below this
+
+
+def checked_publish_seq(publish_seq) -> int:
+    """``publish_seq`` (None for a project that takes none) as the counter a build signs.
+
+    It comes from the update server and is signed into the release: a camera that confirms
+    the release takes nothing below it, ever. A server that answered with a number near the
+    top of the range would end the fleet's updates for good, so the top of the range is not
+    taken: 2**48 is 280 thousand years of a publish a second."""
+    seq = 0 if publish_seq is None else publish_seq
+    if not isinstance(seq, int) or isinstance(seq, bool) or not 0 <= seq < PUBLISH_SEQ_MAX:
+        raise BuildError("the server's publish counter is %r, which is not a counter this "
+                         "build will sign (it is signed into the release, and cameras take "
+                         "nothing below it afterwards)" % (publish_seq,), exit_code=2)
+    return seq
+
+
 @dataclass
 class _OtaSigner:
     """The project-wide signing context for OTA builds (resolved once)."""
@@ -1415,7 +1433,7 @@ def build_ota_romfs(
     app_dir = Path(app) if app else project / "app"
     signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota",
                           key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
-    signer.publish_seq = int(publish_seq or 0)
+    signer.publish_seq = checked_publish_seq(publish_seq)
     new_pv = signer.payload_version
 
     # 1) compile + sign the romfs bundle, then render the download image(s) from it.

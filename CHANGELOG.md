@@ -356,6 +356,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now (`<key id>:<sign key>:<sha256>`, what `openmv-ota keykeeper pin` prints and a sync
   stores). The older form still verifies a chain's first generation, by that record's
   signature, and nothing later.
+- **A platform build refuses a publish counter of 2**48 or more.** The counter comes from
+  the server and is signed into the release; a camera that confirms it takes nothing below
+  it, so one answer near the top of the range would have ended a fleet's updates.
 - **A key file is written beside its path and renamed over it**, so a link planted there is
   replaced and not written through; keykeeper's own keys are owner-only too. Restore takes
   a name by full match (a trailing newline passed) and of bounded length.
