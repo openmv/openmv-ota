@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
@@ -288,3 +290,34 @@ def test_the_keykeeper_chain_is_rate_limited_like_the_other_open_routes(tmp_path
     assert c.get("/api/v1/keykeeper/chain").status_code == 200
     c.app.state.ratelimit.allow = lambda ip: False
     assert c.get("/api/v1/keykeeper/chain").status_code == 429
+
+
+def test_the_replay_cache_is_bounded_and_the_body_limit_does_not_hide_an_apps_own_error(monkeypatch):
+    import asyncio
+
+    from openmv_ota.server import app as app_mod
+    monkeypatch.setattr(app_mod, "_LAST_SIGNED", {})
+    monkeypatch.setattr(app_mod, "_LAST_SIGNED_MAX", 2)
+    assert app_mod._fresh("a", 1) and app_mod._fresh("b", 1)
+    assert app_mod._fresh("c", 1) and set(app_mod._LAST_SIGNED) == {"c"}      # cleared, then kept
+    assert not app_mod._fresh("c", 1) and app_mod._fresh("c", 2)
+
+    async def broken(scope, receive, send):
+        await receive()
+        raise RuntimeError("the app's own fault")
+
+    async def receive():
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+    scope = {"type": "http", "method": "POST", "path": "/api/v1/check", "headers": []}
+    with pytest.raises(RuntimeError, match="own fault"):
+        asyncio.run(app_mod._BodyLimit(broken)(scope, receive, send))
+    assert sent == []
+
+    async def big():
+        return {"type": "http.request", "body": b"x" * (app_mod._DEVICE_BODY_MAX + 1), "more_body": False}
+    asyncio.run(app_mod._BodyLimit(broken)(scope, big, send))    # over the cap: the 413, not the error
+    assert sent[0]["status"] == 413

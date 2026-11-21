@@ -362,3 +362,15 @@ def test_a_delivery_reads_the_status_and_none_of_the_answer(tmp_path, monkeypatc
     store.append_audit(actor="ci", action="token.issue", entity_type="token", entity_id="t", account_id="a1")
     assert deliverer.run_once(now=time.time() + 1)["sent"] == 1
     assert read == [] and rx.calls[-1].headers["accept-encoding"] == "identity"
+
+
+def test_a_name_that_stops_resolving_between_the_check_and_the_send_is_refused():
+    answers = iter([[(0, 0, 0, 0, ("93.184.216.34", 443))]])
+
+    def once(h, p):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise OSError("gone") from None
+    with pytest.raises(wh.WebhookError, match="does not resolve"):
+        wh.pinned("https://x.example/h", resolve=once)

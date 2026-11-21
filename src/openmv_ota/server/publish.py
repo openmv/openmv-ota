@@ -139,11 +139,7 @@ def _verify_artifacts(body: dict, image_bytes: bytes, deltas: dict) -> None:
         raise HTTPException(status_code=400,
                             detail="manifest declares delta(s) not uploaded: %s"
                                    % ", ".join(missing))
-    extra = sorted(set(deltas) - declared)
-    if extra:
-        raise HTTPException(status_code=400,
-                            detail="delta(s) uploaded that the manifest does not declare: %s"
-                                   % ", ".join(extra))
+    # (a part the manifest does not declare never gets here: the route refuses it unread)
     by_name = {rep["url"].rsplit("/", 1)[-1]: rep for rep in reps}
     for filename in sorted(declared):
         if _verify_encrypted(by_name[filename], deltas[filename], filename):
