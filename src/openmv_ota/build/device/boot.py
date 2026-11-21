@@ -457,10 +457,15 @@ def evaluate_slot(body, status, trailer_bytes, rollback_floor,
     raise OtaReject("status")
 
 
-# evaluate_slot rejections that are this firmware's mark POLICY (not a verification failure):
-# the slot's bytes are authentic and for this board, only its status sector says it should not
-# be tried. On a stub board the stub applied its own policy before installing (see OtaBoot.run).
-_POLICY_REJECTS = ("rollback", "trial-failed", "status")
+# The one evaluate_slot rejection that is this firmware's mark POLICY and the stub's call on a
+# stub board: the slot's bytes are authentic and for this board, it carries a trial's marks, and
+# only the ATTEMPT BUDGET says no -- a budget the stub reads from its own build (see
+# OtaBoot.run). "rollback" and "status" were here too and are not the same thing: the stub
+# reads the same floors and the same marks, so a slot it chose never fails either here. A slot
+# that does is one the stub did NOT choose -- it found no slot and jumped by its record (which
+# still names that slot), and what is in the slot now is whatever a failed install left: an
+# old signed image with no marks would be mounted, below the floor.
+_POLICY_REJECTS = ("trial-failed",)
 
 
 class OtaBoot:
@@ -476,6 +481,7 @@ class OtaBoot:
                  max_attempts=DEFAULT_MAX_ATTEMPTS, record=None, slot_crypt=False):
         self.read = read
         self.slot_crypt = slot_crypt         # the stub maps only the slot it boots (the N6)
+        self.reread = None                   # set where slot bodies share ONE buffer (see _mount)
         self.verify = verify
         self.mount = mount
         self.write_marker = write_marker
@@ -642,6 +648,16 @@ class OtaBoot:
                 # Cannot record the attempt, so cannot bound the trial. Running it anyway would
                 # be an untracked trial: if it hung, the next boot could not tell to move on.
                 raise OtaReject("trial-arm")
+        if self.reread is not None:
+            # Where a slot's body is deciphered into RAM there is one buffer for both slots:
+            # reading the second overwrote the first, and `body` is that buffer. If it no
+            # longer holds the winner it is read again, and hashed again -- what gets mounted
+            # is what was verified, never the other slot's bytes under this slot's trailer.
+            again = self.reread(offset, size - 2 * self.block)
+            if again is not None:
+                body = again
+                if _sha256(memoryview(body)[:t.body_size]) != t.body_sha256:
+                    raise OtaReject("body-sha")
         self.mount(memoryview(body)[:t.body_size])
         return winner, t, (",".join(rejects) or None)
 
@@ -785,6 +801,13 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     copy = []
 
     _read_seen = []
+    _held = [None]                                       # the slot offset the engine's buffer holds
+
+    def reread(off, size):
+        if _held[0] == off:  # hil-residual: the H7 Plus's buffer check; both arms host-tested through OtaBoot._mount
+            return None  # hil-residual: bare return (the buffer still holds this slot: nothing to do)
+        return read(off, size)  # hil-residual: needs both slots read on the H7 Plus (a record that names neither); host-tested in OtaBoot._mount
+
     def read(off, size):
         if raw is not None and size <= cfg.CONTROL_BLOCK:
             # Control data (a status sector, a trailer, a mark) is not stored under the
@@ -795,6 +818,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
         body = uctypes.bytearray_at(base + off, size)    # the XIP alias -- witnessed below
         if copy and size > cfg.CONTROL_BLOCK:
             body = copy[0](off, size, body)  # hil-residual: witnessed by boot.engine_on on the H7 Plus: what it mounts came through this copy
+            _held[0] = off  # hil-residual: bare assign (which slot the engine's one buffer holds now)
         if not _read_seen:                               # witness the read once (no per-call spam)
             _read_seen.append(1)
             log.debug("boot: slot read")
@@ -858,6 +882,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
                 c = openmv_slot_engine.copier(crypt, key_store, os.urandom, machine.reset, log, parse_trailer, read, base, cfg.CONTROL_BLOCK)  # hil-residual: witnessed by boot.engine_on (the H7 Plus)
                 if c is not None:  # hil-residual: None only on a camera that could not make its key (boot.engine_failed)
                     copy.append(c)  # hil-residual: same line of thought as the call above
+                    ob.reread = reread  # hil-residual: bare assign, same branch
         slot, trailer, reject_reason = ob.run()
     except OtaReject as e:
         log.error("boot: no bootable slot: %s" % e)

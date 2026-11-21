@@ -687,7 +687,7 @@ def _manifest_parse(data):
 
 
 def _update_reject(body, product_id, platform_version, rollback_floor, account_id="",
-                   stub_version=None):
+                   stub_version=None, running=0):
     """Device-relative pre-flight check on a verified manifest body -- the mirror of
     boot.evaluate_slot's image checks (and openmv_ota.ota.manifest.update_reject_reason).
     ``stub_version`` is the boot stub that chose this boot (None without one): an image
@@ -710,6 +710,13 @@ def _update_reject(body, product_id, platform_version, rollback_floor, account_i
     key = body.get("publish_seq", 0) if product_id == 0 else body.get("payload_version", 0)
     if key < rollback_floor:
         return "rollback"
+    # ...and it has to be NEWER than the image this camera runs (``running``: that image's
+    # key, 0 in recovery where nothing runs). The floor admits the running release itself,
+    # and installing it again is an erase of the other slot for nothing: whoever answers the
+    # check-in could replay the current manifest with junk for an image and cost the camera
+    # its fallback, over and over.
+    if running and key <= running:
+        return "not-newer"
     return None
 
 
@@ -1791,7 +1798,9 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
         last_stub = getattr(cfg, "last_stub", None)       # (stub_version, reason) from boot.py
         reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
                                 getattr(cfg, "ACCOUNT_ID", ""),
-                                last_stub[0] if last_stub else None)
+                                last_stub[0] if last_stub else None,
+                                getattr(cfg, "last_publish_seq" if cfg.PRODUCT_ID == 0
+                                        else "last_payload_version", 0))
         if reason is not None:
             log.warning("install: reject vetting")   # rejected: witness the boundary
             raise OSError("manifest rejected (%s)" % reason)

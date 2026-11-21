@@ -927,6 +927,7 @@ def _remember_network():  # pragma: no cover  (device: /flash)  # hil-residual-f
 
 # THE CHECK-IN CADENCE. Pure, so the host suite pins every number below.
 _POLL_DEFAULT_S = 3600       # the wait when neither the app nor the server names one
+_POLL_MAX_S = 86400          # the longest wait a server's answer can ask for
 _JITTER = 0.15               # +/- spread on every wait the DEVICE picks (the server jitters its own)
 _BACKOFF_FIRST_S = 10        # first retry after a failed check-in; doubles per consecutive miss
 _BACKOFF_MAX_SHIFT = 16      # bounds the doubling's int long before the cap is ever the limit
@@ -973,6 +974,12 @@ def _next_poll(resp, interval, r):
     ``interval`` None leaves the device SERVER-PACED: it waits whatever the server said (the
     server has already jittered it), or ``_POLL_DEFAULT_S`` if it said nothing."""
     told = resp.get("poll_after_s")
+    # The reply is unsigned: a number in it must not be able to silence the camera. No wait
+    # it names outlasts a day, and anything that is not a positive number is no answer.
+    if not isinstance(told, (int, float)) or isinstance(told, bool) or told <= 0:
+        told = None
+    elif told > _POLL_MAX_S:
+        told = _POLL_MAX_S
     if interval is None:
         return told or _POLL_DEFAULT_S
     own = _jittered(interval, r)
@@ -1730,8 +1737,9 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
             elif line[:5].lower() == b"date:":  # hil-residual: header dispatch; the taken branch is witnessed by the callee's `clock: server date` (every check-in: uvicorn and Cloudflare both send Date)
                 _server_date(line[5:])  # hil-residual: the witness is emitted by the CALLEE (`clock: server date`); the audit cannot see across the call boundary
         resp = json.loads(_read_capped(ss, _RESP_MAX, clen))
-        if throttled:
-            resp["throttled"] = True  # hil-residual: needs a throttling server (see above); tells _next_poll this poll_after_s is load-shedding, not the server's default pacing
+        if not isinstance(resp, dict):
+            raise OSError("check-in answer is not an object")  # hil-residual: bare raise (a server that answers JSON that is not an object; inject-only)
+        resp["throttled"] = throttled  # the STATUS LINE's word, never the body's: tells _next_poll this poll_after_s is load-shedding, not the server's default pacing
         log.debug("checkin: parsed")                  # HIL path witness (headers skipped + JSON)
         return resp  # hil-residual: bare return of the parsed response
     finally:

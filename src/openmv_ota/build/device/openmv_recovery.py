@@ -182,7 +182,10 @@ def offered(code, raw):
         raise OSError("check-in refused: HTTP %d" % code)
     import json
     resp = json.loads(raw)
-    return resp.get("manifest_url") if resp.get("update") else None
+    url = resp.get("manifest_url") if resp.get("update") else None
+    # an https URL and nothing else, as in the runtime's _offer: the reply is unsigned, and
+    # a path would send the installer to a file on the camera
+    return url if isinstance(url, str) and url.startswith("https://") else None
 
 
 def offered_lockbox(raw):

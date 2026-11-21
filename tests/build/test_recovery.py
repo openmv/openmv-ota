@@ -318,3 +318,12 @@ def test_recovery_reads_the_servers_date():
                 b"Thu, 15 Xyz 2026 20:41:00 GMT", b"Thu, 32 Oct 2026 20:41:00 GMT",
                 b"Thu, 15 Oct 2026 24:00:00 GMT", b"Thu, 1x Oct 2026 20:41:00 GMT"):
         assert rec.http_date(bad) is None, bad
+
+
+def test_recovery_takes_an_offer_that_is_an_https_url_and_no_other():
+    """The reply is unsigned. The runtime's _offer got this rule first; recovery's twin
+    still passed a path through, which sends the installer to a file on the camera."""
+    for url in ("/flash/m.bin", "http://h/m.bin", "file:///x", "", 7, None, ["https://h/m"]):
+        raw = __import__("json").dumps({"update": True, "manifest_url": url}).encode()
+        assert rec.offered(200, raw) is None, url
+    assert rec.offered(200, b'{"update": true, "manifest_url": "https://h/m.bin"}') == "https://h/m.bin"

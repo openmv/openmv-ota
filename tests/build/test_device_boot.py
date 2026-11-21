@@ -738,12 +738,7 @@ def test_the_stub_record_picks_the_slot_and_burns_no_attempt():
     assert dev.writes == [] and ob.stub == (7, 1)             # no attempt burned by boot.py
 
 
-@pytest.mark.parametrize("mark", ["trial-failed", "status", "rollback"])
-def test_the_stub_record_overrides_this_firmwares_mark_policy(mark):
-    """The stub installed B and burned B's attempt under ITS budget. This firmware was built
-    with a smaller one (or sees B as blank, or below its floor): mounting A's app over B's
-    firmware would be the one thing the record exists to prevent, so B is mounted anyway. Only
-    a verification failure (signature, identity) refuses a record."""
+def _record_case(mark):
     priv, _pub = _key()
     a, bdy_b = b"aaa" * 40, b"bbb" * 40
     sa = _counter(bytearray(_status(True, True, True)), 9)
@@ -759,11 +754,32 @@ def test_the_stub_record_overrides_this_firmwares_mark_policy(mark):
     ob = B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,
                    BLOCK, PRODUCT_ID, trust.ROOTS,
                    record=_record(1, [(0x70090000, 200, bytes([0xBB]) * 32)]))
+    return dev, ob, a, bdy_b
+
+
+def test_the_stub_record_overrides_this_firmwares_attempt_budget():
+    """The stub installed B and burned B's attempt under ITS budget. This firmware was built
+    with a smaller one: mounting A's app over B's firmware would be the one thing the record
+    exists to prevent, so B is mounted anyway."""
+    dev, ob, _a, bdy_b = _record_case("trial-failed")
     slot, _t, reason = ob.run()
     assert slot == "B" and dev.mounted == [bdy_b] and reason is None   # B's own reject dropped
     assert dev.writes == [] and ob.stub == (7, 1)
     assert B.OtaBoot(dev.read, _verify, dev.mount, dev.write_marker, PARTITION_SIZE, FRONT_SIZE,
                      BLOCK, PRODUCT_ID, trust.ROOTS).run()[0] == "A"    # no record: policy rules
+
+
+@pytest.mark.parametrize("mark", ["status", "rollback"])
+def test_a_record_does_not_carry_a_slot_past_its_marks_or_the_floor(mark):
+    """The stub reads the same marks and the same floors, so a slot it chose is never blank
+    or below the floor here. One that is, is a slot the stub did NOT choose: it found none
+    and jumped by its record, which still names the slot. What is there now is what a failed
+    install left -- an old signed image with a blank status sector -- and following the
+    record would mount it, below the floor."""
+    dev, ob, a, _b = _record_case(mark)
+    slot, _t, reason = ob.run()
+    assert slot == "A" and dev.mounted == [a]
+    assert reason == "B:" + mark and ob.stub is None
 
 
 def test_on_an_encrypting_board_the_records_slot_is_mounted_without_blaming_the_other():
@@ -1224,3 +1240,42 @@ def test_the_copier_makes_the_key_on_the_first_boot_and_resets():
         crypt, resets = _Copy(keyed=False), []
         copy, log = _copier(crypt, dev, store, resets)
         assert copy is None and not resets and log.lines == ["boot: no flash key, and none could be made"]
+
+
+def test_what_is_mounted_is_what_was_verified_when_both_slots_share_one_buffer():
+    """On a board that deciphers a slot into RAM (the H7 Plus) there is one buffer: reading
+    slot B overwrites slot A's body, which was already verified. A then won on its trailer
+    and status, and what got mounted was B's bytes."""
+    priv, _pub = _key()
+    a, bdy_b = b"aaa" * 40, b"EVIL" * 30
+    sa = _counter(bytearray(_status(True, True, True)), 9)
+    sb = _counter(bytearray(_status(False, False, False)), 1)          # B: unmarked, loses
+    dev = _Dev(_partition(_front(priv, 0x100, a, sa), _back(priv, 0x100, bdy_b, sb)))
+    shared = bytearray(FRONT_SIZE)                                     # the engine's one buffer
+    held = [None]
+
+    def read(off, size):
+        data = dev.read(off, size)
+        if size <= BLOCK:
+            return data
+        shared[:size] = data
+        held[0] = off
+        return memoryview(shared)[:size]
+
+    mounted = []
+    ob = B.OtaBoot(read, _verify, lambda body: mounted.append(bytes(body)), dev.write_marker,
+                   PARTITION_SIZE, FRONT_SIZE, BLOCK, PRODUCT_ID, trust.ROOTS)
+    ob.reread = lambda off, size: None if held[0] == off else read(off, size)
+    assert ob.run()[0] == "A" and mounted == [a]
+    # without the re-read the buffer still held B's bytes when A was mounted
+    mounted.clear()
+    ob2 = B.OtaBoot(read, _verify, lambda body: mounted.append(bytes(body)), dev.write_marker,
+                    PARTITION_SIZE, FRONT_SIZE, BLOCK, PRODUCT_ID, trust.ROOTS)
+    ob2.run()
+    assert mounted[0][:4] == b"EVIL"
+    # a slot whose bytes changed between the two reads is refused, not mounted
+    ob3 = B.OtaBoot(read, _verify, lambda body: mounted.append(bytes(body)), dev.write_marker,
+                    PARTITION_SIZE, FRONT_SIZE, BLOCK, PRODUCT_ID, trust.ROOTS)
+    ob3.reread = lambda off, size: memoryview(bytearray(b"\x00" * size))
+    with pytest.raises(B.OtaReject, match="no-slot"):
+        ob3.run()

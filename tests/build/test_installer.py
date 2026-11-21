@@ -2269,3 +2269,29 @@ def test_install_stream_takes_a_blank_status_sector_split_across_fills():
     inst("_install_stream")(_SourceOf(bytes(image), step=777), flash.write, flash.readback,
                             front, block, _noop, None, None, None, None, None, counter=1)
     assert flash.mem[front - 2 * block:front - 2 * block + 16] == inst("PENDING")
+
+
+# --- an offer has to be NEWER than what runs --------------------------------------------------
+
+def test_a_manifest_for_the_release_already_running_is_refused_before_the_erase():
+    """The floor admits the running release itself. Whoever answers the check-in could
+    replay its manifest with junk for an image: the other slot is erased, the install fails,
+    the camera resets and does it again, with no fallback left."""
+    reject = inst("_update_reject")
+    body = {"schema": 1, "product_id": 7, "payload_version": 0x01010000, "publish_seq": 40}
+    assert reject(body, 7, 0, 0x01000000) is None                          # no image running: recovery
+    assert reject(body, 7, 0, 0x01000000, running=0x01000000) is None      # newer than what runs
+    assert reject(body, 7, 0, 0x01000000, running=0x01010000) == "not-newer"
+    assert reject(body, 7, 0, 0x01000000, running=0x02000000) == "not-newer"
+    # a camera that changes product orders by the publish counter, here too
+    assert reject(body, 0, 0, 10, running=39) is None
+    assert reject(body, 0, 0, 10, running=40) == "not-newer"
+    # through the vet: the running image's key comes off the config boot.py filled in
+    vet, verify = inst("_vet_manifest"), __import__("tests.trust", fromlist=["x"]).verify
+    raw = _host_manifest(body=_sd_body())
+    cfg = _vet_cfg()
+    cfg.last_payload_version = _sd_body()["payload_version"]
+    with pytest.raises(OSError, match="not-newer"):
+        vet("/sd/m.bin", raw, cfg, verify, 0, 0, True)
+    cfg.last_payload_version -= 1
+    assert vet("/sd/m.bin", raw, cfg, verify, 0, 0, True) is not None

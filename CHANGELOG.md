@@ -183,6 +183,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   image, which boots without the anti-rollback check, or a floor entry no image can meet,
   which no update recovers from. A published image leaves that sector blank; the installer
   refuses a stream that does not, before the write.
+- **A boot stub's record no longer carries a slot past its marks or the floor.** On a
+  board with a stub, `boot.py` mounted the slot the stub's install record names even when
+  it was unmarked or below the anti-rollback floor, on the reasoning that the stub had
+  chosen it. The stub also boots by its record when it finds no slot at all, and then the
+  slot holds whatever a failed install left: on the boards whose slots are not ciphered
+  (Portenta H7, Giga, Nicla Vision), an old signed image. Only an exhausted attempt budget
+  still follows the record.
+- **An update has to be newer than what runs.** The installer refused a manifest below the
+  floor and took one equal to the running release, so a replayed current manifest with
+  junk for an image erased the other slot, failed, and repeated. Refused before the erase
+  (`not-newer`); recovery, where nothing runs, is unchanged.
+- **Unsigned answers are held to less.** A check-in answer's `poll_after_s` is capped at a
+  day and `throttled` is read from the status line alone (one answer could put the next
+  check-in days out); recovery takes an offer only as an `https://` URL, as the runtime
+  does; on the H7 Plus and Pure Thermal, where both slots are deciphered into one RAM
+  buffer, the slot that wins is read and hashed again before it is mounted.
 - **Smaller installer gates.** A manifest with no image sha256 is refused (it installed with
   no integrity check on the download). A retired key's manifest is refused by the epoch
   floor on flash as well as the running image's, which covers recovery. An update offer
