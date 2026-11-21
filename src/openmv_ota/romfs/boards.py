@@ -201,6 +201,11 @@ class BoardConfig:
                                          # installs with ~650 bytes to spare; see
                                          # build/pystrip.drop_network_runtime
     ota_firmware_drops: dict[str, str] = field(default_factory=dict)
+    ota_firmware_small_tflm: bool = False
+                                         # build the OTA firmware with the firmware's
+                                         # MICROPY_PY_ML_TFLM_SMALL: no comparison ops,
+                                         # SelectV2 or SquaredDifference in the TFLM op
+                                         # resolver. For a board the full set does not fit
                                          # imlib features an OTA firmware build turns off
                                          # to fit this board's flash, `{define: image
                                          # method}` -- the build refuses an app that
@@ -399,6 +404,7 @@ def load_boards() -> dict[str, BoardConfig]:
             tls_verify=bool(b.get("tls_verify", True)),
             ota_runtime_drops_network=bool(b.get("ota_runtime_drops_network", False)),
             ota_firmware_drops=dict(b.get("ota_firmware_drops", {})),
+            ota_firmware_small_tflm=bool(b.get("ota_firmware_small_tflm", False)),
             stub=_stub(name, b.get("stub")),
             cloud=_cloud_level(name, b.get("cloud")),
             live_framesize=_live_framesize(name, b.get("cloud"), b.get("live_framesize")),
