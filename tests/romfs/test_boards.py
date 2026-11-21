@@ -132,6 +132,12 @@ def test_the_stm32h7_boards_share_one_stub_layout():
             assert drops == {"IMLIB_ENABLE_DATAMATRICES": "find_datamatrices"}
         else:
             assert drops == {}, name
+    # the boards whose OTA firmware stopped fitting when the firmware's TFLM library grew
+    # (2026-11): the firmware's own small op set, and on the M7 one decoder besides
+    small = {n for n in B.board_names() if B.get_board(n).ota_firmware_small_tflm}
+    assert small == {"OPENMV3", "OPENMV4P", "OPENMVPT", "ARDUINO_PORTENTA_H7", "ARDUINO_GIGA"}
+    assert B.get_board("OPENMV3").ota_firmware_drops == {
+        "IMLIB_ENABLE_DATAMATRICES": "find_datamatrices"}
     assert B.get_board("OPENMV_N6").stub.text2_dest is None            # one window is plenty there
 
 

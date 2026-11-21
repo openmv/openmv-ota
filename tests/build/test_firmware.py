@@ -1412,3 +1412,33 @@ def test_an_ota_board_without_a_stub_layout_builds_no_stub(make_project, monkeyp
     root, repo, _app = make_project(ota=True, boards=("OPENMV4",))       # app-only updates there
     [r] = fw.build_firmware(root, firmware=repo)
     assert not any(o.name.endswith("-stub.bin") for o in r.outputs)
+
+
+def test_board_overlay_asks_for_the_small_tflm_op_set_and_takes_a_feature_already_off(tmp_path):
+    """Two things the firmware's larger TFLM library (2026-11) brought: boards that fit only
+    with MICROPY_PY_ML_TFLM_SMALL, and a board whose stock config already ships a feature
+    off that the table drops (the H7's find_datamatrices) -- which is agreement, not the
+    disagreement the overlay refuses."""
+    repo = tmp_path / "fw"
+    bd = repo / "boards" / "OPENMV3"
+    bd.mkdir(parents=True)
+    (bd / "board_config.mk").write_text("PORT=stm32\nMICROPY_PY_ML_TFLM = 1\n")
+    (bd / "imlib_config.h").write_text("#define IMLIB_ENABLE_DATAMATRICES\n")
+    overlay = fw._board_overlay(repo, "OPENMV3", tmp_path / "t1")
+    assert (overlay / "board_config.mk").read_text().endswith("\nMICROPY_PY_ML_TFLM_SMALL = 1\n")
+    assert "// #define IMLIB_ENABLE_DATAMATRICES  // dropped by openmv-ota" in (
+        overlay / "imlib_config.h").read_text()
+    assert (bd / "board_config.mk").read_text() == "PORT=stm32\nMICROPY_PY_ML_TFLM = 1\n"   # tree untouched
+
+    bd = repo / "boards" / "OPENMV4"
+    bd.mkdir()
+    (bd / "board_config.mk").write_text("PORT=stm32\n")
+    (bd / "imlib_config.h").write_text(
+        "// Enable find_datamatrices() (26 KB)\n// #define IMLIB_ENABLE_DATAMATRICES\n"
+        "#define IMLIB_ENABLE_BARCODES\n#define IMLIB_ENABLE_FIND_DISPLACEMENT\n"
+        "#define IMLIB_ENABLE_FIND_LBP\n")
+    overlay = fw._board_overlay(repo, "OPENMV4", tmp_path / "t2")
+    cfg = (overlay / "imlib_config.h").read_text()
+    assert "// #define IMLIB_ENABLE_DATAMATRICES\n" in cfg                 # left as the firmware has it
+    assert cfg.count("dropped by openmv-ota") == 3
+    assert "TFLM_SMALL" not in (overlay / "board_config.mk").read_text()   # not a board the table names
