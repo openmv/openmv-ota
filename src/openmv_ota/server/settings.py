@@ -14,7 +14,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _SECRET_FIELDS = frozenset(
     {"s3_secret_access_key", "s3_access_key_id", "admin_bootstrap_token",
-     "swd_ids_verify_token", "capability_secret", "live_token_secret", "datalake_token_secret"}
+     "swd_ids_verify_token", "capability_secret", "live_token_secret", "datalake_token_secret",
+     "keykeeper_token", "datalake_admin_token"}
 )
 
 

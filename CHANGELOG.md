@@ -170,6 +170,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **`POST /api/v1/feedback` took anyone's word.** It checked that the camera id was
+  registered and nothing else: no signature, and the account read from the body. Anyone
+  who knew one registered id could file failed installs and audit entries, in their own
+  words, under any account, and have that account's webhooks deliver them. It takes the
+  camera's signature now, files under the camera's own account, and only for a release of
+  that account.
+- **A product-limited token reached the account's own routes.** Webhooks (subscribe to
+  every event, repoint or delete the owner's), the activity feed, roots, desk keys,
+  registrations, device binding and release, cohorts by id. Those are a 403 for a limited
+  token now.
+- **A device pin belonged to whoever wrote it last.** Pins are keyed by device id alone, so
+  another account that knew an id could hold a camera on its build with a pin to a release
+  it would never be offered, or overwrite and clear the owner's pin. A pin is read only for
+  the account that set it, and another account's is a 404 to move or clear.
+- **A signed check-in could be replayed inside its five-minute window**, and the answer
+  carries day-long Live and ingest grants for that camera. The same request again, or one
+  signed before the last, is now stale: offers only.
+- **Webhook endpoints are checked at every delivery**, not only when saved, and with
+  "not a public address" in place of a list of private ranges that missed 100.64.0.0/10. A
+  failed delivery records the kind of failure, not the transport's text.
+- **Camera routes cap the body at 64 KiB** (it was read whole before the rate limit), and
+  `server check` no longer prints `keykeeper_token` and `datalake_admin_token`.
+
 - **An `accounts` token could make itself the server's root.** `POST /accounts/{id}/tokens`
   let an operator issue any scope into an account it created: `accounts.all`, which sees and
   manages every account on the server, or an `accounts` token named after another operator,

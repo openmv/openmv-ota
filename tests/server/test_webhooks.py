@@ -257,8 +257,12 @@ def test_the_device_path_raises_its_own_events(tmp_path, monkeypatch):
     assert camera.check(c, checkin).status_code == 200            # no second enrolment
     assert camera.check(c, {**checkin, "fallback_reason": "boot-loop"}).status_code == 200
     assert camera.check(c, {**checkin, "fallback_reason": "boot-loop"}).status_code == 200  # same reason: once
-    assert c.post("/api/v1/feedback", json={"device_id": "aa", "product_id": 7, "board": "OPENMV_N6",
-                                            "release_id": "rel_1", "status": "failed", "reason": "sha"}).json()["ok"]
+    store.add_release(release_id="rel_1", product_id=7, product="P", version="2.0.0",
+                      payload_version=2, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[], manifest_key="m", image_key="i",
+                      account_id="a1")                                # the report is about a release of its account
+    assert camera.feedback(c, {"device_id": "aa", "product_id": 7, "board": "OPENMV_N6",
+                               "release_id": "rel_1", "status": "failed", "reason": "sha"}).json()["ok"]
     actions = [e["action"] for e in c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]]
     assert actions.count("device.enrolled") == 1 and actions.count("device.fallback") == 1
     assert actions.count("install.failed") == 1
@@ -277,3 +281,36 @@ def test_leftover_deliveries_for_a_switched_off_endpoint_die_quietly(tmp_path, m
     assert out["dead"] >= 1 and out["sent"] == 0 and rx.calls == []
     with pytest.raises(wh.WebhookError, match="too long"):
         wh.check_url("https://x.example/" + "a" * 2100, resolve=_resolve_public)
+
+
+def test_an_endpoint_is_checked_again_at_every_send(tmp_path, monkeypatch):
+    """The address check ran when the endpoint was saved and never again, so a name that
+    resolved somewhere public then could point inside the network at delivery. And the
+    transport's own error text, which names hosts and ports, went back to the account."""
+    c, store, rx, deliverer = _app(tmp_path, monkeypatch)
+    hook = c.post("/api/v1/admin/webhooks", headers=AUTH,
+                  json={"url": "https://hooks.example/", "events": ["token.*"]}).json()
+    store.append_audit(actor="ci", action="token.issue", entity_type="token", entity_id="t",
+                       account_id="a1")
+    monkeypatch.setattr(wh.socket, "getaddrinfo",
+                        lambda h, p: [(None, None, None, None, ("10.0.0.7", p))])
+    deliverer.run_once(now=time.time() + 1)
+    assert rx.calls == []                                               # never sent
+    rows = c.get("/api/v1/admin/webhooks/%s/deliveries" % hook["webhook_id"],
+                 headers=AUTH).json()["deliveries"]
+    assert [r["last_error"] for r in rows] == ["the host resolves to a private address"]
+    # a transport failure is reported by its kind alone
+    monkeypatch.setattr(wh.socket, "getaddrinfo", _resolve_public)
+    rx.raise_error = True
+    deliverer.run_once(now=time.time() + 3600)
+    rows = c.get("/api/v1/admin/webhooks/%s/deliveries" % hook["webhook_id"],
+                 headers=AUTH).json()["deliveries"]
+    assert rows[0]["last_error"] == "ConnectError"
+
+
+@pytest.mark.parametrize("addr", ["100.64.0.1", "10.1.2.3", "127.0.0.1", "169.254.169.254",
+                                  "192.168.1.1", "::1", "fd00::1", "0.0.0.0", "224.0.0.1"])
+def test_an_address_that_is_not_public_is_refused(addr):
+    """100.64.0.0/10 is the one a list of the private kinds misses."""
+    with pytest.raises(wh.WebhookError, match="private address"):
+        wh.check_url("https://x.example/", resolve=lambda h, p: [(0, 0, 0, 0, (addr, p))])

@@ -459,16 +459,49 @@ def _feedback(dev="dev1", product_id=BID, release_id="rel1", status="installed",
 
 def test_feedback_records_for_registered_device(tmp_path):
     app, store, *_ = _app(tmp_path)
-    assert TestClient(app).post("/api/v1/feedback", json=_feedback()).json() == {"ok": True}
+    _seed(store)
+    camera.register(store, "dev1")
+    assert camera.feedback(TestClient(app), _feedback()).json() == {"ok": True}
     assert store.deployment_counts("rel1") == {"installed": 1, "failed": 0}
 
 
 def test_feedback_upserts_one_row_per_device_release(tmp_path):
     app, store, *_ = _app(tmp_path)
+    _seed(store)
+    camera.register(store, "dev1")
     c = TestClient(app)
-    c.post("/api/v1/feedback", json=_feedback(status="installed"))
-    c.post("/api/v1/feedback", json=_feedback(status="failed", reason="sha"))   # same (dev, rel)
+    camera.feedback(c, _feedback(status="installed"))
+    camera.feedback(c, _feedback(status="failed", reason="sha"))                 # same (dev, rel)
     assert store.deployment_counts("rel1") == {"installed": 0, "failed": 1}      # overwritten, not doubled
+
+
+def test_feedback_takes_the_cameras_signature_its_own_account_and_a_release_of_it(tmp_path):
+    """It writes a fleet row and an audit entry. Unsigned, with the account read from the
+    body, anyone who knew one registered camera id could file failures, and audit entries
+    in their own words, under any account."""
+    app, store, *_ = _app(tmp_path)
+    _seed(store, account_id="victim")                        # rel1 is the victim account's
+    store.add_release(release_id="mine", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[], manifest_key="m", image_key="i")
+    camera.register(store, "dev1")                           # a camera of the '' account
+    c = TestClient(app)
+    nothing = {"installed": 0, "failed": 0}
+    # unsigned, or signed by another key: nothing
+    assert camera.feedback(c, _feedback(status="failed"), signed=False).json() == {"ok": False}
+    assert camera.feedback(c, _feedback(status="failed"),
+                           key=camera.key_for("someone-else")).json() == {"ok": False}
+    # signed, but naming another account and one of ITS releases: the body's account is not read
+    assert camera.feedback(c, _feedback(status="failed", account_id="victim")).json() == {"ok": False}
+    assert camera.feedback(c, _feedback(release_id="no-such-release")).json() == {"ok": False}
+    assert store.deployment_counts("rel1") == nothing
+    assert store.count_audit(account_id="victim") == 0
+    # its own account's release: recorded, the reason cut to a short code
+    assert camera.feedback(c, _feedback(release_id="mine", status="failed",
+                                        reason="x" * 5000)).json() == {"ok": True}
+    assert store.deployment_counts("mine") == {"installed": 0, "failed": 1}
+    events = store.read_audit(account_id="")
+    assert [len(e["data"]["reason"]) for e in events if e["action"] == "install.failed"] == [200]
 
 
 def test_feedback_unregistered_is_noop(tmp_path):

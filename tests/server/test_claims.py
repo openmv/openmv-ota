@@ -104,7 +104,7 @@ def _check(c, dev="dev1", board="ARDUINO_GIGA", account="acctA"):
 
 
 def _feedback(c):
-    return c.post("/api/v1/feedback", json={
+    return camera.feedback(c, {
         "device_id": "dev1", "product_id": BID, "board": "ARDUINO_GIGA", "release_id": "rel1",
         "status": "installed", "account_id": "acctA"}).json()
 

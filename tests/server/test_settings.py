@@ -32,6 +32,9 @@ def test_summary_redacts_secrets():
                                     swd_ids_verify_url="u").summary())
     assert "swd_ids_verify_token = ***" in text and "supersecret" not in text
     assert "swd_ids_verify_url = u" in text
+    text = "\n".join(ServerSettings(keykeeper_token="kk-secret", datalake_admin_token="dl-secret",
+                                    swd_ids_verify_url="u").summary())
+    assert "kk-secret" not in text and "dl-secret" not in text
 
 
 def test_summary_hides_test_downgrade_hook_when_off_shouts_when_on():

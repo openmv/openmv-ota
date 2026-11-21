@@ -517,6 +517,9 @@ class Feedback(BaseModel):
     reason: str | None = None
 
 
+_REASON_MAX = 200           # a failure reason is a short code, not a place to write
+
+
 def _identity(req) -> str:
     """The device identity this server stores, keyed by BOARD as well as unit.
 
@@ -587,7 +590,7 @@ def _decide(state, checkin, cohort, existing=None, account_id=""):
     # upgrade -- a pin to the current/older version just holds the device (no rollout reaches it).
     # Read by device id, not off the fleet row: a pin can be recorded before a camera has
     # ever checked in, and the first check-in is exactly when it should take effect.
-    pinned = ms.get_device_pin(checkin.device_id) \
+    pinned = ms.get_device_pin(checkin.device_id, account_id) \
         or ms.get_cohort_pin(checkin.product_id, cohort, account_id=account_id)
     if pinned:
         rel = ms.get_release(pinned)
@@ -778,10 +781,38 @@ def _signature(ms, device_id: str, header: str | None, body: bytes) -> tuple[str
     if reg is None:
         return "refused", "unregistered"
     try:
-        checkin_sig.verify(header, body, reg["identity"], time.time())
+        ts = checkin_sig.verify(header, body, reg["identity"], time.time())
     except checkin_sig.CheckinSignatureError as e:
         return "refused", str(e)
+    if not _fresh(device_id, ts, header):
+        # The signature is good and the request is not new: it is one this camera already
+        # sent, or older than one it sent. A capture replayed inside the window, so it proves
+        # what a stale one proves and gets what a stale one gets (offers, no fleet row, no
+        # grants).
+        return "refused", "stale"
     return "signed", None
+
+
+_LAST_SIGNED: dict[str, tuple[int, set]] = {}   # device id -> (newest time signed, headers at it)
+_LAST_SIGNED_MAX = 200_000
+
+
+def _fresh(device_id: str, ts: int, header: str) -> bool:
+    """Whether this signed request is new: later than every one ``device_id`` signed before,
+    or at the same second and not the same request. Kept in this process: with several
+    workers a replay has to reach the one that saw the original, and a restart forgets,
+    both inside a window of ``checkin_sig.WINDOW_S`` either way."""
+    last = _LAST_SIGNED.get(device_id)
+    if last is not None:
+        if ts < last[0] or (ts == last[0] and header in last[1]):
+            return False
+        if ts == last[0]:
+            last[1].add(header)
+            return True
+    elif len(_LAST_SIGNED) >= _LAST_SIGNED_MAX:
+        _LAST_SIGNED.clear()                # bounded; forgetting only re-opens the window
+    _LAST_SIGNED[device_id] = (ts, {header})
+    return True
 
 
 def _lockbox(st, rel, device_id: str):
@@ -992,10 +1023,15 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
 
 
 @router.post("/api/v1/feedback", tags=["Device API"], responses={200: {"model": Ok}})
-def feedback(report: Feedback, request: Request):
+def feedback(report: Feedback, request: Request, raw: bytes = Depends(_raw_body)):
     """Explicit terminal outcome of an offered update (precise success/failure vs. inferring it
     from the next check-in). Recorded ONLY for a registered device -- an unregistered or bypassed
-    board is a no-op, so this stays zero-footprint too."""
+    board is a no-op, so this stays zero-footprint too.
+
+    It writes a fleet row and, for a failure, an audit entry, so it takes what a check-in
+    takes to do that: the camera's signature (`X-OMV-Signature`) over the body. The account
+    is the camera's own binding and the release must be one of that account's; neither is
+    read from the report."""
     st = request.app.state
     ip = request.client.host if request.client else "-"
     if not st.ratelimit.allow(ip):
@@ -1009,20 +1045,28 @@ def feedback(report: Feedback, request: Request):
     if reg.unregistered_board_type or not reg.registered:
         return {"ok": False}                                    # untracked / unregistered -> no write
     report.device_id = _identity(report)     # the same board-qualified key check-in writes
-    st.metastore.record_deployment(
-        device_id=report.device_id, release_id=report.release_id, product_id=report.product_id,
-        status=report.status, reason=report.reason, account_id=report.account_id)
+    ms = st.metastore
+    signed, _refusal = _signature(ms, report.device_id, request.headers.get(checkin_sig.HEADER),
+                                  raw)
+    if signed != "signed":
+        return {"ok": False}                 # anyone can name a camera; only it can sign as one
+    # The camera's EFFECTIVE account (its sticky binding), the one its check-ins are filed
+    # under -- and a release of that account, or the report is about nothing this camera
+    # was ever offered.
+    account_id = (ms.device_account(report.device_id) or {}).get("account_id") or ""
+    rel = ms.get_release(report.release_id)
+    if rel is None or (rel.get("account_id") or "") != account_id:
+        return {"ok": False}
+    reason = (report.reason or "")[:_REASON_MAX] or None
+    ms.record_deployment(device_id=report.device_id, release_id=report.release_id,
+                         product_id=rel["product_id"], status=report.status, reason=reason,
+                         account_id=account_id)
     if report.status == "failed":
-        # the event lands in the device's EFFECTIVE account (its sticky binding), the
-        # same account its check-ins are filed under, not whatever the report said
-        bound = st.metastore.device_account(report.device_id)
-        st.metastore.append_audit(actor="device", action="install.failed", entity_type="device",
-                                  entity_id=report.device_id,
-                                  data={"release_id": report.release_id,
-                                        "product_id": report.product_id,
-                                        "reason": report.reason or ""},
-                                  account_id=(bound or {}).get("account_id") or report.account_id,
-                                  product_id=report.product_id)
+        ms.append_audit(actor="device", action="install.failed", entity_type="device",
+                        entity_id=report.device_id,
+                        data={"release_id": report.release_id, "product_id": rel["product_id"],
+                              "reason": reason or ""},
+                        account_id=account_id, product_id=rel["product_id"])
     return {"ok": True}
 
 
@@ -1085,6 +1129,58 @@ def _ranged(data: bytes, media_type: str, header: str | None) -> Response:
                              "Content-Range": "bytes %d-%d/%d" % (start, end, len(data))})
 
 
+_DEVICE_BODY_MAX = 64 * 1024       # a check-in is a few hundred bytes; slots and streams, a few KiB
+
+
+class _DeviceBodyLimit:
+    """Caps the body of a camera's POST (`/api/v1/check`, `/api/v1/feedback`). Those routes
+    take no credential, and the body is read whole before the rate limit is consulted, so
+    without a cap anyone could have the server buffer whatever they sent."""
+
+    _PATHS = ("/api/v1/check", "/api/v1/feedback")
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path") not in self._PATHS:
+            return await self.app(scope, receive, send)
+        declared = dict(scope.get("headers") or ()).get(b"content-length")
+        if declared is not None and declared.isdigit() and int(declared) > _DEVICE_BODY_MAX:
+            return await self._too_large(send)
+        seen, over = 0, False
+
+        async def limited():
+            nonlocal seen, over
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body") or b"")
+                if seen > _DEVICE_BODY_MAX:        # chunked: no length to refuse up front
+                    over = True
+                    return {"type": "http.disconnect"}     # the app stops reading here
+            return message
+
+        async def guarded(message):
+            if not over:                           # whatever the app says of a cut-off body
+                await send(message)                # is not the answer; the 413 below is
+
+        try:
+            await self.app(scope, limited, guarded)
+        except Exception:                          # noqa: BLE001 - the app's view of a client
+            if not over:                           # that hung up, which this one did not
+                raise
+        if over:
+            await self._too_large(send)
+
+    @staticmethod
+    async def _too_large(send):
+        body = b'{"detail":"request body too large"}'
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", b"%d" % len(body))]})
+        await send({"type": "http.response.body", "body": body})
+
+
 def _rate_limiter(settings, metastore):
     """The check-in limiter ``checkin_rate_backend`` asks for ("auto": shared on Postgres)."""
     from .metastore import PostgresMetadataStore
@@ -1124,6 +1220,7 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app = FastAPI(title="OpenMV OTA Update Server", version=__version__,
                   description=_API_DESCRIPTION, openapi_tags=_OPENAPI_TAGS,
                   docs_url=None, redoc_url=None)  # /docs is our self-hosted ReDoc page
+    app.add_middleware(_DeviceBodyLimit)
     app.state.settings = settings
     app.state.keykeeper = (keykeeper if keykeeper is not None
                            else keykeeper_mod.build_keykeeper(settings))

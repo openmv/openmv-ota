@@ -66,6 +66,18 @@ def post(client, body: bytes, signature: str | None = None):
     return client.post("/api/v1/check", content=body, headers=headers)
 
 
+def feedback(client, body: dict, *, key=None, signed: bool = True):
+    """POST ``body`` to ``/api/v1/feedback`` signed by the camera it names (``signed=False``
+    sends it bare, as anyone who knows the id could). Registers nothing: a report from a
+    camera with no registration is one the server refuses."""
+    raw = json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"}
+    if signed:
+        headers["X-OMV-Signature"] = sign(
+            key if key is not None else key_for(identity_of(body)), raw)
+    return client.post("/api/v1/feedback", content=raw, headers=headers)
+
+
 def check(client, body: dict, *, key=None, registered_to: str | None = None):
     """POST ``body`` to ``/api/v1/check`` signed, as a registered camera. A camera with no
     registration yet is registered first: to ``registered_to``, or else to the account the body

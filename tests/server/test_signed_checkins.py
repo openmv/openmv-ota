@@ -152,3 +152,44 @@ def test_a_signature_from_an_unregistered_camera_leaves_no_trace(tmp_path):
     assert _check(c, body, _forged(body)) == NOTHING
     assert store.get_device(DEV) is None and store.get_registration(DEV) is None
     assert _audit(store, "device.checkin_refused") == []               # nothing to hang it on
+
+
+def test_a_replayed_signed_check_in_gets_what_a_stale_one_gets(tmp_path):
+    """The answer to a signed check-in carries day-long grants to publish as that camera. A
+    capture of one, sent again inside the five-minute window, used to be answered in full."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    body = _body()
+    now = int(time.time())
+    first = camera.sign(key, body, ts=now)
+    _check(c, body, first)
+    assert store.get_device(DEV) is not None                            # taken in full
+    replay = _check(c, body, first)                                     # the same request again
+    assert "live" not in replay and "ingest" not in replay
+    assert store.get_registration(DEV)["last_refusal"] == "stale"
+    older = _check(c, body, camera.sign(key, body, ts=now - 5))         # one from before it
+    assert "live" not in older and "ingest" not in older
+    # the camera's next request, and a second one in the same second, are both new
+    other = _body() + b" "
+    for b in (body, other):
+        store.note_refused_checkin(DEV, "cleared-by-the-test")
+        r = _check(c, b, camera.sign(key, b, ts=now + 1))
+        assert "live" in r or store.get_registration(DEV)["last_refusal"] != "stale"
+
+
+def test_a_camera_route_takes_no_more_than_a_check_in_is(tmp_path):
+    """No credential on these routes, and the body is read before the rate limit is asked."""
+    from openmv_ota.server import app as app_mod
+    c, _store = _app(tmp_path)
+    big = b'{"device_id": "' + b"a" * (app_mod._DEVICE_BODY_MAX + 1) + b'"}'
+    for path in ("/api/v1/check", "/api/v1/feedback"):
+        r = c.post(path, content=big, headers={"Content-Type": "application/json"})
+        assert r.status_code == 413 and r.json() == {"detail": "request body too large"}
+
+        def chunks():                                # no Content-Length to refuse up front
+            for _ in range(app_mod._DEVICE_BODY_MAX // 4096 + 2):
+                yield b" " * 4096
+        assert c.post(path, content=chunks(),
+                      headers={"Content-Type": "application/json"}).status_code == 413
+    ok = c.post("/api/v1/check", content=_body(), headers={"Content-Type": "application/json"})
+    assert ok.status_code == 200

@@ -1766,3 +1766,37 @@ def test_a_named_ramp_starts_a_rollout_and_a_refused_one_leaves_the_live_one_alo
                 json={"release_id": "rel1", "ramp": "cautious"}).json()
     assert ro["percent"] == 5 and [s["percent"] for s in ro["stages"]] == [5, 25, 50, 100]
     assert store.get_rollout(live)["pause_reason"] == "superseded"
+
+
+def test_a_pin_is_its_accounts_and_no_other_account_can_set_move_or_clear_it(tmp_path):
+    """Pins are keyed by the device id alone. Another account that knew an id could write a
+    pin on it -- to a release the camera would never be offered, which holds it on its
+    current build for good -- or overwrite and clear the owner's own."""
+    app, store = _app(tmp_path)
+    store.add_token(hash_token("othertok"), "other", ["manage", "observe"], account_id="b")
+    other = {"Authorization": "Bearer othertok"}
+    c = TestClient(app)
+    dev = "OPENMV_N6:ships-tomorrow"
+    assert c.patch("/api/v1/admin/devices/%s/pin" % dev, headers=AUTH,
+                   json={"release_id": "rel1"}).status_code == 200
+    for body in ({"release_id": None}, {"release_id": "rel1"}):          # clear it, move it
+        assert c.patch("/api/v1/admin/devices/%s/pin" % dev, headers=other,
+                       json=body).status_code == 404
+    assert store.get_device_pin(dev) == "rel1"
+    # a pin another account did get onto an id is not this account's camera's pin: not read
+    # when the camera checks in, not shown on its fleet row
+    store.upsert_device(device_id="d1", product_id=BID)
+    store.set_device_pin("d1", "rel_theirs", account_id="b")
+    assert store.get_device_pin("d1", "") is None and store.get_device_pin("d1", "b") == "rel_theirs"
+    assert store.get_device("d1")["pinned_release_id"] is None
+    assert [d["pinned_release_id"] for d in store.list_devices() if d["device_id"] == "d1"] == [None]
+    # ...and the camera's own account pins it whatever is there (it has the fleet row)
+    assert c.patch("/api/v1/admin/devices/d1/pin", headers=AUTH,
+                   json={"release_id": "rel1"}).status_code == 200
+    assert store.get_device("d1")["pinned_release_id"] == "rel1"
+    # a camera REGISTERED to an account is that account's to pin over a squatter's
+    from tests.server import camera
+    store.set_device_pin("OPENMV_N6:mine", "rel_theirs", account_id="b")
+    camera.register(store, "OPENMV_N6:mine", "")
+    assert c.patch("/api/v1/admin/devices/OPENMV_N6:mine/pin", headers=AUTH,
+                   json={"release_id": "rel1"}).status_code == 200

@@ -219,3 +219,41 @@ def test_every_product_id_is_also_a_string(tmp_path):
     renamed = c.patch("/api/v1/admin/products/%d/name" % big, json={"name": "Huge"},
                       headers=WHOLE).json()
     assert renamed["product_id_str"] == str(big)
+
+
+# --- a limited token stops at the account's own routes -----------------------------------------
+
+def test_a_limited_token_is_refused_on_the_routes_that_act_on_the_whole_account(tmp_path):
+    """The product gate checks an entity's product. These routes have none to check -- the
+    account's webhooks, trust anchors, desk keys, registrations, cohorts -- so a credential a
+    platform handed one customer could subscribe to every event in the account, read the
+    audit rows `/audit` hides from it, or release any camera's registration."""
+    c, store = _app(tmp_path)
+    hook = c.post("/api/v1/admin/webhooks", headers=WHOLE,
+                  json={"url": "https://93.184.216.34/"}).json()
+    routes = [
+        ("get", "/webhooks", None), ("post", "/webhooks", {"url": "https://93.184.216.34/"}),
+        ("get", "/webhooks/%s" % hook.get("webhook_id", "x"), None),
+        ("delete", "/webhooks/%s" % hook.get("webhook_id", "x"), None),
+        ("get", "/activity", None),
+        ("delete", "/devices/dev_%d/registration" % THEIRS, None),
+        ("delete", "/devices/dev_%d/registration" % MINE, None),
+        ("put", "/roots", {"roots": []}), ("put", "/desk-keys/1", {}),
+        ("post", "/registrations", {}), ("post", "/devices/dev_%d/account" % THEIRS, None),
+        ("get", "/unclaimed", None), ("get", "/data/usage", None),
+        ("post", "/cohorts/create", {"cohort": "beta"}),
+        ("post", "/cohorts/rename", {"cohort": "a", "to": "b"}),
+        ("post", "/cohorts/delete", {"cohort": "a"}),
+        ("post", "/cohorts/assign", {"cohort": "beta", "device_ids": ["dev_%d" % THEIRS]}),
+        ("patch", "/devices/OPENMV_N6:never-seen/pin", {"release_id": "rel_mine"}),
+    ]
+    for method, path, body in routes:
+        r = c.request(method.upper(), "/api/v1/admin" + path, headers=LIMITED, json=body)
+        assert r.status_code == 403, (method, path, r.status_code, r.text)
+        assert "limited to a list of products" in r.json()["detail"]
+    # what it is for still works: its own product's devices, by product
+    assert c.post("/api/v1/admin/cohorts/assign", headers=LIMITED,
+                  json={"cohort": "beta", "product_id": MINE}).status_code == 200
+    assert c.patch("/api/v1/admin/devices/dev_%d/pin" % MINE, headers=LIMITED,
+                   json={"release_id": "rel_mine"}).status_code == 200
+    assert store.get_device("dev_%d" % THEIRS)["cohort"] == "__default__"

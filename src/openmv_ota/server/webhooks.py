@@ -116,8 +116,9 @@ def check_url(url: str, *, allow_private: bool = False, resolve=None) -> str:
         raise WebhookError("the host does not resolve") from None
     for info in infos:
         addr = ipaddress.ip_address(info[4][0])
-        if not allow_private and (addr.is_private or addr.is_loopback or addr.is_link_local
-                                  or addr.is_multicast or addr.is_reserved or addr.is_unspecified):
+        # `not is_global` and not a list of the private kinds: the list missed 100.64.0.0/10,
+        # the carrier-grade NAT range overlay networks hand out.
+        if not allow_private and (not addr.is_global or addr.is_multicast):
             raise WebhookError("the host resolves to a private address")
     return url.strip()
 
@@ -182,13 +183,20 @@ class Deliverer:
                        "X-OpenMV-Signature": sign(hook["secret"], ts, body)}
             code, error = None, ""
             try:
+                # Checked again at every send, not only when the endpoint was saved: a name
+                # that pointed somewhere public then can point inside the network now.
+                check_url(hook["url"], allow_private=self._settings.webhook_allow_private)
                 r = self._client().post(hook["url"], content=body, headers=headers,
                                         timeout=self._settings.webhook_timeout_s)
                 code = r.status_code
                 if not 200 <= code < 300:
                     error = f"HTTP {code}"
+            except WebhookError as e:
+                error = str(e)
             except Exception as e:                 # noqa: BLE001 - any transport failure is a retry
-                error = str(e)[:200] or type(e).__name__
+                # The kind of failure and no more: the transport's own message names hosts
+                # and ports, and the account that owns the endpoint reads this back.
+                error = type(e).__name__
             attempt = d["attempt"] + 1
             if not error:
                 self._ms.finish_delivery(d["delivery_id"], status="delivered", attempt=attempt,
