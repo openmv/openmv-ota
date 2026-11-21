@@ -37,6 +37,8 @@
       ]
     },
     "OPENMV3": {
+      "ota_firmware_small_tflm": true,
+      "ota_firmware_drops": {"IMLIB_ENABLE_DATAMATRICES": "find_datamatrices"},
       "secure_element": {"chip": "soft", "key_area": 134246400, "bootloader_max": 28672},
       "display_name": "OpenMV Cam M7 (STM32F765/67)",
       "tls_verify": false,
@@ -107,6 +109,7 @@
       ]
     },
     "OPENMV4P": {
+      "ota_firmware_small_tflm": true,
       "secure_element": {"chip": "soft", "key_area": 134344704, "bootloader_max": 126976},
       "stub": {"origin": "0x08040000", "firmware_dest": "0x08060000", "firmware_max": "0x19F000", "text2": {"dest": "0x08020000", "max": "0x20000"}, "slots_encrypted": true},
       "ota_firmware_drops": {"IMLIB_ENABLE_DATAMATRICES": "find_datamatrices"},
@@ -143,6 +146,7 @@
       ]
     },
     "OPENMVPT": {
+      "ota_firmware_small_tflm": true,
       "secure_element": {"chip": "soft", "key_area": 134344704, "bootloader_max": 126976},
       "stub": {"origin": "0x08040000", "firmware_dest": "0x08060000", "firmware_max": "0x19F000", "text2": {"dest": "0x08020000", "max": "0x20000"}, "slots_encrypted": true},
       "display_name": "OpenMV Pure Thermal (STM32H743 w/ SDRAM)",
@@ -337,6 +341,7 @@
       ]
     },
     "ARDUINO_PORTENTA_H7": {
+      "ota_firmware_small_tflm": true,
       "secure_element": {"chip": "se050", "bus": 1, "addr": 72, "enable": "SE05X_EN"},
       "stub": {"origin": "0x08040000", "firmware_dest": "0x08060000", "firmware_max": "0x19F000", "text2": {"dest": "0x08020000", "max": "0x20000"}},
       "display_name": "Arduino Portenta",
@@ -372,6 +377,7 @@
       ]
     },
     "ARDUINO_GIGA": {
+      "ota_firmware_small_tflm": true,
       "secure_element": {"chip": "atecc608", "bus": 4, "addr": 96, "freq": 100000},
       "stub": {"origin": "0x08040000", "firmware_dest": "0x08060000", "firmware_max": "0x19F000", "text2": {"dest": "0x08020000", "max": "0x20000"}},
       "display_name": "Arduino Giga",

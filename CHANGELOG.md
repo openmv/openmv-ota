@@ -191,6 +191,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Five boards' OTA firmware uses the small TFLM op set.** The firmware's TensorFlow Lite
+  Micro library grew (openmv, 2026-11-19) and the OTA firmware stopped fitting on the
+  OpenMV Cam M7, the H7 Plus, the Pure Thermal, the Arduino Portenta H7 and the Arduino
+  Giga, by 8 to 61 KB. Their OTA firmware is now built with `MICROPY_PY_ML_TFLM_SMALL`: no
+  comparison ops, `SelectV2` or `SquaredDifference`, so a model that uses one does not load
+  there. The M7's also drops `find_datamatrices()`. The OpenMV Cam H7's stock firmware now
+  ships `find_datamatrices()` off, which the build takes as agreement with its own drop.
+
 - **The OpenMV Cam H7 Plus OTA firmware drops `find_datamatrices()`.** The stock firmware
   now fills both of that board's code regions, so the OTA firmware (frozen boot script,
   recovery installer and PEM parsing on top) no longer fits with it. `build firmware`

@@ -138,7 +138,16 @@ The project's OTA flag steers the build automatically:
   refused by [`build romfs`](06-building.md#build-romfs) rather than failing
   on the camera. The **OpenMV Cam H7 Plus** (`OPENMV4P`) is one step behind: its stock
   firmware already fills both code regions, so its OTA firmware turns off
-  `find_datamatrices()` alone, the same way.
+  `find_datamatrices()` alone, the same way, and so does the **OpenMV Cam M7**'s
+  (`OPENMV3`).
+
+  On five boards the OTA firmware is also built with the firmware's small TensorFlow
+  Lite Micro op set (`MICROPY_PY_ML_TFLM_SMALL`): the OpenMV Cam M7, the H7 Plus, the
+  Pure Thermal, the Arduino Portenta H7 and the Arduino Giga. A model that uses a
+  comparison op (`Equal`, `NotEqual`, `Greater`, `GreaterEqual`, `Less`, `LessEqual`),
+  `SelectV2` or `SquaredDifference` does not load there. The stock firmware for those
+  boards carries the full set. No build step can see which ops a model uses, so this
+  one is not caught before the camera.
 
 The build is **clean by default** (`make clean` first), so a stale tree can't
 turn into a confusing link-time failure; pass `--incremental` to skip the clean
