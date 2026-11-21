@@ -517,3 +517,24 @@ def test_the_datalake_admin_client_reads_an_account_s_usage():
     import pytest
     with pytest.raises(DatalakeError, match="HTTP 503"):
         lake.account_usage("down")
+
+
+def test_an_operator_cannot_make_itself_or_anyone_an_operator(tmp_path):
+    """`accounts` provisions customers. It used to be able to issue `accounts.all` into an
+    account it created, which is the whole server, or an `accounts` token named after
+    another operator, which is that operator: accounts are filed under the token's name."""
+    c, _ = _app(tmp_path)
+    mine = c.post("/api/v1/admin/accounts", headers=RF, json={"name": "Acme"}).json()
+    theirs = c.post("/api/v1/admin/accounts", headers=OTHER, json={"name": "Globex"}).json()
+    url = "/api/v1/admin/accounts/%s/tokens" % mine["account_id"]
+    for name, scopes in (("x", ["accounts.all"]), ("someone-else", ["accounts"]),
+                         ("y", ["publish", "accounts"])):
+        r = c.post(url, headers=RF, json={"name": name, "scopes": scopes})
+        assert r.status_code == 403 and "accounts.all can grant" in r.json()["detail"]
+    # what an operator is for still works: a fleet token for its customer
+    r = c.post(url, headers=RF, json={"name": "ci", "scopes": ["publish"]})
+    assert r.status_code == 200 and r.json()["scopes"] == ["publish", "manage", "observe"]
+    # ...and the server's root can still make an operator
+    r = c.post(url, headers=ROOT, json={"name": "ops", "scopes": ["accounts"]})
+    assert r.status_code == 200
+    assert c.get("/api/v1/admin/accounts/%s" % theirs["account_id"], headers=RF).status_code == 404

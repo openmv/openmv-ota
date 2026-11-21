@@ -44,6 +44,10 @@ There are two operator scopes, because a server can have more than one operator:
   (the audit log with `all=true` is such a read). The bootstrap token has it. Nobody
   outside the operator of the server should.
 
+Only a token with `accounts.all` can issue a token that carries `accounts` or
+`accounts.all`. An `accounts` token issues the fleet scopes (`publish`, `manage`,
+`observe`, `register`) into the accounts it created and nothing else.
+
 An account is filed under the credential that created it, and account names are unique
 among that operator's accounts rather than across the server — two operators can each
 have a customer called "DroneCo".

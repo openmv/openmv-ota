@@ -170,6 +170,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **An `accounts` token could make itself the server's root.** `POST /accounts/{id}/tokens`
+  let an operator issue any scope into an account it created: `accounts.all`, which sees and
+  manages every account on the server, or an `accounts` token named after another operator,
+  which acted as that operator (accounts are filed under the token's name). Only a token
+  with `accounts.all` can issue either operator scope now; the rest get a 403.
+
 - **The compromised eMudhra root is out of every trust store this tool ships or installs.**
   Eight eMudhra (emSign) intermediate CA keys were compromised in October 2026, and the root
   that signed them, emSign ECC Root CA - G3, left the Mozilla bundle on 2026-10-20. The host
