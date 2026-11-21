@@ -405,6 +405,7 @@ def test_an_answer_cannot_silence_the_camera_for_longer_than_a_day():
     assert rt._next_poll({"poll_after_s": 10 ** 9}, None, 0.5) == day           # server-paced
     assert rt._next_poll({"poll_after_s": 10 ** 9, "throttled": True}, 300, 0.5) == day
     assert rt._next_poll({"poll_after_s": 3600}, None, 0.5) == 3600
+    assert rt._next_poll({"poll_after_s": 0.001}, None, 0.5) == rt._POLL_MIN_S == 5   # nor spin it
     for junk in (-5, 0, "3600", None, True, [1], {"a": 1}):
         assert rt._next_poll({"poll_after_s": junk}, None, 0.5) == rt._POLL_DEFAULT_S, junk
         assert rt._next_poll({"poll_after_s": junk, "throttled": True}, 300, 0.5) == 300, junk

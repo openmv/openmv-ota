@@ -928,6 +928,7 @@ def _remember_network():  # pragma: no cover  (device: /flash)  # hil-residual-f
 # THE CHECK-IN CADENCE. Pure, so the host suite pins every number below.
 _POLL_DEFAULT_S = 3600       # the wait when neither the app nor the server names one
 _POLL_MAX_S = 86400          # the longest wait a server's answer can ask for
+_POLL_MIN_S = 5              # ...and the shortest
 _JITTER = 0.15               # +/- spread on every wait the DEVICE picks (the server jitters its own)
 _BACKOFF_FIRST_S = 10        # first retry after a failed check-in; doubles per consecutive miss
 _BACKOFF_MAX_SHIFT = 16      # bounds the doubling's int long before the cap is ever the limit
@@ -974,12 +975,15 @@ def _next_poll(resp, interval, r):
     ``interval`` None leaves the device SERVER-PACED: it waits whatever the server said (the
     server has already jittered it), or ``_POLL_DEFAULT_S`` if it said nothing."""
     told = resp.get("poll_after_s")
-    # The reply is unsigned: a number in it must not be able to silence the camera. No wait
-    # it names outlasts a day, and anything that is not a positive number is no answer.
+    # The reply is unsigned: a number in it must not be able to silence the camera, or spin
+    # it. No wait it names outlasts a day or is under a few seconds, and anything that is not
+    # a positive number is no answer.
     if not isinstance(told, (int, float)) or isinstance(told, bool) or told <= 0:
         told = None
     elif told > _POLL_MAX_S:
         told = _POLL_MAX_S
+    elif told < _POLL_MIN_S:
+        told = _POLL_MIN_S
     if interval is None:
         return told or _POLL_DEFAULT_S
     own = _jittered(interval, r)
