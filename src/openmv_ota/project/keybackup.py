@@ -24,7 +24,7 @@ _HASH_LEN = 32
 # What a backup holds: the key PEMs (``ota-0100.pem``, ``root-0.pem``, ...) and the payload
 # keys. The SHA-256 below is integrity against rot, not authenticity -- anyone can make an
 # archive that passes it -- so a name is checked before it is ever used as a path.
-_NAME = re.compile(r"^(?:[a-z]+-[0-9a-f]{1,16}\.pem|payload-keys\.bin)$")
+_NAME = re.compile(r"(?:[a-z]{1,16}-[0-9a-f]{1,16}\.pem|payload-keys\.bin)")
 
 
 def pack_keys(pems: dict[str, bytes]) -> bytes:
@@ -50,7 +50,7 @@ def unpack_keys(blob: bytes) -> dict[str, bytes]:
         if not isinstance(entries, dict):
             raise ValueError("not a table of files")
         for name, b64 in entries.items():
-            if not _NAME.match(name) or not isinstance(b64, str):
+            if not _NAME.fullmatch(name) or not isinstance(b64, str):
                 raise ValueError("%r is not a key file's name" % name)
         return {name: base64.b64decode(b64, validate=True) for name, b64 in entries.items()}
     except ValueError as e:

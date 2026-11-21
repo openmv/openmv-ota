@@ -349,9 +349,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A PKCS#11 PIN comes from `OPENMV_OTA_PKCS11_PIN`.** The only way to give one was a
   `pin` field in `keys/backends.json`, which is committed, or `--set pin=` on a command
   line. A `pin` in a record is refused.
+- **A keykeeper pin vouches for the seal key.** A pin was `<key id>:<sign key>`, and the
+  pinned record's own signature was never checked, so the server the chain is fetched from
+  could return the pinned generation with a seal key of its own and open every per-camera
+  release sealed after the next `keys keykeeper sync`. A pin carries the record's digest
+  now (`<key id>:<sign key>:<sha256>`, what `openmv-ota keykeeper pin` prints and a sync
+  stores). The older form still verifies a chain's first generation, by that record's
+  signature, and nothing later.
+- **A key file is written beside its path and renamed over it**, so a link planted there is
+  replaced and not written through; keykeeper's own keys are owner-only too. Restore takes
+  a name by full match (a trailing newline passed) and of bounded length.
 - **Smaller ones.** `git clone` of the firmware takes the remote after `--` and a commit
   that is a full hash (both come from the lock file). `client device watch --out` refuses
-  a stream name from the server that is not a plain name.
+  a stream name from the server that is not a plain name, `release bases` a version that
+  is not one, and console text is printed without its control characters.
 
 - **The compromised eMudhra root is out of every trust store this tool ships or installs.**
   Eight eMudhra (emSign) intermediate CA keys were compromised in October 2026, and the root

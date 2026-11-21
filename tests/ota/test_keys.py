@@ -222,3 +222,23 @@ def test_write_private_is_owner_only_even_over_a_loose_file(tmp_path):
     p.chmod(0o644)
     write_private(p, b"two")
     assert p.read_bytes() == b"two" and p.stat().st_mode & 0o777 == 0o600
+
+
+def test_write_private_replaces_a_planted_link_and_does_not_write_through_it(tmp_path):
+    """A project directory can be someone else's. A link at a key file's path used to be
+    followed, so restoring a backup wrote the archive's bytes wherever it pointed."""
+    from openmv_ota.ota.keys import write_private
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"untouched")
+    victim.chmod(0o644)
+    link = tmp_path / "ota-0100.pem"
+    link.symlink_to(victim)
+    write_private(link, b"key bytes")
+    assert victim.read_bytes() == b"untouched" and victim.stat().st_mode & 0o777 == 0o644
+    assert not link.is_symlink() and link.read_bytes() == b"key bytes"
+    assert link.stat().st_mode & 0o777 == 0o600
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []
+    (tmp_path / "dir.pem").mkdir()
+    with pytest.raises(OSError):
+        write_private(tmp_path / "dir.pem", b"x")
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []   # nothing left behind

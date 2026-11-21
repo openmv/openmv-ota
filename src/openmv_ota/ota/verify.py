@@ -1,8 +1,10 @@
 """Host-side verification of a built OTA image (body + signed trailer).
 
 This is the mirror of what the device's ``boot.py`` does for *authenticity and
-integrity* — verify the signature over the trailer's signed region against a
-trusted (non-revoked) key, and confirm the body matches the signed digest. It does
+integrity* — verify the certificate against the project's roots and the signature over
+the trailer's signed region against the certified key, and confirm the body matches the
+signed digest. It does not consult ``trusted_keys.json``: a key the project has revoked or
+retired still verifies here, as it does on a camera below that epoch. It does
 **not** check the device-relative fields (``product_id`` vs the device,
 ``payload_version`` anti-rollback vs the installed image, ``min_platform_version``
 vs the running firmware) — those need a device, not a host. So this is the

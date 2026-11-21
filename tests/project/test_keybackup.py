@@ -56,11 +56,13 @@ def _archive(entries) -> bytes:
 @pytest.mark.parametrize("name", [
     "../../../.bashrc", "/home/user/.ssh/authorized_keys", "sub/ota-0100.pem", "ota-0100.pem/..",
     "..", "", "OTA-0100.PEM", "ota-0100.pem\x00", "payload-keys.bin.bak", ".dev-passphrase",
+    "ota-0100.pem\n", "payload-keys.bin\n", "a" * 250 + "-0.pem",
 ])
 def test_a_backup_names_key_files_and_nothing_else(name, tmp_path):
     """The archive's sha256 is against rot: anyone can make one that passes it. A name that
     is a path would be written wherever it points, with the archive's bytes."""
     import base64
+
     from openmv_ota.project import project as proj
     blob = _archive({"ota-0100.pem": base64.b64encode(b"ok").decode(),
                      name: base64.b64encode(b"owned").decode()})
@@ -82,3 +84,11 @@ def test_every_name_a_project_backs_up_is_one_restore_takes():
     for name in ("ota-0100.pem", "factory-0001.pem", "root-0.pem", "root-1.pem",
                  "issuer-8000.pem", "desk-9f3a.pem", "payload-keys.bin"):
         assert keybackup.unpack_keys(keybackup.pack_keys({name: b"x"})) == {name: b"x"}
+
+
+def test_a_restore_that_cannot_write_says_so_without_a_traceback(tmp_path):
+    from openmv_ota.project import project as proj
+    private = proj.ProjectPaths(tmp_path / "proj").private_keys_dir
+    (private / "ota-0100.pem").mkdir(parents=True)             # a directory where the key goes
+    with pytest.raises(ProjectError, match="could not restore"):
+        proj.restore_private_keys(tmp_path / "proj", keybackup.pack_keys({"ota-0100.pem": b"x"}))

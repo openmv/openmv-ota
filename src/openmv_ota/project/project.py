@@ -701,8 +701,11 @@ def restore_private_keys(root: str | Path, blob: bytes) -> list[str]:
     pem_dir = ProjectPaths(Path(root)).private_keys_dir
     pems = keybackup.unpack_keys(blob)
     pem_dir.mkdir(parents=True, exist_ok=True)
-    for name, pem in pems.items():
-        write_private(pem_dir / name, pem)
+    try:
+        for name, pem in pems.items():
+            write_private(pem_dir / name, pem)
+    except OSError as e:
+        raise ProjectError("could not restore into %s: %s" % (pem_dir, e), exit_code=1) from None
     return sorted(pems)
 
 

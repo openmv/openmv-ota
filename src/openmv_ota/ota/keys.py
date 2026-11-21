@@ -2,8 +2,8 @@
 
 Host-side, built on ``cryptography``. Public keys are stored as the uncompressed
 EC point in hex (``04 || X || Y``), which the device's mbedtls verifier reads
-directly via ``mbedtls_ecp_point_read_binary``; private keys are unencrypted
-PKCS#8 PEM.
+directly via ``mbedtls_ecp_point_read_binary``; private keys are encrypted
+PKCS#8 PEM (see :func:`private_key_pem`).
 
 ``keys/trusted_keys.json`` is the committed public set the firmware build bakes
 into ``TRUSTED_KEYS``. Each entry carries the key's id, COSE algorithm, role
@@ -128,10 +128,22 @@ def write_private(path, data: bytes) -> None:
     """Write key material readable by its owner alone, from the first byte: created 0600,
     never written under the umask and narrowed after."""
     import os
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
-    os.chmod(str(path), 0o600)          # an existing file keeps its old mode through O_CREAT
+    import secrets
+    # A new file beside it, then renamed over it: the bytes never go THROUGH what is at the
+    # path now. A link planted there (a project directory can be someone else's) is replaced,
+    # not followed, and an existing file's looser mode does not survive.
+    tmp = "%s.%s.tmp" % (path, secrets.token_hex(6))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def load_private_key_pem(data: bytes, passphrase: str | None = None):

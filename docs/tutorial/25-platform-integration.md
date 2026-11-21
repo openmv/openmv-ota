@@ -84,6 +84,11 @@ one — that is checked when the project is made, rather than surfacing later as
 that will not open. A project that builds for a board the source does not gets a payload
 key minted for it and says so; the signing keys are shared untouched.
 
+The copy is made once. `keys revoke`, `keys retire`, `keys add` and `keys rotate` change
+`keys/trusted_keys.json` in the project they run in and no other: after any of them, copy
+that file to every project that shares the keys, or those projects go on signing at the
+old epoch with a set that still lists a retired key.
+
 Two things follow that are worth being explicit about with anyone reviewing this:
 
 - The boundary between your customers is **the server deciding what to offer**, not

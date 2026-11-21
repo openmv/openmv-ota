@@ -34,6 +34,7 @@ them back into an empty directory once the chain verifies and every key opens.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import json
 import re
@@ -48,7 +49,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from openmv_ota.ota.errors import OtaError
-from openmv_ota.ota.keys import load_private_key_pem, private_key_pem, public_point_hex
+from openmv_ota.ota.keys import (
+    load_private_key_pem,
+    private_key_pem,
+    public_point_hex,
+    write_private,
+)
 
 VERSION = 1
 DEFAULT_PERIOD_DAYS = 365
@@ -72,8 +78,12 @@ class Generation:
     not_before: str                              # ISO 8601, UTC
 
     def pin(self) -> str:
-        """``"<key_id>:<sign key>"`` -- what a publisher stores to trust this generation."""
-        return "%d:%s" % (self.key_id, self.sign)
+        """``"<key_id>:<sign key>:<sha256 of the record>"`` -- what a publisher stores to trust
+        this generation. The digest is what commits to the SEAL key and the start date: the
+        chain comes from a server, and a pin of the sign key alone let that server hand back
+        the pinned generation with a seal key of its own."""
+        return "%d:%s:%s" % (self.key_id, self.sign,
+                             hashlib.sha256(_record_bytes(self)).hexdigest())
 
 
 def _iso(when: datetime) -> str:
@@ -160,10 +170,14 @@ def verify_chain(chain: list[dict], pin: str) -> list[Generation]:
     if the pinned generation isn't in the chain, or any link after it doesn't verify -- never
     returns a generation the pin doesn't vouch for."""
     try:
-        kid_text, _, sign_pub = pin.partition(":")
+        kid_text, sign_pub, *rest = pin.split(":")
         pinned_id = int(kid_text)
+        if len(rest) > 1 or not sign_pub:
+            raise ValueError
+        digest = rest[0] if rest else None
     except ValueError:
-        raise KeykeeperError("a keykeeper pin is '<key_id>:<sign key>', not %r" % pin) from None
+        raise KeykeeperError("a keykeeper pin is '<key_id>:<sign key>:<record digest>', not %r"
+                             % pin) from None
     gens = []
     try:
         entries = [(e["record"], bytes.fromhex(e["signature"])) for e in chain]
@@ -176,6 +190,22 @@ def verify_chain(chain: list[dict], pin: str) -> list[Generation]:
                 continue
             if gen.sign != sign_pub:
                 raise KeykeeperError("the chain's generation %d isn't the one pinned" % pinned_id)
+            # The pin has to vouch for the whole record, the seal key above all: that is the
+            # key releases are sealed to. A full pin carries the record's digest. A pin of
+            # the sign key alone (what a first start printed before 2026-11) vouches for a
+            # record that key itself signed, which is a chain's first generation and no other.
+            if digest is not None:
+                if hashlib.sha256(_record_bytes(gen)).hexdigest() != digest:
+                    raise KeykeeperError("the chain's generation %d isn't the one pinned"
+                                         % pinned_id)
+            else:
+                try:
+                    _point(gen.sign).verify(signature, record.encode(), ec.ECDSA(hashes.SHA256()))
+                except InvalidSignature:
+                    raise KeykeeperError(
+                        "the pin names generation %d by its sign key alone, and the chain's "
+                        "record of it isn't signed by that key: use the pin `openmv-ota "
+                        "keykeeper pin` prints" % pinned_id) from None
             gens.append(gen)
             continue
         prev = gens[-1]
@@ -248,8 +278,8 @@ class Ring:
         private = self.root / "private"
         private.mkdir(parents=True, exist_ok=True)
         for role, key in (("seal", seal), ("sign", sign)):
-            (private / ("kk-%04x-%s.pem" % (key_id, role))).write_bytes(
-                private_key_pem(key, self.passphrase))
+            write_private(private / ("kk-%04x-%s.pem" % (key_id, role)),
+                          private_key_pem(key, self.passphrase))
         return Generation(key_id, public_point_hex(seal.public_key()),
                           public_point_hex(sign.public_key()), _iso(not_before)), sign
 
@@ -332,8 +362,7 @@ class Ring:
         (self.root / "private").mkdir(parents=True, exist_ok=True)
         for name in sorted(files):
             if name != CHAIN_NAME:
-                (self.root / name).write_bytes(files[name])
-                (self.root / name).chmod(0o600)
+                write_private(self.root / name, files[name])
         tmp = self.chain_path.with_suffix(".tmp")              # last: chain.json is "keys here"
         tmp.write_bytes(files[CHAIN_NAME])
         tmp.replace(self.chain_path)
