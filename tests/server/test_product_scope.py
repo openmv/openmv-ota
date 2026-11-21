@@ -179,7 +179,7 @@ def test_a_limited_token_cannot_also_be_an_operator(tmp_path):
     would hand out a credential whose limit is not a limit."""
     c, store = _app(tmp_path)
     store.add_account("other", name="Other", created_by="operator")
-    store.add_token(hash_token("op"), "operator", ["accounts"], account_id="")
+    store.add_token(hash_token("op"), "operator", ["accounts.all"], account_id="")
     op = {"Authorization": "Bearer op"}
     resp = c.post("/api/v1/admin/accounts/other/tokens",
                   json={"name": "partner", "scopes": ["observe", "accounts"],
