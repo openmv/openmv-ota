@@ -9,6 +9,7 @@ a fake one. The real-token adapter is excluded from host coverage (no hardware i
 from __future__ import annotations
 
 import hashlib
+import os
 
 from .algorithms import AlgSpec
 from .errors import OtaError
@@ -63,7 +64,7 @@ def provisioner(backend: dict):  # pragma: no cover  (needs a real PKCS#11 token
 
     lib = pkcs11.lib(backend["pkcs11_module"])
     token = lib.get_token(token_label=backend.get("token_label"))
-    session = token.open(user_pin=backend.get("pin"), rw=True)
+    session = token.open(user_pin=token_pin(backend), rw=True)
     curve = {"sha256": "secp256r1", "sha384": "secp384r1", "sha512": "secp521r1"}
 
     class _Pkcs11Provisioner(KeyProvisioner):
@@ -84,13 +85,25 @@ def provisioner(backend: dict):  # pragma: no cover  (needs a real PKCS#11 token
     return _Pkcs11Provisioner()
 
 
+PIN_ENV = "OPENMV_OTA_PKCS11_PIN"
+
+
+def token_pin(backend: dict):
+    """The token's user PIN: from the environment, never from a backend record. The records
+    are ``keys/backends.json``, which is committed, and a ``--set pin=`` is a command line."""
+    if "pin" in (backend or {}):
+        raise OtaError("a PKCS#11 PIN does not go in a backend record (keys/backends.json is "
+                       "committed): set %s instead" % PIN_ENV)
+    return os.environ.get(PIN_ENV) or None
+
+
 # --- real PKCS#11 session (host-coverage excluded -- no token in CI) --------------------------
 
 def _open_session(backend):  # pragma: no cover
     import pkcs11
     lib = pkcs11.lib(backend["pkcs11_module"])
     token = lib.get_token(token_label=backend.get("token_label"))
-    return _RealSession(token.open(user_pin=backend.get("pin")), pkcs11)
+    return _RealSession(token.open(user_pin=token_pin(backend)), pkcs11)
 
 
 class _RealSession:  # pragma: no cover

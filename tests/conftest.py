@@ -235,3 +235,12 @@ def make_sdk(tmp_path):
                 (u / ("stedgeai.exe" if windows_layout else "stedgeai")).write_text("")
         return home
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _fast_key_kdf(monkeypatch):
+    """A private key at rest costs 600 000 PBKDF2 rounds to write and to open, and the suite
+    does both thousands of times. The count is a constant the file itself records, so a small
+    one here changes nothing a test reads; the test of the real count sets it back."""
+    from openmv_ota.ota import keys as _keys
+    monkeypatch.setattr(_keys, "KDF_ROUNDS", 1000)

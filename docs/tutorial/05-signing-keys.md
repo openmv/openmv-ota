@@ -240,9 +240,10 @@ The keys don't have to live on disk at all. `keys/backends.json` (committed) map
 trusted `key_id` to how *this project* reaches that key's private material; a key
 with no record uses its local encrypted PEM, so external and local keys mix freely
 in one set. The records hold only **non-secret** references — ARNs, token and
-object labels, module paths. Secrets (a PKCS#11 PIN, cloud credentials) come from
-`openmv-ota.local.toml` or the ambient cloud environment, never the repo — which is
-what lets teammates and CI commit-and-sign without reconfiguring.
+object labels, module paths. Secrets come from the environment, never the repo: a
+PKCS#11 PIN from `OPENMV_OTA_PKCS11_PIN`, cloud credentials from whatever the
+provider's SDK finds. A `pin` in a record is refused. That is what lets teammates
+and CI commit-and-sign without reconfiguring.
 
 ```bash
 openmv-ota project keys backend show                  # each key's backend
@@ -259,7 +260,9 @@ create-key API in a KMS) and rewrites `keys/trusted_keys.json` +
 `keys/backends.json` from the returned public halves, so the private half **never
 exists on this machine**. It defaults to `--ota-keys 4 --factory-keys 1` because
 external keys are often billable. The new keys are certified by the project's root
-at its current epoch, so cameras accept what they sign as they are. Commit both files.
+one epoch above the keys they replace, so cameras accept what they sign as they are,
+and `provision` retires the old set: a camera refuses every earlier key, and every
+image one signed, once it confirms a release signed by a new one. Commit both files.
 
 Each backend's record, and the pip extra that enables it — extras rather than
 default dependencies because the cloud SDKs are heavy, conflict-prone, and each
@@ -268,7 +271,7 @@ most one:
 
 | `--backend` | Record fields (`--set k=v`) | Extra |
 |---|---|---|
-| `pkcs11` | `pkcs11_module` (the token's `.so`), `token_label`, `object_label` (defaults to `<role>-<keyid>`); the PIN is machine-local, never committed | `openmv-ota[hsm]` |
+| `pkcs11` | `pkcs11_module` (the token's `.so`), `token_label`, `object_label` (defaults to `<role>-<keyid>`); the PIN comes from `OPENMV_OTA_PKCS11_PIN`, never a record | `openmv-ota[hsm]` |
 | `aws-kms` | `uri` — the key ARN | `openmv-ota[aws-kms]` |
 | `gcp-kms` | `uri` — the crypto-key **version** resource name | `openmv-ota[gcp-kms]` |
 | `azure-kms` | `uri` — the vault key URL (`provision` takes `vault_url`) | `openmv-ota[azure-kms]` |

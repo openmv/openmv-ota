@@ -7,6 +7,7 @@ repos while mocking only the heavy clone / build seams.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -131,8 +132,12 @@ def submodule_status(repo: Path) -> list[dict]:
 # --- mutating seams (mocked in tests) ---------------------------------------
 
 def clone(remote: str, dest: Path, commit: str | None = None) -> None:
+    # Both come from a lock file someone else may have written. A commit is a full hash, and
+    # `--` ends the options: a remote that starts with a dash is a path, never a flag.
+    if commit is not None and not re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", commit):
+        raise ProjectError("not a commit hash: %r" % commit, exit_code=1)
     try:
-        subprocess.run([GIT, "clone", remote, str(dest)], check=True)
+        subprocess.run([GIT, "clone", "--", remote, str(dest)], check=True)
         if commit:
             subprocess.run([GIT, "-C", str(dest), "checkout", commit], check=True)
     except (FileNotFoundError, subprocess.CalledProcessError) as e:

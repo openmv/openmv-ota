@@ -331,6 +331,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no integrity check on the download). A retired key's manifest is refused by the epoch
   floor on flash as well as the running image's, which covers recovery. An update offer
   must name an `https://` URL; a path sent the installer to a file on the camera.
+- **`project keys restore` wrote wherever a backup's file names pointed.** A name in the
+  archive was joined to the key directory unchecked, so `../../.bashrc` or an absolute path
+  was written with the archive's bytes; its SHA-256 guards against rot, not a forgery.
+  Restore takes key file names (`ota-0100.pem`, `root-0.pem`, `payload-keys.bin`) and
+  refuses the archive otherwise, before writing anything.
+- **Private keys at rest: 600 000 PBKDF2 rounds, and owner-only files.** The PEMs, the roots
+  among them, were encrypted with the library default of 2048 rounds, and written under
+  the umask. They are standard PKCS#8 still (PBES2, PBKDF2-HMAC-SHA256, AES-256-CBC), so
+  existing keys open as before; `project keys add`, a new project and a new desk or issuer
+  key write the new count. Key files, the backup and the client's token file are created
+  mode 0600.
+- **`keys backend provision` retires the keys it replaces.** The old keys left
+  `trusted_keys.json` with their certificates still valid and their PEMs still on disk, and
+  a key revoked but not yet retired vanished from the set, so nothing could ever make a
+  camera refuse them. The new set is certified one epoch up.
+- **A PKCS#11 PIN comes from `OPENMV_OTA_PKCS11_PIN`.** The only way to give one was a
+  `pin` field in `keys/backends.json`, which is committed, or `--set pin=` on a command
+  line. A `pin` in a record is refused.
+- **Smaller ones.** `git clone` of the firmware takes the remote after `--` and a commit
+  that is a full hash (both come from the lock file). `client device watch --out` refuses
+  a stream name from the server that is not a plain name.
 
 - **The compromised eMudhra root is out of every trust store this tool ships or installs.**
   Eight eMudhra (emSign) intermediate CA keys were compromised in October 2026, and the root

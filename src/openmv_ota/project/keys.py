@@ -117,6 +117,9 @@ def set_backend(root: Path, key_id: int, record: dict) -> None:
     _config, trusted, _paths = _load(root)
     _find(trusted, key_id)   # 404 if unknown
     records = read_backends(root)
+    if "pin" in record:
+        raise ProjectError("a PIN does not go in keys/backends.json (it is committed): set "
+                           "OPENMV_OTA_PKCS11_PIN in the environment that signs")
     records[key_id] = record
     write_backends(root, records)
 
@@ -127,7 +130,12 @@ def provision_backend(root: Path, provisioner, *, n_factory: int, n_ota: int,
     ``backends.json`` with it (no signing key's private PEM ever touches disk), and mint the
     project's issuer there too (``keys/issuer.json``). Keeps the current signing algorithm and the
     project's roots: the new keys are certified by root 0, so devices that embed the roots trust
-    them with no firmware change. Returns the new signing key id."""
+    them with no firmware change. Returns the new signing key id.
+
+    The new set is certified one epoch above the old, which retires every key it replaces:
+    their certificates stay valid at the old epoch and their PEMs stay on this disk and in
+    every backup, and once they are out of ``trusted_keys.json`` nothing else could ever
+    retire them. A camera refuses them from the first release it confirms under the new set."""
     from openmv_ota.ota.signer import provision_external_key_set
 
     from .backends import write_backends
@@ -135,7 +143,7 @@ def provision_backend(root: Path, provisioner, *, n_factory: int, n_ota: int,
     alg = algorithm_for(existing[0].alg)
     phrase, root_priv = _root_key(paths, root, key_passphrase_file)
     trusted, records, signing_key_id = provision_external_key_set(
-        alg, n_factory, n_ota, provisioner, root_priv, epoch=current_epoch(existing))
+        alg, n_factory, n_ota, provisioner, root_priv, epoch=current_epoch(existing) + 1)
     write_trusted_keys(paths.trusted_keys, trusted)
     write_backends(root, records)
     config_mod.set_signing_key_id(paths.config, signing_key_id)
@@ -259,6 +267,7 @@ def add_keys(root: Path, *, n_ota: int = 0, n_factory: int = 0, provisioner=None
         generate_private_key,
         private_key_pem,
         public_point_hex,
+        write_private,
     )
 
     from .backends import read_backends, write_backends
@@ -291,7 +300,7 @@ def add_keys(root: Path, *, n_ota: int = 0, n_factory: int = 0, provisioner=None
         new.append(TrustedKey(key_id, alg.cose_id, role, pubkey))
     certify(root_priv, 0, new, epoch=current_epoch(trusted))
     for name, pem in pems.items():
-        (paths.private_keys_dir / name).write_bytes(pem)
+        write_private(paths.private_keys_dir / name, pem)
     if provisioner is not None:
         write_backends(root, records)
     write_trusted_keys(paths.trusted_keys, sorted(trusted + new, key=lambda k: k.key_id))

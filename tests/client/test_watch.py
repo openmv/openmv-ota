@@ -385,3 +385,11 @@ def test_connect_surfaces_a_real_refusal(relay):
     with pytest.raises(ClientError, match="HTTP 403"):
         watch.watch(lambda: grant, lambda u, t: watch.connect(u, t, "openmv-ota/test"),
                     lambda k, i: None)
+
+
+@pytest.mark.parametrize("name", ["../../x", "/etc/cron.d/x", "a/b", "", ".hidden", "a b"])
+def test_pick_stream_refuses_a_name_that_is_not_a_stream_name(name):
+    """The server names the streams, and `watch --out` puts the name in a file name."""
+    grant = {"token": "t", "streams": {name: {"watch_url": "wss://r/x?token=t"}}}
+    with pytest.raises(ClientError, match="not a stream name"):
+        watch.pick_stream(grant, name, False)

@@ -35,6 +35,7 @@ from openmv_ota.ota.keys import (
     private_key_pem,
     public_point_hex,
     root_pem_name,
+    write_private,
 )
 from openmv_ota.ota.signer import build_signer
 
@@ -142,7 +143,7 @@ def replace(root: str | Path, passphrase: str) -> IssuerEntry:
     entry = _certified(root, passphrase, pubkey)
     private = Path(root) / "keys" / "private"
     private.mkdir(parents=True, exist_ok=True)
-    (private / ("%s-%04x.pem" % (ROLE, entry.key_id))).write_bytes(private_key_pem(key, passphrase))
+    write_private(private / ("%s-%04x.pem" % (ROLE, entry.key_id)), private_key_pem(key, passphrase))
     _write(root, entry)
     return entry
 
