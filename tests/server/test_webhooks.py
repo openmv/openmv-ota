@@ -341,3 +341,24 @@ def test_an_ipv6_wrapper_around_an_ipv4_address_is_not_public(addr):
     with pytest.raises(wh.WebhookError, match="private address"):
         wh.check_url("https://x.example/", resolve=lambda h, p: [(0, 0, 0, 0, (addr, p))])
     assert wh._public(__import__("ipaddress").ip_address("2606:2800:220:1:248:1893:25c8:1946"))
+
+
+def test_a_delivery_reads_the_status_and_none_of_the_answer(tmp_path, monkeypatch):
+    """The endpoint's answer was read whole, and inflated: a small gzip body was as much
+    memory as its owner liked, in the server's process."""
+    c, store, rx, deliverer = _app(tmp_path, monkeypatch)
+    read = []
+
+    class _Body(httpx.SyncByteStream):
+        def __iter__(self):
+            read.append(1)
+            yield b"x" * 1024
+
+    def endpoint(request):
+        rx.calls.append(request)
+        return httpx.Response(200, stream=_Body())
+    deliverer._http = httpx.Client(transport=httpx.MockTransport(endpoint))
+    c.post("/api/v1/admin/webhooks", headers=AUTH, json={"url": "https://hooks.example/", "events": ["token.*"]})
+    store.append_audit(actor="ci", action="token.issue", entity_type="token", entity_id="t", account_id="a1")
+    assert deliverer.run_once(now=time.time() + 1)["sent"] == 1
+    assert read == [] and rx.calls[-1].headers["accept-encoding"] == "identity"

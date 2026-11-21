@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from openmv_ota.server import advisor
 from openmv_ota.server.advisor import OsvClient, _severity
 from openmv_ota.server.metastore import SqliteMetadataStore
@@ -362,3 +364,53 @@ def test_scheduled_scans_are_the_scheduler_api_scans_the_caller(tmp_path):
     assert [e["actor"] for e in _actions(st.metastore, "advisory.scan")] == [
         advisor.SCHEDULER, "ci-token"]
     assert advisor.SCHEDULER == "scheduler"
+
+
+# --- a scan is the publisher's file and the server's threads ----------------------------------
+
+def test_a_scan_asked_for_while_one_runs_is_refused_not_queued(tmp_path):
+    """A request that waited for the account's scan to end held a worker thread for as long
+    as it took; a few dozen of them were every thread the server has, check-ins included."""
+    import threading
+    st = _state(tmp_path)
+    started, release = threading.Event(), threading.Event()
+
+    def slow(comps):
+        started.set()
+        release.wait(5)
+        return []
+    st.osv = SimpleNamespace(scan=slow)
+    st.storage.put("sbom/ok.json", b'{"components": [{"name": "x", "version": "1"}]}', "application/json")
+    rel = {"release_id": "r1", "account_id": "a", "sbom_key": "sbom/ok.json"}
+    t = threading.Thread(target=advisor.scan_release, args=(st, rel))
+    t.start()
+    assert started.wait(5)
+    with pytest.raises(advisor.ScanBusy):
+        advisor.scan_release(st, rel, wait=False)
+    with pytest.raises(advisor.ScanBusy):
+        advisor.scan_account(st, "a", wait=False)
+    assert advisor.scan_account(st, "other-account", wait=False)["releases_scanned"] == 0
+    release.set()
+    t.join(5)
+    assert advisor.scan_release(st, rel, wait=False)["findings"] == 0      # free again
+
+
+@pytest.mark.parametrize("sbom", [
+    b"[]", b"7", b'{"components": 5}', b'{"components": [1, 2]}',
+    b'{"components": [{"name": "x", "properties": 3}]}',
+    b'{"components": [{"name": "x", "properties": ["p"]}]}',
+    ("{\"components\": [%s]}" % ",".join(['{"name":"c"}'] * (advisor.MAX_COMPONENTS + 1))).encode(),
+])
+def test_an_sbom_the_scan_cannot_use_is_unreadable_not_a_crash_or_a_day_of_queries(tmp_path, sbom):
+    """Checked at upload for being JSON and nothing more. One that is not a component list
+    raised in the scan; one with a million components was a million queries to the advisory
+    service, from this server's address, on every pass."""
+    st = _state(tmp_path)
+    asked = []
+    st.osv = SimpleNamespace(scan=lambda comps: asked.append(len(comps)) or [])
+    st.metastore.upsert_advisories("r1", [{"vuln_id": "CVE-9", "component": "m", "version": "1",
+                                           "severity": "high", "summary": "s"}], account_id="a")
+    st.storage.put("sbom/x.json", sbom, "application/json")
+    out = advisor.scan_release(st, {"release_id": "r1", "account_id": "a", "sbom_key": "sbom/x.json"})
+    assert out == {"release_id": "r1", "findings": 0, "new": [], "cleared": 0} and asked == []
+    assert [r["vuln_id"] for r in st.metastore.list_advisories(account_id="a")] == ["CVE-9"]

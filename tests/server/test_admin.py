@@ -1800,3 +1800,15 @@ def test_a_pin_is_its_accounts_and_no_other_account_can_set_move_or_clear_it(tmp
     camera.register(store, "OPENMV_N6:mine", "")
     assert c.patch("/api/v1/admin/devices/OPENMV_N6:mine/pin", headers=AUTH,
                    json={"release_id": "rel1"}).status_code == 200
+
+
+def test_a_scan_already_running_is_a_409(tmp_path, monkeypatch):
+    from openmv_ota.server import advisor
+    app, _store = _app(tmp_path)
+
+    def busy(*_a, **kw):
+        assert kw.get("wait") is False               # the API never queues behind a scan
+        raise advisor.ScanBusy
+    monkeypatch.setattr(advisor, "scan_account", busy)
+    r = TestClient(app).post("/api/v1/admin/advisories/scan", headers=AUTH, json={})
+    assert r.status_code == 409 and "already running" in r.json()["detail"]

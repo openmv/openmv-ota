@@ -674,3 +674,17 @@ def test_publish_an_sbom_nested_past_the_recursion_limit_is_400(tmp_path):
     files["sbom"] = ("sbom.json", b"[" * 50_000 + b"]" * 50_000, "application/json")
     r = TestClient(app).post("/api/v1/admin/releases", headers=AUTH, files=files)
     assert r.status_code == 400 and "sbom is not JSON" in r.json()["detail"]
+
+
+def test_publish_refuses_a_manifest_that_declares_more_deltas_than_a_release_carries(tmp_path):
+    """Each declared delta is a part held in memory and inflated to check it; the count was
+    whatever the manifest said."""
+    from openmv_ota.server import publish as publish_mod
+    app, store, storage = _app(tmp_path)
+    img = b"\xA5" * 64
+    body = _body(img, with_delta=True)
+    one = next(r for r in body["representations"] if r["format"] != "full")
+    body["representations"] += [dict(one, url="extra-%d.delta.gz" % i)
+                                for i in range(publish_mod.MAX_DELTAS)]
+    r = _post(app, _manifest(body), _gz(img))
+    assert r.status_code == 400 and "at most %d" % publish_mod.MAX_DELTAS in r.json()["detail"]

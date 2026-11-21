@@ -232,11 +232,16 @@ class Deliverer:
                 # and the connection goes to the address that was checked.
                 url, host, name = pinned(hook["url"],
                                          allow_private=self._settings.webhook_allow_private)
-                r = self._client().post(url, content=body,
-                                        headers=dict(headers, Host=host, Connection="close"),
-                                        timeout=self._settings.webhook_timeout_s,
-                                        extensions={"sni_hostname": name})
-                code = r.status_code
+                # The STATUS and nothing after it: the endpoint's answer is never read. Read
+                # whole (and inflated: the client asks for gzip unless told otherwise) it was
+                # as much memory as the endpoint cared to send, in the server's own process.
+                with self._client().stream(
+                        "POST", url, content=body,
+                        headers=dict(headers, Host=host, Connection="close",
+                                     **{"Accept-Encoding": "identity"}),
+                        timeout=self._settings.webhook_timeout_s,
+                        extensions={"sni_hostname": name}) as r:
+                    code = r.status_code
                 if not 200 <= code < 300:
                     error = f"HTTP {code}"
             except WebhookError as e:

@@ -207,6 +207,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   revoked token (it handed back a live one) and a token with an operator scope unless the
   caller is the root. A feedback report has to be about a release of the product the camera
   runs. The keykeeper chain route is rate-limited.
+- **One tenant's token could stall the server for all of them, three ways.** A webhook
+  delivery read the endpoint's whole answer into memory, inflated; it reads the status and
+  nothing after. A release upload was verified and stored on the event loop, so every
+  check-in waited for it; that work runs on a thread, and a manifest declares at most 32
+  deltas. An advisory scan asked for while one runs waited on a worker thread; it is a 409
+  now, and an SBOM that is not a component list, or lists more than 5000, is unreadable
+  to the scan (it raised, or queried the advisory service once per component).
+- **`server token rotate`** keeps a token's product limit and refuses a revoked token, as
+  the API's rotate does.
 - **A webhook delivery connects to the address it checked**, with the name as the Host
   header and TLS server name: checking a name and then handing the name to the HTTP client
   was two lookups. Each delivery is its own connection (a kept one is keyed by address,

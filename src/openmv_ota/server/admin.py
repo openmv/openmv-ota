@@ -1797,15 +1797,18 @@ def scan_advisories(body: AdvisoryScanRequest, request: Request,
     from . import advisor
 
     st = request.app.state
-    if body.release_id is not None:
-        rel = _owned(st.metastore.get_release(body.release_id), principal)
-        out = advisor.scan_release(st, rel, actor=principal.name)
-        return {"releases_scanned": 1, "findings": out["findings"], "new": out["new"]}
-    if principal.products:
-        raise HTTPException(status_code=403, detail="this token is limited to a list of "
-                            "products: pass release_id")
-    out = advisor.scan_account(st, principal.account_id, actor=principal.name)
-    return out
+    try:
+        if body.release_id is not None:
+            rel = _owned(st.metastore.get_release(body.release_id), principal)
+            out = advisor.scan_release(st, rel, actor=principal.name, wait=False)
+            return {"releases_scanned": 1, "findings": out["findings"], "new": out["new"]}
+        if principal.products:
+            raise HTTPException(status_code=403, detail="this token is limited to a list of "
+                                "products: pass release_id")
+        return advisor.scan_account(st, principal.account_id, actor=principal.name, wait=False)
+    except advisor.ScanBusy:
+        raise HTTPException(status_code=409, detail="a scan of this account is already "
+                            "running; its findings appear when it ends") from None
 
 
 @admin.get("/releases/{release_id}/manifest",

@@ -8,6 +8,7 @@ and never holds a key -- so it can refuse an inconsistent set, but it can't manu
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import zlib
@@ -24,6 +25,8 @@ from .auth import Principal, require_scope
 from .schemas import Published
 
 publish = APIRouter(prefix="/api/v1/admin")
+
+MAX_DELTAS = 32            # one per base version still in the field; each is held in memory
 
 
 # Decompressed bytes are pulled through zlib this many at a time, so no single call can inflate
@@ -324,12 +327,18 @@ async def publish_release(request: Request, background: BackgroundTasks,
                 if rep.get("format") == DELTA_FORMAT}
     names = [(u.filename or "").rsplit("/", 1)[-1] for u in uploads]
     extra = sorted(set(names) - declared)
+    if len(declared) > MAX_DELTAS:
+        raise HTTPException(status_code=400, detail="the manifest declares %d deltas; a "
+                            "release carries at most %d" % (len(declared), MAX_DELTAS))
     if extra or len(names) != len(set(names)):
         raise HTTPException(status_code=400, detail="delta part(s) the manifest does not "
                             "declare, or sent twice: %s" % ", ".join(extra or names))
     deltas = {name: await _read_capped(u, settings.max_image_bytes, "delta")
               for name, u in zip(names, uploads, strict=True)}
-    _verify_artifacts(body, image_bytes, deltas)
+    # OFF THE EVENT LOOP. Inflating and hashing an image and its deltas is seconds of CPU,
+    # and this route is a coroutine: run inline, one upload stalled every check-in, download
+    # and API call on the server for as long as it took.
+    await asyncio.to_thread(_verify_artifacts, body, image_bytes, deltas)
 
     # The SBOM rides beside the artifacts when the client sends one: the dependency evidence
     # for the exact bytes this release ships, served per release instead of living only on the
@@ -347,14 +356,16 @@ async def publish_release(request: Request, background: BackgroundTasks,
     reps = body["representations"]
     manifest_key = "manifests/%s/manifest.bin" % release_id
     image_key = "artifacts/%s/%s" % (release_id, _rep(reps, "full")["url"])
-    storage.put(manifest_key, manifest_bytes, "application/octet-stream")
-    storage.put(image_key, image_bytes, "application/gzip")
-    for filename, patch in deltas.items():
-        storage.put("artifacts/%s/%s" % (release_id, filename), patch, "application/gzip")
-    sbom_key = None
-    if sbom_bytes is not None:
-        sbom_key = "sbom/%s/sbom.cdx.json" % release_id
-        storage.put(sbom_key, sbom_bytes, "application/json")
+    def _store():
+        storage.put(manifest_key, manifest_bytes, "application/octet-stream")
+        storage.put(image_key, image_bytes, "application/gzip")
+        for filename, patch in deltas.items():
+            storage.put("artifacts/%s/%s" % (release_id, filename), patch, "application/gzip")
+        if sbom_bytes is not None:
+            storage.put("sbom/%s/sbom.cdx.json" % release_id, sbom_bytes, "application/json")
+
+    await asyncio.to_thread(_store)                     # an object-store upload: off the loop too
+    sbom_key = "sbom/%s/sbom.cdx.json" % release_id if sbom_bytes is not None else None
 
     ms.add_release(release_id=release_id, product_id=product_id, product=body.get("product"),
                    version=body.get("version"), payload_version=payload_version,
