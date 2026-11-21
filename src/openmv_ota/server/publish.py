@@ -281,17 +281,17 @@ async def publish_release(request: Request, background: BackgroundTasks,
     # device's cross-flash guard: two product lines sharing one would offer each other's
     # firmware. Detect rather than trust the arithmetic. The account already has releases
     # for this id under a different name; the fix is an explicit product_id in the config.
+    # A product-limited token publishes only into its own products. 404, not 403: the
+    # error must not tell a limited credential which product ids exist.
+    if not principal.may(product_id):
+        raise HTTPException(status_code=404)
+
     known = ms.product_manifest_name(product_id, account_id=account_id)
     if known is not None and body.get("product") and known != body["product"]:
         raise HTTPException(status_code=409,
                             detail="product_id %d already belongs to %r in this account; "
                                    "%r would collide. Set an explicit product_id in the "
                                    "project config." % (product_id, known, body["product"]))
-
-    # A product-limited token publishes only into its own products. 404, not 403: the
-    # error must not tell a limited credential which product ids exist.
-    if not principal.may(product_id):
-        raise HTTPException(status_code=404)
 
     latest = ms.latest_release_payload_version(product_id, account_id=account_id)
     if latest is not None and payload_version <= latest and not allow_republish:

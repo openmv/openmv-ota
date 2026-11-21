@@ -185,13 +185,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it would never be offered, or overwrite and clear the owner's pin. A pin is read only for
   the account that set it, and another account's is a 404 to move or clear.
 - **A signed check-in could be replayed inside its five-minute window**, and the answer
-  carries day-long Live and ingest grants for that camera. The same request again, or one
-  signed before the last, is now stale: offers only.
+  carries day-long Live and ingest grants for that camera. A request signed at or before
+  the time of the last one taken is now stale: offers only. A feedback report is signed
+  over its own context, so neither passes for the other.
 - **Webhook endpoints are checked at every delivery**, not only when saved, and with
   "not a public address" in place of a list of private ranges that missed 100.64.0.0/10. A
   failed delivery records the kind of failure, not the transport's text.
-- **Camera routes cap the body at 64 KiB** (it was read whole before the rate limit), and
-  `server check` no longer prints `keykeeper_token` and `datalake_admin_token`.
+- **Every route caps its body before it knows the caller.** A body was read whole before
+  the credential check on any route. A camera's routes take 64 KiB, the admin API 1 MiB, and
+  a release upload asks for a valid bearer token before reading a byte. `server check` no
+  longer prints `keykeeper_token` and `datalake_admin_token`.
+- **Rotating a product-limited token left it unlimited**, a limited token could pin its own
+  device or cohort to another product's release (and download it by checking in as that
+  device), and it read the account's advisories, roots, desk keys and registrations.
+- **One registered camera had as many identities as spellings.** The registrar answers for
+  a board name in any case or with space around it; the server kept each spelling as its
+  own device, free to claim another account and be offered its release. A board name, id
+  and account now have to be spelled as a camera spells them.
+- **A webhook delivery connects to the address it checked**, with the name as the Host
+  header and TLS server name: checking a name and then handing the name to the HTTP client
+  was two lookups.
 
 - **An `accounts` token could make itself the server's root.** `POST /accounts/{id}/tokens`
   let an operator issue any scope into an account it created: `accounts.all`, which sees and

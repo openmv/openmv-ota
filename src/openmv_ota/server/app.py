@@ -706,6 +706,22 @@ def _ramp_or_autopause(ms, rid, ro):
                         product_id=pid)
 
 
+_BOARD_RE = re.compile(r"[A-Z][A-Z0-9_]{0,39}")
+_ID_RE = re.compile(r"[0-9A-Za-z_.-]{1,64}")
+_ACCOUNT_RE = re.compile(r"[0-9A-Za-z_.-]{0,64}")
+
+
+def _wellformed(req) -> bool:
+    """Whether a check-in or report names a camera the way a camera does: a board in a
+    firmware name's own spelling, an id and an account that are plain tokens. The registrar
+    answers for a name it NORMALIZES (case, surrounding space), so without this one
+    registered camera had as many identities here as it had spellings -- each one a row,
+    and each free to claim a different account and be offered that account's release."""
+    return ((req.board is None or _BOARD_RE.fullmatch(req.board) is not None)
+            and _ID_RE.fullmatch(req.device_id or "") is not None
+            and _ACCOUNT_RE.fullmatch(req.account_id or "") is not None)
+
+
 def _verify(state, req):
     """The registration check, with the check-in's board name sent VERBATIM -- the
     registry normalizes and owns board identity. ``req`` is a CheckIn or Feedback
@@ -771,47 +787,45 @@ async def _raw_body(request: Request) -> bytes:
     return await request.body()
 
 
-def _signature(ms, device_id: str, header: str | None, body: bytes) -> tuple[str, str | None]:
-    """How a check-in is signed: ``("signed", None)``, ``("unsigned", None)``, or
+def _signature(ms, device_id: str, header: str | None, body: bytes,
+               context: bytes = checkin_sig.CONTEXT) -> tuple[str, str | None]:
+    """How a request is signed: ``("signed", None)``, ``("unsigned", None)``, or
     ``("refused", reason)`` -- a signature from a camera with no registration, or one that doesn't
-    verify against the identity key its registration names."""
+    verify against the identity key its registration names. ``context`` is which request it
+    is (a check-in, a feedback report): one signed as the other does not verify."""
     if header is None:
         return "unsigned", None
     reg = ms.get_registration(device_id)
     if reg is None:
         return "refused", "unregistered"
     try:
-        ts = checkin_sig.verify(header, body, reg["identity"], time.time())
+        ts = checkin_sig.verify(header, body, reg["identity"], time.time(), context)
     except checkin_sig.CheckinSignatureError as e:
         return "refused", str(e)
-    if not _fresh(device_id, ts, header):
-        # The signature is good and the request is not new: it is one this camera already
-        # sent, or older than one it sent. A capture replayed inside the window, so it proves
-        # what a stale one proves and gets what a stale one gets (offers, no fleet row, no
-        # grants).
+    if not _fresh((device_id, context), ts):
+        # The signature is good and the request is not new: its time is not past the last
+        # one this camera signed. A capture replayed inside the window, so it proves what a
+        # stale one proves and gets what a stale one gets (offers, no fleet row, no grants).
         return "refused", "stale"
     return "signed", None
 
 
-_LAST_SIGNED: dict[str, tuple[int, set]] = {}   # device id -> (newest time signed, headers at it)
+_LAST_SIGNED: dict = {}                # (device id, context) -> the newest time it signed
 _LAST_SIGNED_MAX = 200_000
 
 
-def _fresh(device_id: str, ts: int, header: str) -> bool:
-    """Whether this signed request is new: later than every one ``device_id`` signed before,
-    or at the same second and not the same request. Kept in this process: with several
-    workers a replay has to reach the one that saw the original, and a restart forgets,
-    both inside a window of ``checkin_sig.WINDOW_S`` either way."""
-    last = _LAST_SIGNED.get(device_id)
-    if last is not None:
-        if ts < last[0] or (ts == last[0] and header in last[1]):
-            return False
-        if ts == last[0]:
-            last[1].add(header)
-            return True
-    elif len(_LAST_SIGNED) >= _LAST_SIGNED_MAX:
+def _fresh(who, ts: int) -> bool:
+    """Whether a signed request is new: signed LATER than every one that camera signed
+    before. The time, and not the header's text: one signed request has many spellings that
+    verify (field order, hex case, a second valid ``s``), and a camera signs once a poll.
+    Kept in this process: with several workers a replay has to reach the one that saw the
+    original, and a restart forgets, both inside ``checkin_sig.WINDOW_S`` either way."""
+    last = _LAST_SIGNED.get(who)
+    if last is not None and ts <= last:
+        return False
+    if last is None and len(_LAST_SIGNED) >= _LAST_SIGNED_MAX:
         _LAST_SIGNED.clear()                # bounded; forgetting only re-opens the window
-    _LAST_SIGNED[device_id] = (ts, {header})
+    _LAST_SIGNED[who] = ts
     return True
 
 
@@ -884,6 +898,8 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         retry = random.randint(*_THROTTLED_RETRY_S)          # noqa: S311 - jitter, not a secret
         return JSONResponse({"update": False, "poll_after_s": retry}, status_code=429,
                             headers={"Retry-After": str(retry)})
+    if not _wellformed(checkin):
+        return nothing                    # not a name a camera reports: no footprint, no offer
 
     if not st.settings.swd_ids_verify_url:
         # NO REGISTRATION SERVER ATTACHED (a self-host that cannot reach OpenMV's
@@ -1039,6 +1055,8 @@ def feedback(report: Feedback, request: Request, raw: bytes = Depends(_raw_body)
                             headers={"Retry-After": str(st.settings.poll_after_s)})
     if report.status not in ("installed", "failed"):
         raise HTTPException(status_code=400, detail="status must be 'installed' or 'failed'")
+    if not _wellformed(report):
+        return {"ok": False}
     if not st.settings.swd_ids_verify_url:
         return {"ok": False}          # no registrar attached -> read-only: nothing is logged
     reg = _verify(st, report)
@@ -1047,7 +1065,7 @@ def feedback(report: Feedback, request: Request, raw: bytes = Depends(_raw_body)
     report.device_id = _identity(report)     # the same board-qualified key check-in writes
     ms = st.metastore
     signed, _refusal = _signature(ms, report.device_id, request.headers.get(checkin_sig.HEADER),
-                                  raw)
+                                  raw, checkin_sig.FEEDBACK_CONTEXT)
     if signed != "signed":
         return {"ok": False}                 # anyone can name a camera; only it can sign as one
     # The camera's EFFECTIVE account (its sticky binding), the one its check-ins are filed
@@ -1130,24 +1148,38 @@ def _ranged(data: bytes, media_type: str, header: str | None) -> Response:
 
 
 _DEVICE_BODY_MAX = 64 * 1024       # a check-in is a few hundred bytes; slots and streams, a few KiB
+_ADMIN_BODY_MAX = 1024 * 1024      # the admin API's JSON: device id lists, a registration record
+_PUBLISH_PATH = "/api/v1/admin/releases"
 
 
-class _DeviceBodyLimit:
-    """Caps the body of a camera's POST (`/api/v1/check`, `/api/v1/feedback`). Those routes
-    take no credential, and the body is read whole before the rate limit is consulted, so
-    without a cap anyone could have the server buffer whatever they sent."""
+class _BodyLimit:
+    """Caps every request body. The framework reads and parses a body BEFORE it runs a
+    route's credential check, so without this anyone could have the server buffer whatever
+    they sent, to any route. A camera's routes take 64 KiB and the admin API's JSON 1 MiB.
+    A release upload is as large as the images it carries (the route caps each part), so
+    that one asks for the bearer token first: no valid token, no body read."""
 
-    _PATHS = ("/api/v1/check", "/api/v1/feedback")
+    _DEVICE = ("/api/v1/check", "/api/v1/feedback")
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope.get("path") not in self._PATHS:
+        if scope["type"] != "http" or scope.get("method") in ("GET", "HEAD", "OPTIONS"):
             return await self.app(scope, receive, send)
-        declared = dict(scope.get("headers") or ()).get(b"content-length")
-        if declared is not None and declared.isdigit() and int(declared) > _DEVICE_BODY_MAX:
-            return await self._too_large(send)
+        path = (scope.get("path") or "").rstrip("/")
+        headers = dict(scope.get("headers") or ())
+        if path.endswith(_PUBLISH_PATH) and scope.get("method") == "POST":
+            try:
+                scope["app"].state.admin_auth.authenticate(
+                    headers.get(b"authorization", b"").decode("latin-1"))
+            except HTTPException as e:
+                return await self._answer(send, e.status_code, str(e.detail))
+            return await self.app(scope, receive, send)
+        cap = _DEVICE_BODY_MAX if path.endswith(self._DEVICE) else _ADMIN_BODY_MAX
+        declared = headers.get(b"content-length")
+        if declared is not None and declared.isdigit() and int(declared) > cap:
+            return await self._answer(send, 413, "request body too large")
         seen, over = 0, False
 
         async def limited():
@@ -1155,7 +1187,7 @@ class _DeviceBodyLimit:
             message = await receive()
             if message["type"] == "http.request":
                 seen += len(message.get("body") or b"")
-                if seen > _DEVICE_BODY_MAX:        # chunked: no length to refuse up front
+                if seen > cap:                     # chunked: no length to refuse up front
                     over = True
                     return {"type": "http.disconnect"}     # the app stops reading here
             return message
@@ -1170,12 +1202,12 @@ class _DeviceBodyLimit:
             if not over:                           # that hung up, which this one did not
                 raise
         if over:
-            await self._too_large(send)
+            await self._answer(send, 413, "request body too large")
 
     @staticmethod
-    async def _too_large(send):
-        body = b'{"detail":"request body too large"}'
-        await send({"type": "http.response.start", "status": 413,
+    async def _answer(send, status: int, detail: str):
+        body = json.dumps({"detail": detail}, separators=(",", ":")).encode()
+        await send({"type": "http.response.start", "status": status,
                     "headers": [(b"content-type", b"application/json"),
                                 (b"content-length", b"%d" % len(body))]})
         await send({"type": "http.response.body", "body": body})
@@ -1220,7 +1252,7 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app = FastAPI(title="OpenMV OTA Update Server", version=__version__,
                   description=_API_DESCRIPTION, openapi_tags=_OPENAPI_TAGS,
                   docs_url=None, redoc_url=None)  # /docs is our self-hosted ReDoc page
-    app.add_middleware(_DeviceBodyLimit)
+    app.add_middleware(_BodyLimit)
     app.state.settings = settings
     app.state.keykeeper = (keykeeper if keykeeper is not None
                            else keykeeper_mod.build_keykeeper(settings))

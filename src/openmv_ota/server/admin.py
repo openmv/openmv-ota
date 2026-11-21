@@ -581,7 +581,8 @@ def rotate_token(token_hash: str, request: Request, body: TokenActor | None = No
         raise HTTPException(status_code=404)
     _active_account(ms, old["account_id"], principal)          # nor into one that is not ours
     fresh = _mint(ms, principal, old["name"], expand(old["scopes"]), old["account_id"], "token.rotate",
-                  extra={"replaced": token_hash}, actor=body.actor if body else None)
+                  extra={"replaced": token_hash}, actor=body.actor if body else None,
+                  products=list(old.get("products") or ()))   # a limited token stays limited
     ms.revoke_token(token_hash)
     return fresh
 
@@ -1016,8 +1017,8 @@ def _check_pin_release(ms, release_id, principal):
     re-checks the account when it does)."""
     if release_id is not None:
         rel = ms.get_release(release_id)
-        if rel is not None and rel.get("account_id", "") != principal.account_id:
-            raise HTTPException(status_code=404)
+        if rel is not None:
+            _owned(rel, principal)       # the account's, and a product this token may touch
 
 
 def _label(name: str) -> str:
@@ -1211,7 +1212,7 @@ def put_roots(body: RootsIn, request: Request,
 
 
 @admin.get("/roots", responses={200: {"model": RootsInfo}})
-def get_roots(request: Request, principal: Principal = Depends(require_scope("observe"))):
+def get_roots(request: Request, principal: Principal = Depends(require_account_scope("observe"))):
     """The roots the account is pinned to: what its desk keys must chain to. Empty until the
     project pushed them."""
     return {"roots": request.app.state.metastore.account_roots(principal.account_id)}
@@ -1271,7 +1272,7 @@ def put_desk_key(key_id: int, body: DeskKeyIn, request: Request,
 
 
 @admin.get("/desk-keys", responses={200: {"model": DeskKeyList}})
-def list_desk_keys(request: Request, principal: Principal = Depends(require_scope("observe"))):
+def list_desk_keys(request: Request, principal: Principal = Depends(require_account_scope("observe"))):
     """The account's desk keys: the public halves of the keys its desks sign camera registrations
     with, each with its label (which desk), expiry and whether it has been revoked."""
     return {"desk_keys": request.app.state.metastore.desk_keys(principal.account_id)}
@@ -1353,7 +1354,7 @@ def register_device(body: RegistrationIn, request: Request,
 
 @admin.get("/devices/{device_id}/registration", responses={200: {"model": Registration}})
 def device_registration(device_id: str, request: Request,
-                        principal: Principal = Depends(require_scope("observe"))):
+                        principal: Principal = Depends(require_account_scope("observe"))):
     """A camera's registration: its keys, which desk registered it and when, the signed record
     itself (exactly as the desk signed it), and how its signed check-ins are going: the last good
     one, and how many were refused and why."""
@@ -1552,7 +1553,8 @@ def dashboard(request: Request,
         "rollouts_paused_failure": ms.count_rollouts(account_id=acct, state="paused",
                                                      pause_reason="failure_limit",
                                                      products=scoped),
-        "advisories": ms.count_advisories(acct),
+        # advisories are per release and not filtered by product: a limited token gets none
+        "advisories": 0 if principal.products else ms.count_advisories(acct),
         "refused": ms.count_audit(account_id=acct, action="device.refused", products=scoped),
         "quiet_hours": quiet_hours,
     }
@@ -1763,6 +1765,10 @@ def list_advisories(request: Request, release_id: str | None = None,
     ms = request.app.state.metastore
     if release_id is not None:
         _owned(ms.get_release(release_id), principal)
+    elif principal.products:
+        # the account-wide list names every product's releases: a limited token asks per release
+        raise HTTPException(status_code=403, detail="this token is limited to a list of "
+                            "products: pass release_id")
     return {"advisories": ms.list_advisories(account_id=principal.account_id,
                                              release_id=release_id, active_only=active_only,
                                              sort=sort, direction=dir, limit=limit,
@@ -1787,6 +1793,9 @@ def scan_advisories(body: AdvisoryScanRequest, request: Request,
         rel = _owned(st.metastore.get_release(body.release_id), principal)
         out = advisor.scan_release(st, rel, actor=principal.name)
         return {"releases_scanned": 1, "findings": out["findings"], "new": out["new"]}
+    if principal.products:
+        raise HTTPException(status_code=403, detail="this token is limited to a list of "
+                            "products: pass release_id")
     out = advisor.scan_account(st, principal.account_id, actor=principal.name)
     return out
 

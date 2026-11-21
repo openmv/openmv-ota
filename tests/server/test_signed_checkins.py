@@ -14,6 +14,7 @@ import time
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
+from openmv_ota.ota import checkin_sig
 from openmv_ota.server.app import create_app
 from openmv_ota.server.auth import hash_token
 from openmv_ota.server.metastore import SqliteMetadataStore
@@ -169,12 +170,25 @@ def test_a_replayed_signed_check_in_gets_what_a_stale_one_gets(tmp_path):
     assert store.get_registration(DEV)["last_refusal"] == "stale"
     older = _check(c, body, camera.sign(key, body, ts=now - 5))         # one from before it
     assert "live" not in older and "ingest" not in older
-    # the camera's next request, and a second one in the same second, are both new
-    other = _body() + b" "
-    for b in (body, other):
-        store.note_refused_checkin(DEV, "cleared-by-the-test")
-        r = _check(c, b, camera.sign(key, b, ts=now + 1))
-        assert "live" in r or store.get_registration(DEV)["last_refusal"] != "stale"
+    # one request has many spellings that verify; none of them is a new request
+    ts_sig = first.split(";")
+    for variant in (first.upper().replace("V=", "v=").replace("TS=", "ts=").replace("SIG=", "sig="),
+                    "; ".join(ts_sig), ";".join(reversed(ts_sig)), first + ";x=1",
+                    first.replace("ts=%d" % now, "ts=+%d" % now)):
+        r = _check(c, body, variant)
+        assert "live" not in r and "ingest" not in r, variant
+    # the camera's next request is new
+    store.note_signed_checkin(DEV)
+    r = _check(c, body, camera.sign(key, body, ts=now + 1))
+    assert "live" in r
+    # ...and a signed check-in is not a signed feedback report, nor the other way round
+    fb = json.dumps({"device_id": "dev1", "board": "OPENMV_N6", "product_id": BID,
+                     "release_id": "rel1", "status": "installed"}).encode()
+    as_checkin = camera.sign(key, fb, ts=now + 2)
+    assert c.post("/api/v1/feedback", content=fb, headers={
+        "Content-Type": "application/json", "X-OMV-Signature": as_checkin}).json() == {"ok": False}
+    as_feedback = camera.sign(key, fb, ts=now + 3, context=checkin_sig.FEEDBACK_CONTEXT)
+    assert _check(c, fb, as_feedback) == NOTHING
 
 
 def test_a_camera_route_takes_no_more_than_a_check_in_is(tmp_path):
@@ -193,3 +207,49 @@ def test_a_camera_route_takes_no_more_than_a_check_in_is(tmp_path):
                       headers={"Content-Type": "application/json"}).status_code == 413
     ok = c.post("/api/v1/check", content=_body(), headers={"Content-Type": "application/json"})
     assert ok.status_code == 200
+
+
+def test_a_camera_has_one_name_here_however_the_registrar_would_read_it(tmp_path):
+    """The registrar answers for a board name in any case and with space around it, and for
+    an id with space around it. Each spelling was its own identity here: its own row, free
+    to claim a different account and be offered that account's release."""
+    c, store = _app(tmp_path)
+    for board, dev, acct in (("openmv_n6", "dev1", ACCT), ("OPENMV_N6 ", "dev1", ACCT),
+                             (" OPENMV_N6", "dev1", ACCT), ("OPENMV_N6", " dev1", ACCT),
+                             ("OPENMV_N6", "dev1\n", ACCT), ("OPENMV_N6", "dev/1", ACCT),
+                             ("OPENMV_N6", "dev1", "x" * 65), ("OPENMV_N6", "dev1", "a b"),
+                             ("OPENMV_N6", "", ACCT)):
+        body = json.dumps({"device_id": dev, "board": board, "product_id": BID,
+                           "payload_version": 0x01000000, "account_id": acct}).encode()
+        assert _check(c, body) == NOTHING, (board, dev, acct)
+        report = json.dumps({"device_id": dev, "board": board, "product_id": BID,
+                             "release_id": "rel1", "status": "failed", "account_id": acct})
+        assert c.post("/api/v1/feedback", content=report,
+                      headers={"Content-Type": "application/json"}).json() == {"ok": False}
+    assert store.query_all("SELECT * FROM device_accounts") == []
+    assert _check(c, _body())["update"] is True               # the camera's own name still works
+
+
+def test_no_route_reads_a_body_larger_than_it_could_use_before_it_knows_the_caller(tmp_path):
+    from openmv_ota.server import app as app_mod
+    c, _store = _app(tmp_path)
+    big = b"{" + b" " * app_mod._ADMIN_BODY_MAX + b"}"
+    for method, path in (("POST", "/api/v1/admin/webhooks"), ("POST", "/api/v1/admin/rollouts"),
+                         ("POST", "/api/v1/admin/registrations"), ("PUT", "/api/v1/admin/roots"),
+                         ("PATCH", "/api/v1/admin/devices/x/pin")):
+        r = c.request(method, path, content=big, headers={"Content-Type": "application/json"})
+        assert r.status_code == 413, (method, path, r.status_code)
+    # a release upload is large by nature: the bearer token is asked for before a byte is read
+    read = []
+
+    def parts():
+        read.append(1)
+        yield b"x" * 4096
+    r = c.post("/api/v1/admin/releases", content=parts(),
+               headers={"Content-Type": "multipart/form-data; boundary=b"})
+    assert r.status_code == 401 and read == []
+    r = c.post("/api/v1/admin/releases", content=parts(),
+               headers={"Content-Type": "multipart/form-data; boundary=b",
+                        "Authorization": "Bearer nope"})
+    assert r.status_code == 401 and read == []
+    assert c.get("/healthz").status_code == 200

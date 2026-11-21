@@ -123,6 +123,33 @@ def check_url(url: str, *, allow_private: bool = False, resolve=None) -> str:
     return url.strip()
 
 
+def pinned(url: str, *, allow_private: bool = False, resolve=None) -> tuple[str, str, str]:
+    """``(url, host header, server name)`` to deliver ``url`` with: the same URL with its
+    host swapped for ONE address the name resolves to now, checked as :func:`check_url`
+    checks it. Connecting to that address, and not to the name, is what closes the gap
+    between the check and the connection: a name resolved twice can answer public the first
+    time and private the second. The TLS handshake still asks for, and verifies, the name."""
+    check_url(url, allow_private=allow_private, resolve=resolve)
+    parts = urlsplit(url.strip())
+    resolve = resolve or socket.getaddrinfo
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        addrs = [info[4][0] for info in resolve(parts.hostname, port)]
+    except OSError:
+        raise WebhookError("the host does not resolve") from None
+    for a in addrs:                                 # again: this is the lookup that is USED
+        addr = ipaddress.ip_address(a)
+        if not allow_private and (not addr.is_global or addr.is_multicast):
+            raise WebhookError("the host resolves to a private address")
+    if not addrs:
+        raise WebhookError("the host does not resolve")
+    ip = addrs[0]
+    literal = "[%s]" % ip if ":" in ip else ip
+    netloc = literal if parts.port is None else "%s:%d" % (literal, parts.port)
+    host = parts.hostname if parts.port is None else "%s:%d" % (parts.hostname, parts.port)
+    return parts._replace(netloc=netloc).geturl(), host, parts.hostname
+
+
 def payload_for(hook: dict, entry: dict, delivery: dict) -> dict:
     """What a receiver gets: the audit entry, as the log holds it, plus how it got there."""
     return {
@@ -183,11 +210,14 @@ class Deliverer:
                        "X-OpenMV-Signature": sign(hook["secret"], ts, body)}
             code, error = None, ""
             try:
-                # Checked again at every send, not only when the endpoint was saved: a name
-                # that pointed somewhere public then can point inside the network now.
-                check_url(hook["url"], allow_private=self._settings.webhook_allow_private)
-                r = self._client().post(hook["url"], content=body, headers=headers,
-                                        timeout=self._settings.webhook_timeout_s)
+                # Resolved and checked at every send, not only when the endpoint was saved (a
+                # name that pointed somewhere public then can point inside the network now),
+                # and the connection goes to the address that was checked.
+                url, host, name = pinned(hook["url"],
+                                         allow_private=self._settings.webhook_allow_private)
+                r = self._client().post(url, content=body, headers=dict(headers, Host=host),
+                                        timeout=self._settings.webhook_timeout_s,
+                                        extensions={"sni_hostname": name})
                 code = r.status_code
                 if not 200 <= code < 300:
                     error = f"HTTP {code}"

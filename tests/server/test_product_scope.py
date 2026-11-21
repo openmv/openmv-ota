@@ -257,3 +257,38 @@ def test_a_limited_token_is_refused_on_the_routes_that_act_on_the_whole_account(
     assert c.patch("/api/v1/admin/devices/dev_%d/pin" % MINE, headers=LIMITED,
                    json={"release_id": "rel_mine"}).status_code == 200
     assert store.get_device("dev_%d" % THEIRS)["cohort"] == "__default__"
+
+
+def test_rotating_a_limited_token_leaves_it_limited(tmp_path):
+    """Rotation is the recovery path for a lost token. The replacement was minted with no
+    product list: the customer's credential became one for the whole account."""
+    c, store = _app(tmp_path)
+    store.add_token(hash_token("op"), "operator", ["accounts.all"], account_id="")
+    store.add_account(ACCOUNT, name="A", created_by="operator")
+    op = {"Authorization": "Bearer op"}
+    fresh = c.post("/api/v1/admin/tokens/%s/rotate" % hash_token("limited"), headers=op).json()
+    assert fresh["products"] == [MINE]
+    new = {"Authorization": "Bearer " + fresh["token"]}
+    assert c.get("/api/v1/admin/webhooks", headers=new).status_code == 403
+    assert [r["product_id"] for r in c.get("/api/v1/admin/releases", headers=new).json()["releases"]] == [MINE]
+
+
+def test_a_limited_token_cannot_reach_another_products_release_through_a_pin(tmp_path):
+    """The pin check looked at the release's account and not its product: pin one of your
+    own devices to the other product's release, check in as it, and download that release."""
+    c, store = _app(tmp_path)
+    for path, body in (("/devices/dev_%d/pin" % MINE, {"release_id": "rel_theirs"}),
+                       ("/cohorts/pin", {"product_id": MINE, "cohort": "__default__",
+                                         "release_id": "rel_theirs"})):
+        method = c.patch if "devices" in path else c.post
+        assert method("/api/v1/admin" + path, headers=LIMITED, json=body).status_code == 404
+    assert store.get_device_pin("dev_%d" % MINE) is None
+    # and the routes that named the other product's releases, or read the account's own records
+    assert c.get("/api/v1/admin/advisories", headers=LIMITED).status_code == 403
+    assert c.get("/api/v1/admin/advisories?release_id=rel_mine", headers=LIMITED).status_code == 200
+    assert c.get("/api/v1/admin/advisories?release_id=rel_theirs", headers=LIMITED).status_code == 404
+    assert c.post("/api/v1/admin/advisories/scan", headers=LIMITED, json={}).status_code == 403
+    for path in ("/roots", "/desk-keys", "/devices/dev_%d/registration" % THEIRS):
+        assert c.get("/api/v1/admin" + path, headers=LIMITED).status_code == 403
+    assert c.get("/api/v1/admin/dashboard", headers=LIMITED).json()["advisories"] == 0
+    assert c.get("/api/v1/admin/advisories", headers=WHOLE).status_code == 200

@@ -97,7 +97,10 @@ def test_an_endpoint_receives_matching_events_signed(tmp_path, monkeypatch):
     assert deliverer.run_once(now=time.time() + 1) == {"sent": 1, "failed": 0, "dead": 0}
     assert len(rx.calls) == 1
     req = rx.calls[0]
-    assert str(req.url) == "https://hooks.example/ota" and req.headers["content-type"] == "application/json"
+    # sent to the ADDRESS the name was checked at, asking for the name (Host, and the TLS server name)
+    assert str(req.url) == "https://93.184.216.34/ota" and req.headers["host"] == "hooks.example"
+    assert req.extensions["sni_hostname"] == "hooks.example"
+    assert req.headers["content-type"] == "application/json"
     assert req.headers["x-openmv-event"] == "rollout.stop" and req.headers["x-openmv-attempt"] == "1"
     body = _verify(secret, req)
     assert body["type"] == "rollout.stop" and body["account_id"] == "a1" and body["actor"] == "ci"
@@ -314,3 +317,19 @@ def test_an_address_that_is_not_public_is_refused(addr):
     """100.64.0.0/10 is the one a list of the private kinds misses."""
     with pytest.raises(wh.WebhookError, match="private address"):
         wh.check_url("https://x.example/", resolve=lambda h, p: [(0, 0, 0, 0, (addr, p))])
+
+
+def test_a_delivery_connects_to_the_address_it_checked():
+    """Checking the name and then handing the NAME to the HTTP client is two lookups: one
+    that answers public for the check and private for the connection got through."""
+    answers = iter([[(0, 0, 0, 0, ("93.184.216.34", 443))],      # the check
+                    [(0, 0, 0, 0, ("10.0.0.7", 443))]])          # the lookup that is used
+    with pytest.raises(wh.WebhookError, match="private address"):
+        wh.pinned("https://rebind.example/h", resolve=lambda h, p: next(answers))
+    assert wh.pinned("https://x.example:8443/h?a=1", resolve=_resolve_public) == (
+        "https://93.184.216.34:8443/h?a=1", "x.example:8443", "x.example")
+    v6 = lambda h, p: [(0, 0, 0, 0, ("2606:2800:220:1:248:1893:25c8:1946", p))]   # noqa: E731
+    assert wh.pinned("https://x.example/h", resolve=v6)[0] == \
+        "https://[2606:2800:220:1:248:1893:25c8:1946]/h"
+    with pytest.raises(wh.WebhookError, match="does not resolve"):
+        wh.pinned("https://x.example/h", resolve=lambda h, p: [] if p else None)

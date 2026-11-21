@@ -35,9 +35,13 @@ class CheckinSignatureError(OtaError):
     """A check-in signature that doesn't verify, with the reason (short: it is counted and shown)."""
 
 
-def digest(body: bytes, ts: int) -> bytes:
-    """What the camera signs: the context, its time and the body, hashed."""
-    return hashlib.sha256(CONTEXT + b"%d\n" % ts + body).digest()
+FEEDBACK_CONTEXT = b"omv-feedback-v1\n"           # a report is not a check-in: signed apart
+
+
+def digest(body: bytes, ts: int, context: bytes = CONTEXT) -> bytes:
+    """What the camera signs: the context (which request this is), its time and the body,
+    hashed."""
+    return hashlib.sha256(context + b"%d\n" % ts + body).digest()
 
 
 def parse(header: str) -> tuple[int, bytes]:
@@ -62,7 +66,8 @@ def parse(header: str) -> tuple[int, bytes]:
     return ts, sig
 
 
-def verify(header: str, body: bytes, identity: str, now: float) -> int:
+def verify(header: str, body: bytes, identity: str, now: float,
+           context: bytes = CONTEXT) -> int:
     """Check a check-in's signature header against the camera's registered identity key (an
     uncompressed P-256 point, hex). Returns the camera's time; raises
     :class:`CheckinSignatureError` (reason ``"stale"``, ``"bad signature"``, ...) otherwise."""
@@ -71,7 +76,7 @@ def verify(header: str, body: bytes, identity: str, now: float) -> int:
         raise CheckinSignatureError("stale")
     try:
         key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), bytes.fromhex(identity))
-        key.verify(sig, digest(body, ts), ec.ECDSA(Prehashed(hashes.SHA256())))
+        key.verify(sig, digest(body, ts, context), ec.ECDSA(Prehashed(hashes.SHA256())))
     except (ValueError, InvalidSignature):
         raise CheckinSignatureError("bad signature") from None
     return ts

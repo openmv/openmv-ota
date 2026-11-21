@@ -51,10 +51,16 @@ def register(store, device_id: str, account_id: str = "", *, key=None):
     return key
 
 
-def sign(key, body: bytes, ts: int | None = None) -> str:
-    """The ``X-OMV-Signature`` header for ``body``, signed by ``key`` at ``ts`` (default now)."""
-    ts = int(time.time()) if ts is None else ts
-    sig = key.sign(checkin_sig.digest(body, ts), ec.ECDSA(Prehashed(hashes.SHA256())))
+_clock = [0]
+
+
+def sign(key, body: bytes, ts: int | None = None, context: bytes = checkin_sig.CONTEXT) -> str:
+    """The ``X-OMV-Signature`` header for ``body``, signed by ``key`` at ``ts``. By default
+    the time is now, and later than the last one this helper signed at: the server takes a
+    camera's signed requests in order, and a test sends several in one second."""
+    if ts is None:
+        ts = _clock[0] = max(int(time.time()), _clock[0] + 1)
+    sig = key.sign(checkin_sig.digest(body, ts, context), ec.ECDSA(Prehashed(hashes.SHA256())))
     return "v=1;ts=%d;sig=%s" % (ts, sig.hex())
 
 
@@ -74,7 +80,8 @@ def feedback(client, body: dict, *, key=None, signed: bool = True):
     headers = {"Content-Type": "application/json"}
     if signed:
         headers["X-OMV-Signature"] = sign(
-            key if key is not None else key_for(identity_of(body)), raw)
+            key if key is not None else key_for(identity_of(body)), raw,
+            context=checkin_sig.FEEDBACK_CONTEXT)
     return client.post("/api/v1/feedback", content=raw, headers=headers)
 
 
