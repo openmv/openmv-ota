@@ -90,4 +90,13 @@ budget for now; these are the free/cheap passes to run first, in order.
     `keys rewrap`.
   - The signed check-in replay cache is per process: with several workers, or across a
     restart, a capture replays once inside its five-minute window.
+  - The server reads what its own upstreams send without a size cap (the advisory service,
+    the registrar, keykeeper, the datalake), and on local storage a download reads the
+    whole artifact into memory per request.
+  - A publisher's upload is held in memory whole: about 1.7 GiB a request at the default
+    caps, with no cap on how many run at once.
+  - A webhook endpoint that sends its status line a byte at a time holds the one delivery
+    worker for as long as it keeps sending.
+  - `flash register`: a malformed identity line from the USB device is a traceback, and its
+    error text is printed with control characters.
 - **When there is budget** — a targeted pentest of the update + signing chain only.

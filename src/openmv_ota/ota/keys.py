@@ -127,6 +127,7 @@ def private_key_pem(private_key, passphrase: str) -> bytes:
 def write_private(path, data: bytes) -> None:
     """Write key material readable by its owner alone, from the first byte: created 0600,
     never written under the umask and narrowed after."""
+    import contextlib
     import os
     import secrets
     # A new file beside it, then renamed over it: the bytes never go THROUGH what is at the
@@ -139,10 +140,8 @@ def write_private(path, data: bytes) -> None:
             fh.write(data)
         os.replace(tmp, str(path))
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
