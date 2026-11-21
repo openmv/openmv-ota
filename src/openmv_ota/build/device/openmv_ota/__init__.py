@@ -1118,8 +1118,11 @@ def _checkin_relieved(attempt, relieve, collect):
 
 
 def _offer(resp):
-    """The manifest URL to install, or None -- pure."""
-    return resp.get("manifest_url") if resp.get("update") else None
+    """The manifest URL to install, or None -- pure. An offer names an https URL and nothing
+    else: the reply is unsigned, and a path in it would send the installer to a file on the
+    camera, with no TLS in the way."""
+    url = resp.get("manifest_url") if resp.get("update") else None
+    return url if isinstance(url, str) and url.startswith("https://") else None
 
 
 # INSTALL FROM A FRESH HEAP. An update is installed in place only on the BOOT check-in, before

@@ -175,6 +175,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   manages every account on the server, or an `accounts` token named after another operator,
   which acted as that operator (accounts are filed under the token's name). Only a token
   with `accounts.all` can issue either operator scope now; the rest get a 403.
+- **A download could write the slot's status sector before its hash was checked.** The
+  installer streams the image over the whole slot and checks the sha256 after the last
+  chunk, so bytes the stream placed in the status sector stayed on flash when the check
+  failed. Whoever served the image (the update server, the image host, or the network path
+  on a board whose TLS is unverified) could leave a `confirmed` marker beside an old signed
+  image, which boots without the anti-rollback check, or a floor entry no image can meet,
+  which no update recovers from. A published image leaves that sector blank; the installer
+  refuses a stream that does not, before the write.
+- **Smaller installer gates.** A manifest with no image sha256 is refused (it installed with
+  no integrity check on the download). A retired key's manifest is refused by the epoch
+  floor on flash as well as the running image's, which covers recovery. An update offer
+  must name an `https://` URL; a path sent the installer to a file on the camera.
 
 - **The compromised eMudhra root is out of every trust store this tool ships or installs.**
   Eight eMudhra (emSign) intermediate CA keys were compromised in October 2026, and the root

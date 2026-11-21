@@ -1286,6 +1286,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     mv = memoryview(work)
     off = 0
     since_gc = 0
+    status_at = slot_size - 2 * block
     n = primed                                       # a primed first chunk is already in `work`
     while off < slot_size:
         feed()                                       # before the (recv + delta reconstruct) fill
@@ -1295,6 +1296,16 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         if n == 0:
             break                                    # source exhausted; the size check below rejects short
         chunk = mv[:n]
+        # THE STATUS SECTOR IS THE CAMERA'S, NEVER THE IMAGE'S. A published image leaves it
+        # blank; the floors above and the arm sequence below are the only writers. These bytes
+        # are programmed before the sha256 below can refuse them, so a stream that carried a
+        # CONFIRMED marker beside an old signed image, or a floor entry, would leave it on
+        # flash for the next boot to believe. Refused here, before the write.
+        lo = off if off > status_at else status_at
+        hi = off + n if off + n < status_at + block else status_at + block
+        if lo < hi and not _is_blank(mv[lo - off:hi - off]):
+            log.warning("install: reject status bytes")
+            raise OSError("image carries status-sector bytes")
         if digest is not None:
             digest.update(chunk)                     # the image as signed: before the cipher
         if crypt is not None and off < crypt_size:
@@ -1699,7 +1710,7 @@ def _lockbox_key(lockbox, enc, se=None):
 
 def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop,
                     floor=0, base_version=0, delta_capable=True,
-                    base_body_sha=""):  # pragma: no cover
+                    base_body_sha="", epoch_floor=0):  # pragma: no cover
     """Pre-erase: fetch the signed manifest, verify its signature against the frozen
     trusted keys (exactly as boot.py verifies an image trailer), apply the device-relative
     checks (board / platform / anti-rollback), and pick a representation. Returns
@@ -1728,21 +1739,21 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop,
     except Exception as e:  # hil-residual: connection-phase failure wrapper (needs a dropped link / bad cert to reach; the happy path fetches cleanly)
         raise _TransportError("manifest fetch failed: %r" % (e,))  # hil-residual: bare raise (cause kept in the message; run() logs it as deferred + retries)
     return _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version,  # hil-residual: bare delegation into the host-tested vet (its markers witness the outcome)
-                         delta_capable, base_body_sha)  # hil-residual: continuation of the same delegation
+                         delta_capable, base_body_sha, epoch_floor)  # hil-residual: continuation of the same delegation
 
 
 def _fetch_manifest_file(manifest_path, cfg, verify, floor=0, base_version=0,
-                         delta_capable=True, base_body_sha=""):
+                         delta_capable=True, base_body_sha="", epoch_floor=0):
     """The on-disk twin of ``_fetch_manifest``: read the signed manifest from a mounted
     filesystem (an SD card holding the published artifacts) and hand it to the same
     verify + vetting. An unreadable path raises OSError straight to the app -- unlike a
     dropped link it is not transient, so it is a rejection, never a deferred retry."""
     return _vet_manifest(manifest_path, _read_manifest_file(manifest_path), cfg, verify,
-                         floor, base_version, delta_capable, base_body_sha)
+                         floor, base_version, delta_capable, base_body_sha, epoch_floor)
 
 
 def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_capable,
-                  base_body_sha=""):
+                  base_body_sha="", epoch_floor=0):
     """Verify + vet a signed manifest already in RAM and pick a representation -- the
     pure-CPU half of the manifest phase, shared by the HTTPS fetch and the on-disk
     path. Returns ``(image_url, fmt, expect_sha, wbits, alt, enc, crypt)``; raises OSError
@@ -1766,7 +1777,10 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
         if root is None or not verify(_ES256, root, c["signature"], c["region"]):
             log.warning("install: reject untrusted key")
             raise OSError("manifest signed by an untrusted key")
-        if c["epoch"] < getattr(cfg, "last_epoch", 0):
+        # ...by the running image's epoch or the floor on flash, whichever is higher: in
+        # recovery no image is mounted, and the floor is all there is.
+        last_epoch = getattr(cfg, "last_epoch", 0)
+        if c["epoch"] < (last_epoch if last_epoch > epoch_floor else epoch_floor):
             log.warning("install: reject untrusted key")
             raise OSError("manifest signed by a retired key")
         if not verify(m["sig_alg"], c["pubkey"], m["signature"], m["region"]):
@@ -1790,6 +1804,10 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
     image_url = _resolve_url(manifest_url, rep["url"])
     fmt = rep.get("format")
     expect_sha = body_dict.get("sha256")
+    if not isinstance(expect_sha, str) or len(expect_sha) != 64:
+        # No hash, no integrity gate on the download: _install_stream checks only what it is given.
+        log.warning("install: reject vetting")
+        raise OSError("manifest names no image sha256")
     # The slot cipher's inputs, on a board whose stub keeps the slots encrypted: the trailer's
     # signed-region hash (the tweak's input) and how far the cipher reaches. Signed with the
     # rest; a manifest without them cannot be installed there, because the keystream must be
@@ -2404,12 +2422,12 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
             image_url, fmt, expect_sha, wbits, alt, enc, crypt_in = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
                 manifest_url, cfg, verify,
                 floor=floor, base_version=base_version, delta_capable=delta_capable,
-                base_body_sha=base_body_sha)
+                base_body_sha=base_body_sha, epoch_floor=epoch)
         else:
             image_url, fmt, expect_sha, wbits, alt, enc, crypt_in = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
                 manifest_url, ca_pem, cfg, verify, socket, ssl, feed,
                 floor=floor, base_version=base_version, delta_capable=delta_capable,
-                base_body_sha=base_body_sha)
+                base_body_sha=base_body_sha, epoch_floor=epoch)
     except Exception as e:
         # Two very different failures land here and only ONE is a rejected update. A REJECTION -- bad
         # signature/key, failed vetting, or a corrupt/unparseable manifest -- must read as install.reject
