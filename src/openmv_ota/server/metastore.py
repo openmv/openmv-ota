@@ -582,6 +582,11 @@ _MIGRATIONS: list[list[str]] = [
         "-- postgres: ALTER TABLE releases ALTER COLUMN payload_version TYPE BIGINT",
         "-- postgres: ALTER TABLE releases ALTER COLUMN min_platform_version TYPE BIGINT",
     ],
+    [   # v43 -- when a camera last moved product, written by the server. The product it left
+        # stays open to it for a failed trial to come back to; "until it confirms" alone left
+        # that to a word the camera writes, so one that never said it kept both for good.
+        "ALTER TABLE device_registrations ADD COLUMN product_moved_at TEXT",
+    ],
 ]
 
 # How long after one refused check-in is audited the next one from the same camera is (see
@@ -1927,10 +1932,28 @@ class SqlMetadataStore:
             self.execute("UPDATE device_registrations SET product_id = NULL, "
                          "prev_product_id = NULL WHERE device_id = ?", (device_id,))
             return
-        self.execute("UPDATE device_registrations SET prev_product_id = product_id, "
-                     "product_id = ? WHERE device_id = ? "
-                     "AND (product_id IS NULL OR product_id <> ?)",
-                     (product_id, device_id, product_id))
+        # Back to the product it left (a failed trial): that one is where it is again, and
+        # there is nowhere further back. Anywhere else: where it was is kept, and from when.
+        self.execute("UPDATE device_registrations SET "
+                     "prev_product_id = CASE WHEN prev_product_id = ? THEN NULL "
+                     "ELSE product_id END, product_moved_at = ?, product_id = ? "
+                     "WHERE device_id = ? AND (product_id IS NULL OR product_id <> ?)",
+                     (product_id, _now_iso(), product_id, device_id, product_id))
+
+    def registration_products(self, device_id: str) -> tuple:
+        """``(known, prev)``: the product a registered camera is in the fleet under, and the
+        one it left on its last move while that is still open to it -- until it confirms the
+        move, comes back, or a day passes (a trial is over in a few boots). ``(None, None)``
+        for a camera with no registration, or none noted."""
+        row = self.query_one("SELECT product_id, prev_product_id, product_moved_at "
+                             "FROM device_registrations WHERE device_id = ?", (device_id,))
+        if row is None:
+            return None, None
+        row = _d(row)
+        prev = row["prev_product_id"]
+        if prev is not None and _a_day_since(row["product_moved_at"]):
+            prev = None
+        return row["product_id"], prev
 
     def settle_registration_product(self, device_id: str) -> None:
         """The camera confirmed the image it runs: the product it was under before is no

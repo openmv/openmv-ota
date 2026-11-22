@@ -1032,10 +1032,11 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     # check-in that stores its row, and kept when the row is forgotten. None is "not yet":
     # never enrolled, forgotten by a token for the whole account, or registered again at a
     # desk (reflashed, perhaps as another product) -- it enrols under what it reports.
-    # ``prev`` is where it was before its last move, until it confirms the image it moved
-    # to: a move that fails its trial reverts to the old image, which reports the old product.
-    noted = ms.get_registration(checkin.device_id) or {}
-    known, prev = noted.get("product_id"), noted.get("prev_product_id")
+    # ``prev`` is where it was before its last move: a move that fails its trial reverts to
+    # the old image, which reports the old product. Open until the camera confirms the image
+    # it moved to, comes back, or a day has passed since the move -- the last two by the
+    # server's own record, since "confirmed" is a word the camera writes.
+    known, prev = ms.registration_products(checkin.device_id)
     if known is not None and checkin.product_id not in (known, prev) and \
             not _sent_to_product(ms, existing or {}, checkin, account_id):
         # A CAMERA DOES NOT MOVE ITSELF BETWEEN PRODUCTS. Its signature says which camera, not
