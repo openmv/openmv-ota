@@ -2528,7 +2528,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
         # fitting and MemoryError x3. The armed-watchdog gc_collect hook exists for
         # pause control; this one is for the allocation itself.
         gc.collect()  # hil-residual: pre-DeflateIO collect; effect only visible on small-heap classics (no fleet marker)
-        if enc and gc.mem_free() < _HOLD_HEAP:
+        if enc and wbits and gc.mem_free() < _HOLD_HEAP:
             # A SMALL HEAP IS ALSO A FRAGMENTED ONE. Measured on the M7 (50 KB of heap) at this
             # line: 15.7 KB free, the largest hole 5328 bytes. DeflateIO's first read takes its
             # state (about 1.3 KB) and then its window (4096) -- first fit put the state at the
@@ -2536,6 +2536,11 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
             # MemoryError with three windows' worth of heap free. Hold a window-sized block
             # there so the state goes to a smaller hole; the decrypt layer lets it go between
             # the two allocations.
+            #
+            # ``wbits`` GATES THE MEASUREMENT, not only the hold: gc.mem_free() walks the whole
+            # heap, and on the N6's (megabytes) that walk straight after the collect above
+            # outlasted a 100 ms watchdog window -- every install reset at this line. Only a
+            # small-heap board's image carries a small window, so a large heap never walks.
             try:  # hil-residual: small-heap arm (under 32 KB free with an encrypted image): the classics' file legs take it, and no marker of theirs is in the map
                 body.hold = bytearray(_window_bytes(wbits))  # hil-residual: same arm; its effect is the M7's encrypted install fitting at all
             except MemoryError:  # hil-residual: no hole takes a window at all; the read below says so itself

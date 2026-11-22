@@ -181,6 +181,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the head of that hole and the window missed it by a hundred bytes, so any growth in the
   device library failed the install with `MemoryError`. Under 32 KB free, the installer now
   holds the window's place while the state is allocated, so the two go to different holes.
+  Only a small-window image measures the heap at all: the measurement walks every block,
+  and on the OpenMV N6's heap that walk outlasted a 100 ms watchdog window.
 - **A check-in answer costs the camera a fixed amount of RAM and at most 30 seconds.** The
   status and header lines were read with `readline()`, which grows until a newline comes,
   so whoever answered the check-in chose how much heap it took; and every byte restarted
