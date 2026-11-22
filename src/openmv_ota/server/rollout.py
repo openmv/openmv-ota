@@ -40,7 +40,7 @@ def fallback_payload_version(slots: list[dict] | None) -> int | None:
     if other is None:
         return None
     version = other.get("payload_version")
-    if isinstance(version, bool) or not isinstance(version, int) or not 0 < version <= 0x7FFFFFFF:
+    if isinstance(version, bool) or not isinstance(version, int) or not 0 < version <= 0xFFFFFFFF:
         return None                    # not a version a fleet row holds: unknown, like 0
     return version
 
@@ -56,7 +56,9 @@ def running_body_sha256(slots: list[dict] | None) -> str | None:
     if running is None:
         return None
     sha = running.get("body_sha256")
-    return sha[:64] if isinstance(sha, str) and sha else None    # a SHA-256 in hex, no more
+    if not isinstance(sha, str) or not sha:
+        return None
+    return sha[:64].replace("\x00", "").encode("utf-8", "replace").decode("utf-8")   # hex, no more
 
 
 def settled(slots: list[dict] | None) -> bool:

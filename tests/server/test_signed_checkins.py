@@ -149,7 +149,7 @@ def test_a_camera_does_not_move_itself_to_another_product(tmp_path):
         [(BID, {"product_id": BID, "reported": BID + 1})]
     _check(c, other, camera.sign(key, other))                          # again: counted once a day
     assert len(_audit(store, "device.product_mismatch")) == 1
-    store.execute("UPDATE devices SET product_mismatch_at = ? WHERE device_id = ?",
+    store.execute("UPDATE device_registrations SET product_mismatch_at = ? WHERE device_id = ?",
                   ("2020-01-01T00:00:00+00:00", DEV))
     assert store.note_product_mismatch(DEV) is True                    # a day on, news again
     assert store.note_product_mismatch("OPENMV_N6:nobody") is False    # no fleet row to note it on
@@ -169,6 +169,9 @@ def test_a_camera_does_not_move_itself_to_another_product(tmp_path):
     assert "live" in _check(c, moved, camera.sign(key, moved))
     assert store.get_device(DEV)["product_id"] == BID + 1
     assert store.get_registration(DEV)["product_id"] == BID + 1        # remembered off the row
+    settled = json.dumps({**json.loads(moved), "confirmed": True}).encode()
+    time.sleep(1.1)
+    _check(c, settled, camera.sign(key, settled))                      # the move is confirmed
     # FORGOTTEN, IT IS STILL OF THAT PRODUCT. A token limited to one product can forget its
     # camera's fleet row, and the camera then named any product of the account as it enrolled.
     store.forget_device(DEV)
@@ -504,7 +507,7 @@ def test_a_check_ins_numbers_fit_what_stores_them(tmp_path):
     its audit rows: the journal mark never moved, and the same rows were written again."""
     c, store = _app(tmp_path)
     key = _register(store)
-    for field, value in (("payload_version", 2 ** 31), ("payload_version", -1),
+    for field, value in (("payload_version", 2 ** 32), ("payload_version", -1),
                          ("publish_seq", 2 ** 48), ("product_id", 2 ** 63)):
         body = json.dumps({**json.loads(_body()), field: value}).encode()
         assert camera.post(c, body, camera.sign(key, body)).status_code == 422
@@ -551,3 +554,105 @@ def test_a_camera_with_a_row_and_no_noted_product_gets_it_noted(tmp_path):
     odd = json.dumps({**json.loads(body), "app_version": "v\u0000\ud800x"}).encode()
     assert _check(c, odd, camera.sign(key, odd))["update"] is True     # stored without them
     assert "\x00" not in store.get_device(DEV)["current_version"]
+
+
+def _rel2(store):
+    store.add_release(release_id="rel2", product_id=BID + 1, product="Q", version="3.0.0",
+                      payload_version=0x03000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=3, representations=[{"format": "full", "url": "x.img.gz",
+                                                      "size": 3}],
+                      manifest_key="m/rel1", image_key="i/rel1", account_id=ACCT)
+
+
+def test_a_move_that_fails_its_trial_comes_back(tmp_path):
+    """Pinned to another product's release, a camera installs it, checks in from the trial as
+    that product, fails the trial and reverts to the image it had -- which reports the product
+    it had. Held to the new product, that check-in was a mismatch: no fleet row update, no
+    fallback in the audit trail, and the same release offered again for ever."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    _rel2(store)
+    ts = int(time.time()) - 100
+
+    def report(**kw):
+        nonlocal ts
+        ts += 1
+        body = json.dumps({**json.loads(_body()), **kw}).encode()
+        return _check(c, body, camera.sign(key, body, ts=ts))
+
+    report(payload_version=0x02000000, confirmed=True)                 # at home in BID
+    store.set_device_pin(DEV, "rel2", account_id=ACCT)
+    assert report(payload_version=0x02000000, confirmed=True)["release_id"] == "rel2"
+    report(product_id=BID + 1, payload_version=0x03000000)             # the trial, as BID + 1
+    reg = store.get_registration(DEV)
+    assert (reg["product_id"], reg["prev_product_id"]) == (BID + 1, BID)
+    r = report(payload_version=0x02000000, confirmed=True, fallback_reason="trial-failed")
+    assert "live" in r                                                 # back, and believed
+    assert store.get_device(DEV)["product_id"] == BID
+    assert [e["data"]["reason"] for e in _audit(store, "device.fallback")] == ["trial-failed"]
+    assert _audit(store, "device.product_mismatch") == []
+    # Once it CONFIRMS where it moved to, the product it left is closed to it.
+    report(product_id=BID + 1, payload_version=0x03000000)
+    report(product_id=BID + 1, payload_version=0x03000000, confirmed=True)
+    assert store.get_registration(DEV)["prev_product_id"] is None
+    store.set_device_pin(DEV, None, account_id=ACCT)
+    store.execute("UPDATE devices SET last_offered_release_id = NULL WHERE device_id = ?", (DEV,))
+    assert "live" not in report(payload_version=0x02000000, confirmed=True)
+    assert len(_audit(store, "device.product_mismatch")) == 1
+
+
+def test_a_camera_registered_again_enrols_as_what_it_now_is(tmp_path):
+    """Reflashed at a desk as another product of the account and registered again: an act of
+    the account, so the product it was is no longer held against it. Without that it was
+    offers-only for good, with nothing a token limited to either product could do."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    body = _body()
+    _check(c, body, camera.sign(key, body))
+    assert store.get_registration(DEV)["product_id"] == BID
+    other = json.dumps({**json.loads(body), "product_id": BID + 1}).encode()
+    assert "live" not in _check(c, other, camera.sign(key, other))     # on its own: no
+    _register(store)                                                   # registered again
+    assert store.get_registration(DEV)["product_id"] is None
+    assert "live" in _check(c, other, camera.sign(key, other))
+    assert store.get_device(DEV)["product_id"] == BID + 1
+
+
+def test_a_mismatch_is_audited_for_a_camera_with_no_fleet_row(tmp_path):
+    c, store = _app(tmp_path)
+    key = _register(store)
+    body = _body()
+    _check(c, body, camera.sign(key, body))
+    store.forget_device(DEV)                                           # as a limited token does
+    other = json.dumps({**json.loads(body), "product_id": BID + 1}).encode()
+    _check(c, other, camera.sign(key, other))
+    _check(c, other, camera.sign(key, other))
+    assert [e["data"] for e in _audit(store, "device.product_mismatch")] == \
+        [{"product_id": BID, "reported": BID + 1}]
+
+
+def test_a_cohort_pinned_across_products_moves_its_cameras(tmp_path):
+    c, store = _app(tmp_path)
+    key = _register(store)
+    _rel2(store)
+    body = _body()
+    _check(c, body, camera.sign(key, body))
+    store.execute("UPDATE devices SET last_offered_release_id = NULL WHERE device_id = ?", (DEV,))
+    store.set_cohort_pin(BID, "__default__", "rel2", account_id=ACCT)
+    moved = json.dumps({**json.loads(body), "product_id": BID + 1,
+                        "payload_version": 0x03000000}).encode()
+    assert "live" in _check(c, moved, camera.sign(key, moved))
+    assert store.get_device(DEV)["product_id"] == BID + 1
+
+
+def test_a_version_with_a_major_past_127_checks_in(tmp_path):
+    """A payload version is major << 24 with a major up to 255: 32 bits, not 31."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    body = json.dumps({**json.loads(_body()), "payload_version": 0xC8000000,
+                       "slots": [{"running": True, "payload_version": 0xC8000000},
+                                 {"running": False, "payload_version": 0xC7000000}]}).encode()
+    assert camera.post(c, body, camera.sign(key, body)).status_code == 200
+    row = store.get_device(DEV)
+    assert (row["current_payload_version"], row["fallback_payload_version"]) == \
+        (0xC8000000, 0xC7000000)
