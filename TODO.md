@@ -151,4 +151,10 @@ budget for now; these are the free/cheap passes to run first, in order.
     anything is fetched (a hostile server can loop it); the factory window signs any 32
     bytes with the identity key (console access); a `.hilcov_uart` file on a volume turns
     on debug logging; the installer's header reader keeps up to 64 headers of 4 KiB.
+  - Round 7 (server): a camera that has never enrolled names its own product on its first
+    signed check-in (the server has nothing to compare it to; a pin's product is not
+    consulted); "is it news" checks are read-then-write, so a burst can audit a few rows
+    instead of one; registration's device-limit check is check-then-write; an unsigned
+    check-in naming a registered camera with a sealed release pending is one keykeeper
+    call; a token in account `''` reads every account's `/fleet/bases`.
 - **When there is budget** — a targeted pentest of the update + signing chain only.
