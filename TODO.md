@@ -157,4 +157,12 @@ budget for now; these are the free/cheap passes to run first, in order.
     instead of one; registration's device-limit check is check-then-write; an unsigned
     check-in naming a registered camera with a sealed release pending is one keykeeper
     call; a token in account `''` reads every account's `/fleet/bases`.
+  - Rounds 8-10 (server), the product a camera is held to: registering a camera again in
+    the middle of a cross-product trial forgets the product it left, so a failed trial
+    then reads as a mismatch; so does a fallback to the other slot long after a move was
+    confirmed, a desk reflash to another product without registering, a limited-token
+    forget in the middle of a move (it drops the pin), and an unpin before the first signed
+    check-in in the new product. Each has a one-step exit (pin to a release of the
+    product, or register again). Journal entries the audit budget dropped are not audited
+    later; a `stale` refusal uses the day's refusal-audit slot.
 - **When there is budget** — a targeted pentest of the update + signing chain only.
