@@ -9,6 +9,8 @@ ENV is the self-host convenience.
 
 from __future__ import annotations
 
+import re
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -96,7 +98,9 @@ class ServerSettings(BaseSettings):
     # megabytes; these are generous by comparison and still bounded.
     max_image_bytes: int = 512 * 1024 * 1024
     max_manifest_bytes: int = 1024 * 1024
-    max_sbom_bytes: int = 32 * 1024 * 1024
+    # Parsed whole, under the interpreter lock, at publish and at every advisory scan: a size
+    # a tenant chooses is time every other request waits. 5000 components fit in 2 MiB.
+    max_sbom_bytes: int = 2 * 1024 * 1024
 
     capability_ttl: int = 3600             # lifetime of an artifact capability token
     # OpenMV Live: when BOTH are set, every registered device's check-in response carries a
@@ -183,5 +187,7 @@ class ServerSettings(BaseSettings):
                 continue
             if name in _SECRET_FIELDS and val:
                 val = "***"
+            if name == "database_url" and val:
+                val = re.sub(r"(://[^:/@]*:)[^@]*@", r"\1***@", str(val))     # its password
             out.append("%s = %s" % (name, val))
         return out

@@ -177,10 +177,13 @@ def test_a_registered_camera_keeps_its_seat_at_check_in(tmp_path):
     assert store.claimed_count("acctA") == 1 and store.over_device_limit("acctA")
     _check(c)
     assert store.get_device(GIGA)["account_id"] == "acctA"     # not refused at its first check-in
-    camera.register(store, "OPENMV4:dev2", "acctB")             # registered, but not to acctA
-    _check(c, dev="dev2", board="OPENMV4")                      # so a second camera is
-    assert store.get_device("OPENMV4:dev2") is None
+    camera.register(store, "OPENMV4:dev2")                      # registered to no account: it
+    _check(c, dev="dev2", board="OPENMV4")                      # holds no seat, so a second
+    assert store.get_device("OPENMV4:dev2") is None             # camera is refused
     assert "device.refused" in _actions(c, A)
+    camera.register(store, "OPENMV4:dev3", "acctB")             # registered to acctB: it is
+    _check(c, dev="dev3", board="OPENMV4")                      # acctB's, whatever it reports
+    assert store.get_device("OPENMV4:dev3")["account_id"] == "acctB"
 
 
 def test_registering_a_new_camera_past_the_limit_is_refused(tmp_path):

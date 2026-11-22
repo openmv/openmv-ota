@@ -749,6 +749,14 @@ def _effective_account(ms, checkin):
     bound = ms.device_account(checkin.device_id)
     if bound is not None:
         return bound["account_id"]
+    registered = ms.get_registration(checkin.device_id)
+    if registered is not None and registered["account_id"]:
+        # Forgotten from the fleet, and still registered: the account its key was registered
+        # to is its account, whatever the request says. Learned from the report instead, the
+        # binding went to whoever sent that camera's id first -- no signature needed -- and
+        # the camera's own signed check-ins were then filed, and granted, under that account.
+        ms.bind_device_account(checkin.device_id, registered["account_id"], source="learned")
+        return registered["account_id"]
     if checkin.account_id:
         ms.bind_device_account(checkin.device_id, checkin.account_id, source="learned")
         return checkin.account_id

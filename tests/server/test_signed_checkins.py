@@ -321,3 +321,21 @@ def test_the_replay_cache_is_bounded_and_the_body_limit_does_not_hide_an_apps_ow
         return {"type": "http.request", "body": b"x" * (app_mod._DEVICE_BODY_MAX + 1), "more_body": False}
     asyncio.run(app_mod._BodyLimit(broken)(scope, big, send))    # over the cap: the 413, not the error
     assert sent[0]["status"] == 413
+
+
+def test_a_forgotten_camera_stays_with_the_account_it_is_registered_to(tmp_path):
+    """Forgetting a camera drops its fleet row and binding and keeps its registration. The
+    next check-in for that id, signed or not, used to be believed about its account: another
+    tenant naming the id took the binding, and the camera's own signed check-ins followed."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    body = _body()
+    _check(c, body, camera.sign(key, body))
+    assert store.get_device(DEV)["account_id"] == ACCT
+    store.forget_device(DEV)
+    store.add_account("acct_other", "Other")
+    theirs = json.dumps(dict(json.loads(body), account_id="acct_other")).encode()
+    _check(c, theirs)                                                   # unsigned, by anyone
+    assert store.device_account(DEV)["account_id"] == ACCT
+    _check(c, body, camera.sign(key, body))
+    assert store.get_device(DEV)["account_id"] == ACCT

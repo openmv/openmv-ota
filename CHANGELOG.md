@@ -170,6 +170,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A camera removed from the fleet could be taken into another account.** Forgetting a
+  device drops its binding and keeps its registration, and the next check-in for that id,
+  signed or not, was believed about its account: a tenant that kept naming the id got the
+  binding, and the camera's own signed check-ins, fleet row, ingest grant and Live were
+  then that tenant's. A camera registered to an account is that account's, whatever a
+  check-in reports.
+- **An SBOM is at most 2 MiB (was 32).** It is parsed whole at publish and at every
+  advisory scan, and a 32 MiB one held every other request for a second and a half each
+  time its owner asked for a scan.
+- **`server check` no longer prints the database password** in `database_url`.
 - **`POST /api/v1/feedback` took anyone's word.** It checked that the camera id was
   registered and nothing else: no signature, and the account read from the body. Anyone
   who knew one registered id could file failed installs and audit entries, in their own

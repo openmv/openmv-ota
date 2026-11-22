@@ -102,8 +102,8 @@ def test_unregistered_gets_nothing_and_writes_nothing(tmp_path):
 
 
 def test_new_device_past_the_account_limit_is_refused_but_the_fleet_keeps_working(tmp_path):
-    """A device limit binds NEW devices only: the (limit+1)th id -- a camera registered, but not
-    to this account, so it holds no seat here -- is served nothing and never written (zero
+    """A device limit binds NEW devices only: the (limit+1)th id -- a camera registered to no
+    account, so it holds no seat here and is this account's on its own say -- is served nothing and never written (zero
     footprint), audited once; devices already in keep checking in. Lifting the limit lets the
     refused device in on its next check-in."""
     app, store, storage, v = _app(tmp_path)
@@ -111,7 +111,7 @@ def test_new_device_past_the_account_limit_is_refused_but_the_fleet_keeps_workin
     store.add_account("acctL", "Limited")
     camera.check(c, _checkin("dev1", account_id="acctL"))   # learned binding
     store.set_device_limit("acctL", 1)
-    camera.register(store, "dev2", "acct_elsewhere")
+    camera.register(store, "dev2")
     for _ in range(2):                                        # refused, and refused again
         assert camera.check(c, _checkin("dev2", account_id="acctL")).json()["update"] is False
     assert store.get_device("dev2") is None

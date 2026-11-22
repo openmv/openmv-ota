@@ -99,8 +99,10 @@ TEST_KEY_PASSPHRASE = "test-passphrase"
 def _no_signed_history():
     """The server remembers, per process, the newest time each camera signed. Every test's
     cameras share a few device ids and one process, so a test starts with none remembered."""
-    from openmv_ota.server import app as _app
-    _app._LAST_SIGNED.clear()
+    import sys
+    loaded = sys.modules.get("openmv_ota.server.app")       # not installed in every CI job
+    if loaded is not None:
+        loaded._LAST_SIGNED.clear()
 
 
 @pytest.fixture(autouse=True)
