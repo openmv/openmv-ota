@@ -157,8 +157,10 @@ class ServerSettings(BaseSettings):
     # and an explicit allowlist costs one env var. Starlette would honour a "*" here, so refusing
     # it has to be done by us -- otherwise the obvious thing to type silently opens the API up.
     cors_allow_origins: str = ""
-    # uvicorn forwarded-allow-ips: which upstream peers may set X-Forwarded-For. Behind a PaaS proxy
-    # set "*" behind a PaaS proxy so the rate limiter sees the real client IP, not the proxy's.
+    # uvicorn forwarded-allow-ips: which upstream peers may set X-Forwarded-For, so the rate
+    # limiter sees the real client IP, not the proxy's. "*" trusts the header from any peer and
+    # takes its FIRST address: sound only where the proxy is the one way in and REPLACES a
+    # client's own header (a proxy that appends hands every client its choice of rate-limit key).
     trusted_proxy_ips: str = "127.0.0.1"
 
     def missing(self) -> list[str]:

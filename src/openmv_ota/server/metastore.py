@@ -548,7 +548,31 @@ _MIGRATIONS: list[list[str]] = [
         # trail, which is all the deduplication there is. NULL = none seen.
         "ALTER TABLE devices ADD COLUMN journal_seq INTEGER",
     ],
+    [   # v40 -- what a rollout has already counted for a camera. Its counters decide a pause and
+        # a ramp's next stage, and they are fed by what cameras report: counted per transition,
+        # one camera alternating its reports could count as many as it liked. One row per
+        # (rollout, camera) makes each counter a count of cameras.
+        "CREATE TABLE IF NOT EXISTS rollout_devices ("
+        "rollout_id TEXT NOT NULL, device_id TEXT NOT NULL, "
+        "attempted INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, "
+        "failures INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (rollout_id, device_id))",
+        # When a camera last reported a product other than its fleet row's and it was audited
+        # (note_product_mismatch): what keeps a camera that keeps saying so to a row a day.
+        "ALTER TABLE devices ADD COLUMN product_mismatch_at TEXT",
+    ],
 ]
+
+# How long after one refused check-in is audited the next one from the same camera is (see
+# note_refused_checkin); a check-in naming another product than the camera's likewise.
+REFUSAL_AUDIT_EVERY_S = 24 * 3600
+
+
+def _a_day_since(when: str | None) -> bool:
+    """Whether ``when`` (an ISO time this store wrote, or None for never) is a day ago."""
+    if not when:
+        return True
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(when)
+    return age.total_seconds() >= REFUSAL_AUDIT_EVERY_S
 
 # The most unclaimed boards remembered per account (see migration v35).
 UNCLAIMED_CAP = 50
@@ -1008,6 +1032,22 @@ class SqlMetadataStore:
         assigns = ", ".join(k + " = ?" for k in fields)
         self.execute("UPDATE rollouts SET " + assigns + " WHERE rollout_id = ?",
                      (*fields.values(), rollout_id))
+
+    def count_once(self, rollout_id: str, device_id: str, what: str) -> bool:
+        """Count ``what`` (``attempted``, ``updated`` or ``failures``) for this camera in this
+        rollout, the first time only. True when it counted. The counters pause a rollout and
+        advance a ramp, and a camera's own reports feed them: this is what keeps one camera
+        from being more than one of each."""
+        if what not in ("attempted", "updated", "failures"):
+            raise ValueError("no rollout counter %r" % (what,))
+        self.execute("INSERT INTO rollout_devices (rollout_id, device_id) VALUES (?, ?) "
+                     "ON CONFLICT (rollout_id, device_id) DO NOTHING", (rollout_id, device_id))
+        first = self.execute(
+            "UPDATE rollout_devices SET %s = 1 WHERE rollout_id = ? AND device_id = ? "
+            "AND %s = 0" % (what, what), (rollout_id, device_id)).rowcount == 1
+        if first:
+            self.bump_rollout(rollout_id, **{what: 1})
+        return first
 
     def bump_rollout(self, rollout_id: str, *, attempted=0, updated=0, failures=0) -> None:
         self.execute(
@@ -1832,9 +1872,14 @@ class SqlMetadataStore:
 
     def note_refused_checkin(self, device_id: str, reason: str) -> bool:
         """A registered camera's check-in carried a signature that didn't verify: count it.
-        Returns True when it is news -- the first refusal, or a different reason than the last
-        -- so the caller audits a change, not every poll of a camera that keeps failing."""
-        row = self.query_one("SELECT refused_checkins, last_refusal FROM device_registrations "
+        Returns True when it is news -- the first refusal, or the first in a day -- so the
+        caller audits that a camera is failing, not every poll of one that keeps failing.
+
+        Not "a different reason than the last": a refusal needs no key (anyone can name a
+        registered camera and send a header that doesn't parse), so two alternating reasons
+        made every request news, each one a row in the account's audit trail and a delivery
+        to each of its webhooks. The count and the last reason are still kept on every one."""
+        row = self.query_one("SELECT refused_checkins, last_refused_at FROM device_registrations "
                              "WHERE device_id = ?", (device_id,))
         if row is None:
             return False
@@ -1842,7 +1887,18 @@ class SqlMetadataStore:
         self.execute("UPDATE device_registrations SET refused_checkins = refused_checkins + 1, "
                      "last_refused_at = ?, last_refusal = ? WHERE device_id = ?",
                      (_now_iso(), reason, device_id))
-        return not prev["refused_checkins"] or prev["last_refusal"] != reason
+        return not prev["refused_checkins"] or _a_day_since(prev["last_refused_at"])
+
+    def note_product_mismatch(self, device_id: str) -> bool:
+        """A camera's signed check-in named a product other than its fleet row's. True when
+        it is news (the first, or the first in a day), and noted as audited from now."""
+        row = self.query_one("SELECT product_mismatch_at FROM devices WHERE device_id = ?",
+                             (device_id,))
+        if row is None or not _a_day_since(_d(row)["product_mismatch_at"]):
+            return False
+        self.execute("UPDATE devices SET product_mismatch_at = ? WHERE device_id = ?",
+                     (_now_iso(), device_id))
+        return True
 
     def delete_registration(self, device_id: str) -> dict | None:
         """Release a camera: drop its registration, the account binding registering made, and its
@@ -2090,6 +2146,8 @@ class SqlMetadataStore:
             ("cohort_pins", "DELETE FROM cohort_pins WHERE account_id = ?"),
             ("cohorts", "DELETE FROM cohorts WHERE account_id = ?"),
             ("deployments", "DELETE FROM deployments WHERE account_id = ?"),
+            ("rollout_devices", "DELETE FROM rollout_devices WHERE rollout_id IN "
+                                "(SELECT rollout_id FROM rollouts WHERE account_id = ?)"),
             ("rollouts", "DELETE FROM rollouts WHERE account_id = ?"),
             ("releases", "DELETE FROM releases WHERE account_id = ?"),
             ("device_accounts", "DELETE FROM device_accounts WHERE account_id = ?"),

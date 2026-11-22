@@ -264,7 +264,8 @@ What the server does with a check-in:
 Offers stay open to unsigned check-ins because they are safe to anyone: an update is signed, and
 installs only on the camera it was built for. A refusal is counted on the camera's registration
 with its reason (`bad signature`, `stale`, `malformed`, `unknown version`), and the audit log
-records `device.checkin_refused` when the reason changes, not on every poll. A signature from a
+records `device.checkin_refused` for the first one and then at most once a day, not on every
+poll. A signature from a
 camera with no registration gets nothing and leaves no trace.
 
 ## Lockboxes
