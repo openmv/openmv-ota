@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import shutil
 from pathlib import Path
 
@@ -20,6 +21,15 @@ def stage_app(app_dir: Path, dest: Path) -> Path:
     def ignore(_dir: str, names: list[str]) -> set[str]:
         return {n for n in names if any(fnmatch.fnmatch(n, p) for p in DEFAULT_EXCLUDES)}
 
+    # A link is copied as what it points at, and what an app tree points at outside itself
+    # (a key, a client token) would go into an image that is signed and published.
+    for dirpath, dirs, files in os.walk(app_dir):
+        skip = ignore(dirpath, dirs + files)
+        for n in sorted(set(dirs + files) - skip):
+            if os.path.islink(os.path.join(dirpath, n)):
+                raise BuildError("%s is a symbolic link; an app directory holds files, "
+                                 "not links" % os.path.join(dirpath, n), exit_code=1)
+        dirs[:] = [d for d in dirs if d not in skip]
     shutil.copytree(app_dir, dest, ignore=ignore)
     return dest
 

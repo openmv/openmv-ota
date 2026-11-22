@@ -391,6 +391,7 @@ def build_romfs(
     keep_build_dir: bool = False,
     key_passphrase_file: str | Path | None = None,
     allow_dev_key: bool = False,
+    publish_seq: int | None = None,
 ) -> list[BuildResult]:
     project = Path(project)
     try:
@@ -414,6 +415,8 @@ def build_romfs(
                                key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
                   if p.config.ota else None)
     if ota_signer is not None:
+        # The counter goes on the signer that signs the trailer, which is this one.
+        ota_signer.publish_seq = checked_publish_seq(publish_seq)
         app_version, vendor = ota_signer.app_version, ota_signer.vendor
     else:
         settings = _read_settings(app_dir)
@@ -1433,7 +1436,7 @@ def build_ota_romfs(
     app_dir = Path(app) if app else project / "app"
     signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota",
                           key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
-    signer.publish_seq = checked_publish_seq(publish_seq)
+    publish_seq = checked_publish_seq(publish_seq)
     new_pv = signer.payload_version
 
     # 1) compile + sign the romfs bundle, then render the download image(s) from it.
@@ -1441,7 +1444,8 @@ def build_ota_romfs(
                 convert_models=convert_models, mpy_extra=mpy_extra, vela_extra=vela_extra,
                 stedgeai_extra=stedgeai_extra, vela_optimise=vela_optimise,
                 stedgeai_optimization=stedgeai_optimization, firmware=firmware,
-                key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
+                key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key,
+                publish_seq=publish_seq)
     build_ota_image(project, output=output, boards=boards, firmware=firmware)
 
     results = []

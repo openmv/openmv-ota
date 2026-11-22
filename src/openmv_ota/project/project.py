@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import secrets
 import sys
 from dataclasses import asdict, dataclass
@@ -1259,6 +1260,9 @@ def setup_project(
     return dest
 
 
+_MPY_VERSION = re.compile(r"[0-9]+(\.[0-9]+){1,3}([a-z0-9.+-]{0,24})?")
+
+
 def _mpy_cross_installed() -> bool:
     return importlib.util.find_spec("mpy_cross") is not None
 
@@ -1270,6 +1274,12 @@ def _ensure_mpy_cross(version: str | None) -> None:
     firmware to get mpy-cross, or install it manually.
     """
     if not version or _mpy_cross_installed():
+        return
+    if not isinstance(version, str) or not _MPY_VERSION.fullmatch(version):
+        # The lock file names it, and pip reads a spec with a path in it as a directory
+        # to build: `mpy-cross==/../x` ran a build backend out of the project.
+        print("warning: the lock file's MicroPython version %r is not a version; not "
+              "installing mpy-cross" % (version,), file=sys.stderr)
         return
     try:
         gitrepo.pip_install("mpy-cross==%s" % version)

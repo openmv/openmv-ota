@@ -331,6 +331,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no integrity check on the download). A retired key's manifest is refused by the epoch
   floor on flash as well as the running image's, which covers recovery. An update offer
   must name an `https://` URL; a path sent the installer to a file on the camera.
+- **A platform project's images were all signed with a publish counter of 0.** `build
+  ota-romfs` set the counter the server handed it on one signer and built the image with
+  another, so the trailer and the manifest both said 0. A `PRODUCT_ID = 0` camera orders
+  its images by that counter and nothing else, so it had no floor and no "not newer": it
+  took any older image of the account as readily as a newer one. The counter now reaches
+  the signer that signs. Projects with a product id order by version and were not affected.
+- **`project setup` could run code out of a project through its lock file.** The lock
+  file's MicroPython version went to `pip install mpy-cross==<version>` as written, and
+  pip reads a spec with a path in it as a directory to build. Only a version goes to pip.
+- **A symbolic link in the app directory is refused.** It was copied as the file it
+  pointed at, so an app tree linking to a key or a token file put that file in a signed,
+  published image.
 - **`project keys restore` wrote wherever a backup's file names pointed.** A name in the
   archive was joined to the key directory unchecked, so `../../.bashrc` or an absolute path
   was written with the archive's bytes; its SHA-256 guards against rot, not a forgery.

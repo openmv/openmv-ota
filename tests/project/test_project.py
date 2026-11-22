@@ -1313,3 +1313,15 @@ def test_keys_from_a_source_with_no_payload_keys_says_what_that_costs(tmp_path, 
     _dst, (_lock, warnings) = _create(tmp_path, make_firmware, make_sdk, repo=repo,
                                       root=tmp_path / "acme", ota=True, keys_from=src)
     assert any("minted its own" in w and "not be decryptable" in w for w in warnings)
+
+
+@pytest.mark.parametrize("version", ["/../evil", "1.28.0 --index-url http://x", "../x", 7, "1"])
+def test_ensure_mpy_cross_takes_only_a_version(monkeypatch, capsys, version):
+    """The lock file names the version, and pip builds a spec that reads as a path."""
+    monkeypatch.setattr(proj, "_mpy_cross_installed", lambda: False)
+    called = []
+    monkeypatch.setattr(proj.gitrepo, "pip_install", lambda s: called.append(s))
+    proj._ensure_mpy_cross(version)
+    assert called == [] and "not a version" in capsys.readouterr().err
+    proj._ensure_mpy_cross("1.29.0-preview")
+    assert called == ["mpy-cross==1.29.0-preview"]

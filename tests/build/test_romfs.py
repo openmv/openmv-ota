@@ -1912,3 +1912,46 @@ def test_a_build_does_not_sign_a_publish_counter_from_the_top_of_the_range():
     for bad in (R.PUBLISH_SEQ_MAX, 2 ** 64 - 1, -1, "7", 7.0, True):
         with pytest.raises(R.BuildError, match="not a counter this build will sign"):
             R.checked_publish_seq(bad)
+
+
+def test_the_publish_counter_is_the_one_the_trailer_signs(make_project):
+    """`build ota-romfs` set the counter on a signer of its own and built the image with
+    another, so every platform image was signed with a counter of 0: a PRODUCT_ID 0 camera,
+    which orders by nothing else, then took any older image as readily as a newer one."""
+    import gzip
+
+    from openmv_ota.build.romfs import build_ota_romfs
+    from openmv_ota.ota import geometry
+    from openmv_ota.ota.manifest import parse_manifest
+    from openmv_ota.ota.trailer import parse_trailer
+    root, repo, app = make_project(ota=True, dev=True, ca="tiny",
+                                   app_files={"main.py": "print(1)\n",
+                                              "settings.json": '{"app_version": "1.0.0"}\n'})
+    cfg = root / "openmv-ota.toml"
+    cfg.write_text(cfg.read_text().replace("[ota]", "[ota]\nplatform = true\n", 1))
+    [r] = build_ota_romfs(root, app=app, firmware=repo, compile_py=False,
+                          convert_models=False, allow_dev_key=True, publish_seq=4242)
+    image = gzip.decompress(r.image.read_bytes())
+    assert parse_trailer(image[-geometry.control_block():]).publish_seq == 4242
+    assert parse_manifest(r.manifest.read_bytes()).body["publish_seq"] == 4242
+
+
+def test_an_app_tree_holds_no_links(tmp_path):
+    """A link is copied as its target: an app that points at a key would publish the key."""
+    from openmv_ota.build.errors import BuildError
+    from openmv_ota.build.staging import stage_app
+    secret = tmp_path / "secret.pem"
+    secret.write_text("key")
+    app = tmp_path / "app"
+    (app / "lib").mkdir(parents=True)
+    (app / "main.py").write_text("print(1)\n")
+    (app / "__pycache__").mkdir()
+    (app / "__pycache__" / "x").symlink_to(secret)          # excluded, so never copied
+    assert (stage_app(app, tmp_path / "ok") / "main.py").is_file()
+    (app / "lib" / "x.pem").symlink_to(secret)
+    with pytest.raises(BuildError, match="symbolic link"):
+        stage_app(app, tmp_path / "staged")
+    (app / "lib" / "x.pem").unlink()
+    (app / "keys").symlink_to(tmp_path)
+    with pytest.raises(BuildError, match="symbolic link"):
+        stage_app(app, tmp_path / "staged")
