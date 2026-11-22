@@ -130,4 +130,13 @@ budget for now; these are the free/cheap passes to run first, in order.
     one boot on the RAM copy of an erased record; a signed trailer with `comp_count == 0`
     scrubs the firmware area on the N6 and RT1062; boards without slot encryption do not
     check `body_sha256` in the stub.
+  - Round 6 (server): whether the hosted proxy replaces or appends `X-Forwarded-For` is
+    unverified, and `TRUSTED_PROXY_IPS=*` is only sound if it replaces; a device pin on an
+    id that is learned-bound to another account hides the camera from its owner until it
+    registers; a learned binding from an unsigned check-in takes any account string; publish
+    and local-storage downloads read a whole artifact into memory per request with no
+    concurrency bound; a product-limited token can list every cohort label of its account.
+  - A camera offered a release of another product while it could not sign (cold clock), and
+    unpinned before its next signed check-in, reads as `device.product_mismatch` until it
+    is pinned again or forgotten.
 - **When there is budget** — a targeted pentest of the update + signing chain only.
