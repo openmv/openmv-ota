@@ -1906,8 +1906,13 @@ class SqlMetadataStore:
     def set_registration_product(self, device_id: str, product_id) -> None:
         """Remember (or, with None, forget) the product a registered camera is in the fleet
         under. Nothing to do for a camera with no registration."""
-        self.execute("UPDATE device_registrations SET product_id = ? WHERE device_id = ?",
-                     (product_id, device_id))
+        if product_id is None:
+            self.execute("UPDATE device_registrations SET product_id = NULL WHERE device_id = ?",
+                         (device_id,))
+            return
+        self.execute("UPDATE device_registrations SET product_id = ? WHERE device_id = ? "
+                     "AND (product_id IS NULL OR product_id <> ?)",
+                     (product_id, device_id, product_id))
 
     def audit_budget(self, device_id: str) -> bool:
         """Take one of this camera's audit rows for today (``DEVICE_AUDIT_PER_DAY``). False

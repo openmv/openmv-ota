@@ -505,7 +505,7 @@ def test_a_check_ins_numbers_fit_what_stores_them(tmp_path):
     c, store = _app(tmp_path)
     key = _register(store)
     for field, value in (("payload_version", 2 ** 31), ("payload_version", -1),
-                         ("publish_seq", 2 ** 48), ("product_id", 2 ** 32)):
+                         ("publish_seq", 2 ** 48), ("product_id", 2 ** 63)):
         body = json.dumps({**json.loads(_body()), field: value}).encode()
         assert camera.post(c, body, camera.sign(key, body)).status_code == 422
     body = json.dumps({**json.loads(_body()), "stub": {"version": 2 ** 40, "reason": 0},
@@ -517,3 +517,37 @@ def test_a_check_ins_numbers_fit_what_stores_them(tmp_path):
     assert len(row["body_sha256"]) == 64
     assert store.read_audit(account_id=ACCT)[0]["action"]              # and it enrolled once
     assert len(_audit(store, "device.enrolled")) == 1
+
+
+def test_a_derived_product_id_checks_in(tmp_path):
+    """A product id is 63 bits: one a project derives is the top of a SHA-256, and only a
+    hand-set small one fits 32. Bounded to 32 at check-in, every camera of a project on
+    derived ids was answered 422 -- no offer, no grant, no fleet row."""
+    from openmv_ota.project.config import derive_product_id
+    c, store = _app(tmp_path)
+    key = _register(store)
+    derived = derive_product_id("A Product", "OPENMV_N6")
+    assert derived > 0xFFFFFFFF
+    for pid in (derived, (1 << 63) - 1):
+        body = json.dumps({**json.loads(_body()), "product_id": pid}).encode()
+        r = camera.post(c, body)                                       # unsigned: offers only
+        assert r.status_code == 200 and r.json() == NOTHING
+    body = json.dumps({**json.loads(_body()), "product_id": derived}).encode()
+    assert camera.post(c, body, camera.sign(key, body)).status_code == 200
+    assert store.get_device(DEV)["product_id"] == derived
+
+
+def test_a_camera_with_a_row_and_no_noted_product_gets_it_noted(tmp_path):
+    """Registered after it had a fleet row, or enrolled while a forget was clearing the note:
+    a row, and nothing on the registration to hold it to once the row was forgotten."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    body = _body()
+    _check(c, body, camera.sign(key, body))
+    store.set_registration_product(DEV, None)
+    assert store.get_registration(DEV)["product_id"] is None
+    _check(c, body, camera.sign(key, body))                            # the same product again
+    assert store.get_registration(DEV)["product_id"] == BID
+    odd = json.dumps({**json.loads(body), "app_version": "v\u0000\ud800x"}).encode()
+    assert _check(c, odd, camera.sign(key, odd))["update"] is True     # stored without them
+    assert "\x00" not in store.get_device(DEV)["current_version"]

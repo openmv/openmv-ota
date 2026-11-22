@@ -170,6 +170,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A check-in's product id is 63 bits again.** The bounds added to a check-in's numbers
+  held `product_id` to 32 bits, and a derived product id is 63: every camera of a project
+  that had not set a small id by hand was answered 422. Caught in review before a release;
+  the bound is now the column's. The product noted on a camera's registration is written
+  on every check-in that stores its row, so a camera registered after it had a row is
+  held to its product too, and NUL or a lone surrogate in a camera's strings is dropped
+  before it reaches the store.
 - **A camera's product outlives its fleet row.** The rule that a camera does not move
   itself between products applied only while it had a fleet row, and a token limited to
   one product can forget its own camera: forgotten, the camera enrolled under any product
