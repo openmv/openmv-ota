@@ -99,4 +99,35 @@ budget for now; these are the free/cheap passes to run first, in order.
     worker for as long as it keeps sending.
   - `flash register`: a malformed identity line from the USB device is a traceback, and its
     error text is printed with control characters.
+  - No overall deadline on a download: the installer's reader times out per receive and
+    feeds the watchdog on progress, so a manifest or an image dripped a byte at a time
+    keeps the installer (and so stops the app) for as long as the server sends. The check-in
+    answer has a deadline now; a download needs a floor on its rate, and that number
+    depends on the slowest link a camera is expected to update over. Recovery's check-in
+    uses the same reader. The cloud SDK's `poll_watch` and `_ws_connect` read header
+    lines with an unbounded asyncio `readline()`.
+  - The check-in's `Date` header sets the clock with no upper bound; a far-future date
+    fails TLS until NTP corrects it (up to six hours).
+  - A `manage` token can admin-bind a camera id nobody registered; the owner's registration
+    is then a 404 and no API call undoes it.
+  - One sequential webhook worker over a global queue: a tenant with many endpoints that
+    answer just inside the timeout delays every other account's deliveries.
+  - `OPENMV4`, `OPENMV4P`, `OPENMVPT` and `H7` are one row at the registrar, so a tenant
+    can register another's camera id under a sibling board name and hold a seat on it.
+  - A desk key's expiry comes from the request that stores it, so a `manage` token can
+    extend one (not un-revoke it).
+  - An anonymous client naming an account can push real boards out of that account's
+    capped unclaimed list with made-up ids.
+  - A webhook ping's audit row lands in the operator's account, not the caller's.
+  - `client data export` to stdout, error details and a few listings print server and
+    camera text unfiltered; `--json` output is safe.
+  - `project keys restore` overwrites the keys in place with whatever a well-named archive
+    holds, without checking that they open.
+  - A `keys/keykeeper.json` written before pins carried the record hash, holding a pin of
+    generation 2 or later, is refused with an error that does not say to delete it.
+  - Stub: `verify.c` never reads the certificate's `kind`; nothing calls `port_wdt_start`
+    although the design says the stub arms the trailer's watchdog; a failed install runs
+    one boot on the RAM copy of an erased record; a signed trailer with `comp_count == 0`
+    scrubs the firmware area on the N6 and RT1062; boards without slot encryption do not
+    check `body_sha256` in the stub.
 - **When there is budget** — a targeted pentest of the update + signing chain only.
