@@ -28,6 +28,18 @@ streamed, and large data is aliased with memoryview/bytearray_at rather than
 copied.
 """
 
+import sys                             # a C built-in no file can stand in for: it comes first
+
+if sys.implementation.name == "micropython":  # pragma: no cover  (device only)
+    # NOTHING ON A VOLUME SOMEONE CAN WRITE IS IMPORTED BEFORE A SLOT IS VERIFIED. The path the
+    # firmware starts with is the current directory -- /flash, or the SD card when one is in --
+    # and only then the frozen modules, so `openmv_log.py` (or `struct.py`, `hashlib.py`,
+    # `_ota_config.py`) on a card ran as this firmware's code on every boot, ahead of every
+    # check below. From here the frozen modules are the only ones there are; _main adds the
+    # mounted slot, and that is the whole path the app starts with. An app that wants modules
+    # from /flash or a card says so itself (sys.path.append), after it is running.
+    sys.path[:] = [".frozen"]  # hil-residual: no marker of its own; every boot marker after it (boot.ready first) is this line's imports resolving from the frozen set
+
 import binascii
 import hashlib
 import struct

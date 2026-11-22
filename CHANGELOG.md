@@ -200,6 +200,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   again. One camera now causes at most 48 such rows a day, and nothing is audited for a
   check-in whose row was not stored. `payload_version`, `publish_seq`, `product_id`, a
   stub's version and a slot's version and hash are bounded to what stores them.
+- **The boot code imports nothing from a volume someone can write.** MicroPython's import
+  path starts with the current directory, which the firmware sets to `/flash`, or to the SD
+  card when one is in, and only then the frozen modules. `boot.py` is frozen, but its
+  imports were resolved along that path: a file named `openmv_log.py`, `struct.py`,
+  `hashlib.py` or `_ota_config.py` on a card ran as the firmware's own code on every boot,
+  before any slot was verified. `boot.py` now sets the path to the frozen modules before
+  its first import and adds only the verified slot (`/rom`, `/rom/lib`). **An app that
+  imported modules from `/flash` or the SD card must now add that path itself**
+  (`sys.path.append("/sdcard")`) once it is running.
+- **A check-in answer's body is under the same 30 seconds as its lines.** The body was read
+  with `read(n)`, which stays in C until all `n` bytes arrive while each byte restarts the
+  socket timeout, so a server that answered at once and dripped a 4 KB body held the camera
+  for hours. It is read a byte per call, as the lines are.
 - **A refused check-in is audited once a day per camera, not once per reason.** A refusal
   needs no key: anyone can name a registered camera and send a signature header that does
   not parse. It was audited whenever the reason differed from the last one, so two reasons
