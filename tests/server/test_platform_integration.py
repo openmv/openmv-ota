@@ -538,3 +538,20 @@ def test_an_operator_cannot_make_itself_or_anyone_an_operator(tmp_path):
     r = c.post(url, headers=ROOT, json={"name": "ops", "scopes": ["accounts"]})
     assert r.status_code == 200
     assert c.get("/api/v1/admin/accounts/%s" % theirs["account_id"], headers=RF).status_code == 404
+
+
+def test_rotate_does_not_revive_a_revoked_token_or_remake_an_operator(tmp_path):
+    """Rotation re-mints a token's scopes. For a revoked token that handed back a live one;
+    for a token with an operator scope it was the grant only the root may make."""
+    c, store = _app(tmp_path)
+    mine = c.post("/api/v1/admin/accounts", headers=RF, json={"name": "Acme"}).json()
+    url = "/api/v1/admin/accounts/%s/tokens" % mine["account_id"]
+    ops = c.post(url, headers=ROOT, json={"name": "ops", "scopes": ["accounts.all"]}).json()
+    ci = c.post(url, headers=RF, json={"name": "ci", "scopes": ["publish"]}).json()
+    assert c.post("/api/v1/admin/tokens/%s/rotate" % ops["token_hash"], headers=RF).status_code == 403
+    assert c.post("/api/v1/admin/tokens/%s/revoke" % ci["token_hash"], headers=RF).status_code == 200
+    r = c.post("/api/v1/admin/tokens/%s/rotate" % ci["token_hash"], headers=RF)
+    assert r.status_code == 409 and "revoked" in r.json()["detail"]
+    live = c.post(url, headers=RF, json={"name": "ci2", "scopes": ["publish"]}).json()
+    assert c.post("/api/v1/admin/tokens/%s/rotate" % live["token_hash"], headers=RF).status_code == 200
+    assert c.post("/api/v1/admin/tokens/%s/rotate" % ops["token_hash"], headers=ROOT).status_code == 200

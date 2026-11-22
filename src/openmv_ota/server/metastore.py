@@ -1110,7 +1110,7 @@ class SqlMetadataStore:
     def get_device(self, device_id: str) -> dict | None:
         row = _d(self.query_one("SELECT * FROM devices WHERE device_id = ?", (device_id,)))
         if row is not None:
-            row["pinned_release_id"] = self.get_device_pin(device_id)
+            row["pinned_release_id"] = self.get_device_pin(device_id, row.get("account_id") or "")
         return row
 
     def forget_device(self, device_id: str) -> None:
@@ -1243,7 +1243,7 @@ class SqlMetadataStore:
                               + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
                               + " LIMIT ? OFFSET ?", (*params, limit, offset))
         out = [_d(r) for r in rows]
-        pins = self.device_pins_for(r["device_id"] for r in out)
+        pins = self.device_pins_for(out)
         for r in out:
             r["pinned_release_id"] = pins.get(r["device_id"])
         return out
@@ -1283,7 +1283,7 @@ class SqlMetadataStore:
                               + _order(sort, direction, self.DEVICE_SORTS, "last_seen DESC", "device_id")
                               + " LIMIT ? OFFSET ?", (*case, *params, limit, offset))
         out = [_d(r) for r in rows]
-        pins = self.device_pins_for(r["device_id"] for r in out)
+        pins = self.device_pins_for(out)
         for r in out:
             r["pinned_release_id"] = pins.get(r["device_id"])
         return out, total, states
@@ -1900,22 +1900,35 @@ class SqlMetadataStore:
             out[d["device_id"]] = d
         return out
 
-    def get_device_pin(self, device_id: str) -> str | None:
-        """The release this device is pinned to, whether or not it has ever checked in."""
-        row = self.query_one("SELECT release_id FROM device_pins WHERE device_id = ?",
+    def get_device_pin(self, device_id: str, account_id: str | None = None) -> str | None:
+        """The release this device is pinned to, whether or not it has ever checked in.
+        With ``account_id``, only a pin that account set: the table is keyed by device id
+        alone, and a pin another account wrote on an id it does not hold must not hold the
+        camera back or show in its owner's fleet."""
+        row = self.query_one("SELECT release_id, account_id FROM device_pins WHERE device_id = ?",
                              (device_id,))
-        return row["release_id"] if row else None
+        if row is None or (account_id is not None and (row["account_id"] or "") != account_id):
+            return None
+        return row["release_id"]
 
-    def device_pins_for(self, device_ids) -> dict:
-        """``{device_id: release_id}`` for a page of devices -- one query per listing
-        rather than one per row, bounded by the page the caller already read."""
-        ids = list(device_ids)
-        if not ids:
+    def device_pin_account(self, device_id: str) -> str | None:
+        """The account whose pin is on ``device_id``, or None when it has no pin."""
+        row = self.query_one("SELECT account_id FROM device_pins WHERE device_id = ?",
+                             (device_id,))
+        return (row["account_id"] or "") if row else None
+
+    def device_pins_for(self, devices) -> dict:
+        """``{device_id: release_id}`` for a page of device rows -- one query per listing
+        rather than one per row, bounded by the page the caller already read. Only a pin
+        the device's own account set (see :meth:`get_device_pin`)."""
+        accounts = {r["device_id"]: r.get("account_id") or "" for r in devices}
+        if not accounts:
             return {}
-        marks = ",".join("?" * len(ids))
+        marks = ",".join("?" * len(accounts))
         return {r["device_id"]: r["release_id"] for r in self.query_all(
-            "SELECT device_id, release_id FROM device_pins WHERE device_id IN (%s)" % marks,
-            tuple(ids))}
+            "SELECT device_id, release_id, account_id FROM device_pins WHERE device_id IN (%s)"
+            % marks, tuple(accounts))
+            if (r["account_id"] or "") == accounts[r["device_id"]]}
 
     def set_cohort_pin(self, product_id: int, cohort: str, release_id: str | None,
                        account_id: str = "") -> None:

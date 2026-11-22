@@ -24,6 +24,9 @@ for everything. The secret is shown once; `webhook rotate` mints a new one and t
 one stops verifying at that moment. An account may hold twenty endpoints. The URL
 must be `https://` and resolve to a public address — the server will not POST into
 private networks (a self-host can allow it with `OPENMV_OTA_WEBHOOK_ALLOW_PRIVATE=1`).
+The address is checked when the endpoint is saved and again at every delivery; a delivery
+to a name that no longer resolves somewhere public fails with
+`the host resolves to a private address`.
 
 `webhook list` shows every endpoint and the event catalogue; `webhook update` changes
 the URL, the subscription or the description, or switches the endpoint off and on;

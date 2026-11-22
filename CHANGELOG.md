@@ -170,6 +170,68 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A camera removed from the fleet could be taken into another account.** Forgetting a
+  device drops its binding and keeps its registration, and the next check-in for that id,
+  signed or not, was believed about its account: a tenant that kept naming the id got the
+  binding, and the camera's own signed check-ins, fleet row, ingest grant and Live were
+  then that tenant's. A camera registered to an account is that account's, whatever a
+  check-in reports.
+- **An SBOM is at most 2 MiB (was 32).** It is parsed whole at publish and at every
+  advisory scan, and a 32 MiB one held every other request for a second and a half each
+  time its owner asked for a scan.
+- **`server check` no longer prints the database password** in `database_url`.
+- **`POST /api/v1/feedback` took anyone's word.** It checked that the camera id was
+  registered and nothing else: no signature, and the account read from the body. Anyone
+  who knew one registered id could file failed installs and audit entries, in their own
+  words, under any account, and have that account's webhooks deliver them. It takes the
+  camera's signature now, files under the camera's own account, and only for a release of
+  that account.
+- **A product-limited token reached the account's own routes.** Webhooks (subscribe to
+  every event, repoint or delete the owner's), the activity feed, roots, desk keys,
+  registrations, device binding and release, cohorts by id. Those are a 403 for a limited
+  token now.
+- **A device pin belonged to whoever wrote it last.** Pins are keyed by device id alone, so
+  another account that knew an id could hold a camera on its build with a pin to a release
+  it would never be offered, or overwrite and clear the owner's pin. A pin is read only for
+  the account that set it, and another account's is a 404 to move or clear.
+- **A signed check-in could be replayed inside its five-minute window**, and the answer
+  carries day-long Live and ingest grants for that camera. A request signed at or before
+  the time of the last one taken is now stale: offers only. A feedback report is signed
+  over its own context, so neither passes for the other.
+- **Webhook endpoints are checked at every delivery**, not only when saved, and with
+  "not a public address" in place of a list of private ranges that missed 100.64.0.0/10. A
+  failed delivery records the kind of failure, not the transport's text.
+- **Every route caps its body before it knows the caller.** A body was read whole before
+  the credential check on any route. A camera's routes take 64 KiB, the admin API 1 MiB, and
+  a release upload asks for a valid bearer token before reading a byte. `server check` no
+  longer prints `keykeeper_token` and `datalake_admin_token`.
+- **Rotating a product-limited token left it unlimited**, a limited token could pin its own
+  device or cohort to another product's release (and download it by checking in as that
+  device), and it read the account's advisories, roots, desk keys and registrations.
+- **One registered camera had as many identities as spellings.** The registrar answers for
+  a board name in any case or with space around it; the server kept each spelling as its
+  own device, free to claim another account and be offered its release. A board name, id
+  and account now have to be spelled as a camera spells them.
+- **A release upload is refused by scope and by size before it is read**, and a delta part
+  the manifest does not declare is refused before it is held in memory. `rotate` refuses a
+  revoked token (it handed back a live one) and a token with an operator scope unless the
+  caller is the root. A feedback report has to be about a release of the product the camera
+  runs. The keykeeper chain route is rate-limited.
+- **One tenant's token could stall the server for all of them, three ways.** A webhook
+  delivery read the endpoint's whole answer into memory, inflated; it reads the status and
+  nothing after. A release upload was verified and stored on the event loop, so every
+  check-in waited for it; that work runs on a thread, and a manifest declares at most 32
+  deltas. An advisory scan asked for while one runs waited on a worker thread; it is a 409
+  now, and an SBOM that is not a component list, or lists more than 5000, is unreadable
+  to the scan (it raised, or queried the advisory service once per component).
+- **`server token rotate`** keeps a token's product limit and refuses a revoked token, as
+  the API's rotate does.
+- **A webhook delivery connects to the address it checked**, with the name as the Host
+  header and TLS server name: checking a name and then handing the name to the HTTP client
+  was two lookups. Each delivery is its own connection (a kept one is keyed by address,
+  so it would carry the next delivery to another name there), and NAT64 addresses, which
+  wrap an IPv4 address, are not public.
+
 - **An `accounts` token could make itself the server's root.** `POST /accounts/{id}/tokens`
   let an operator issue any scope into an account it created: `accounts.all`, which sees and
   manages every account on the server, or an `accounts` token named after another operator,

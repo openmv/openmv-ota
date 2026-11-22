@@ -77,3 +77,22 @@ def require_scope(scope: str):
         return principal
     dep.openmv_scope = scope
     return dep
+
+
+def require_account_scope(scope: str):
+    """:func:`require_scope`, for a route that acts on the ACCOUNT and not on one product:
+    its webhooks, its trust anchors and desk keys, its registrations, its cohorts. A token
+    limited to a product list is the credential a platform hands its own customer, and it
+    stops here with a 403 -- the product gate that keeps it in its lane has nothing to
+    check on these routes."""
+    inner = require_scope(scope)
+
+    def dep(request: Request) -> Principal:
+        principal = inner(request)
+        if principal.products:
+            raise HTTPException(status_code=403,
+                                detail="this token is limited to a list of products; "
+                                       "this route acts on the whole account")
+        return principal
+    dep.openmv_scope = scope
+    return dep

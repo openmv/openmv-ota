@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from . import datalog as datalog_mod
 from . import live as live_mod
-from .auth import Principal, hash_token, require_scope
+from .auth import Principal, hash_token, require_account_scope, require_scope
 from .datalake import DatalakeError
 from .rollout import (RAMP_PRESETS, ramp_progress, soak_elapsed_s, stage_for_percent,
                       validate_stages)
@@ -580,8 +580,17 @@ def rotate_token(token_hash: str, request: Request, body: TokenActor | None = No
     if old is None:
         raise HTTPException(status_code=404)
     _active_account(ms, old["account_id"], principal)          # nor into one that is not ours
+    if old["revoked"]:
+        # a revoked token is finished: rotating it would hand back a live one, with its scopes
+        raise HTTPException(status_code=409, detail="this token is revoked; issue a new one")
+    if ACCOUNT_ROOT not in principal.scopes and \
+            any(s in (ACCOUNT_ADMIN, ACCOUNT_ROOT) for s in old["scopes"]):
+        # the same rule as issuing: only the server's root makes (or re-makes) an operator
+        raise HTTPException(status_code=403, detail="only a token that holds %s can rotate "
+                            "a token with an operator scope" % ACCOUNT_ROOT)
     fresh = _mint(ms, principal, old["name"], expand(old["scopes"]), old["account_id"], "token.rotate",
-                  extra={"replaced": token_hash}, actor=body.actor if body else None)
+                  extra={"replaced": token_hash}, actor=body.actor if body else None,
+                  products=list(old.get("products") or ()))   # a limited token stays limited
     ms.revoke_token(token_hash)
     return fresh
 
@@ -916,6 +925,10 @@ def assign_cohort(body: CohortAssign, request: Request,
     if body.product_id is not None:
         _may_product(body.product_id, principal)
     if body.device_ids is not None:
+        if principal.products:
+            # by id there is no product to check: a limited token moves devices by product
+            raise HTTPException(status_code=403, detail="this token is limited to a list of "
+                                "products: assign by product_id")
         n = ms.assign_cohort(body.device_ids, body.cohort, account_id=principal.account_id)
         # the WHICH, not just the how-many: a history view lists the devices moved
         # (bounded, so a giant bulk assign can't bloat one audit row)
@@ -935,7 +948,7 @@ def assign_cohort(body: CohortAssign, request: Request,
 
 @admin.post("/cohorts/create", responses={200: {"model": CohortCreated}})
 def create_cohort(body: CohortCreate, request: Request,
-                  principal: Principal = Depends(require_scope("manage"))):
+                  principal: Principal = Depends(require_account_scope("manage"))):
     """Declare a cohort ahead of its first device, so an empty label exists to assign
     into (a label also springs into being implicitly on `assign`). ``__default__`` is
     refused (it always exists), and so is a name already in use anywhere -- on devices,
@@ -957,7 +970,7 @@ def create_cohort(body: CohortCreate, request: Request,
 
 @admin.post("/cohorts/rename", responses={200: {"model": CohortRenamed}})
 def rename_cohort(body: CohortRename, request: Request,
-                  principal: Principal = Depends(require_scope("manage"))):
+                  principal: Principal = Depends(require_account_scope("manage"))):
     """Relabel a cohort everywhere at once -- device rows, rollouts, pins -- so nothing
     orphans: a rollout keeps reaching exactly the devices it did (staging hashes on ids,
     never the name). ``__default__`` is refused on either side (it is where new devices
@@ -985,7 +998,7 @@ class CohortDelete(BaseModel):
 
 @admin.post("/cohorts/delete", responses={200: {"model": CohortDeleted}})
 def delete_cohort(body: CohortDelete, request: Request,
-                  principal: Principal = Depends(require_scope("manage"))):
+                  principal: Principal = Depends(require_account_scope("manage"))):
     """Retire a label: its devices return to ``__default__`` and its pins drop.
     ``__default__`` itself is refused, and so is a cohort an **active** rollout still
     targets (pause or stop it first) -- deleting the audience out from under a live
@@ -1012,8 +1025,8 @@ def _check_pin_release(ms, release_id, principal):
     re-checks the account when it does)."""
     if release_id is not None:
         rel = ms.get_release(release_id)
-        if rel is not None and rel.get("account_id", "") != principal.account_id:
-            raise HTTPException(status_code=404)
+        if rel is not None:
+            _owned(rel, principal)       # the account's, and a product this token may touch
 
 
 def _label(name: str) -> str:
@@ -1106,11 +1119,22 @@ def pin_device(device_id: str, body: DevicePin, request: Request,
     if dev is not None:
         _owned(dev, principal)                              # 404 if another account's
     else:
+        if principal.products:
+            # no fleet row, so no product to hold a limited token to
+            raise HTTPException(status_code=403, detail="this token is limited to a list of "
+                                "products, and this device has not checked in under one")
         # Never seen. The only thing to check is that the id is not already spoken for:
         # without a fleet row there is no account on it, so the binding is what says.
         cur = ms.device_account(device_id)
         if cur is not None and cur["source"] == "admin" \
                 and cur["account_id"] != principal.account_id:
+            raise HTTPException(status_code=404)
+        # ...and that another account has not pinned it first. A pin is keyed by the id
+        # alone, so without this any account could overwrite or clear one it did not set.
+        # A camera registered to the caller is the caller's to pin whatever is there.
+        held = ms.device_pin_account(device_id)
+        if held not in (None, principal.account_id) and \
+                (ms.get_registration(device_id) or {}).get("account_id") != principal.account_id:
             raise HTTPException(status_code=404)
     _check_pin_release(ms, body.release_id, principal)
     ms.set_device_pin(device_id, body.release_id,            # release_id=None unpins
@@ -1123,7 +1147,7 @@ def pin_device(device_id: str, body: DevicePin, request: Request,
 
 @admin.post("/devices/{device_id}/account", responses={200: {"model": DeviceBound}})
 def bind_device(device_id: str, request: Request,
-                principal: Principal = Depends(require_scope("manage"))):
+                principal: Principal = Depends(require_account_scope("manage"))):
     """Operator override: (re)bind a device to the caller's account -- the authority for
     re-accounting a device or recovering one wrongly *learned* onto another account (which the
     signature already stops from installing anything). A device already *admin*-bound to a
@@ -1157,7 +1181,7 @@ def _fingerprint(identity_hex: str) -> str:
 
 @admin.put("/roots", responses={200: {"model": RootsInfo}})
 def put_roots(body: RootsIn, request: Request,
-              principal: Principal = Depends(require_scope("manage"))):
+              principal: Principal = Depends(require_account_scope("manage"))):
     """Pin the account to its project's roots (`openmv-ota project keys roots push` sends
     `keys/root_keys.json`): the keys its cameras embed, and what every desk key's certificate
     must chain to from now on. Set once: a fresh account takes its first set from the token;
@@ -1196,7 +1220,7 @@ def put_roots(body: RootsIn, request: Request,
 
 
 @admin.get("/roots", responses={200: {"model": RootsInfo}})
-def get_roots(request: Request, principal: Principal = Depends(require_scope("observe"))):
+def get_roots(request: Request, principal: Principal = Depends(require_account_scope("observe"))):
     """The roots the account is pinned to: what its desk keys must chain to. Empty until the
     project pushed them."""
     return {"roots": request.app.state.metastore.account_roots(principal.account_id)}
@@ -1204,7 +1228,7 @@ def get_roots(request: Request, principal: Principal = Depends(require_scope("ob
 
 @admin.put("/desk-keys/{key_id}", responses={200: {"model": DeskKeyInfo}})
 def put_desk_key(key_id: int, body: DeskKeyIn, request: Request,
-                 principal: Principal = Depends(require_scope("manage"))):
+                 principal: Principal = Depends(require_account_scope("manage"))):
     """Record one of the account's desk keys (`openmv-ota project keys desk push` sends them):
     the public half of a key a desk signs registration records with, and its chain of trust.
     The key is recorded only if `cert` is a desk certificate over exactly this key, signed by
@@ -1256,7 +1280,7 @@ def put_desk_key(key_id: int, body: DeskKeyIn, request: Request,
 
 
 @admin.get("/desk-keys", responses={200: {"model": DeskKeyList}})
-def list_desk_keys(request: Request, principal: Principal = Depends(require_scope("observe"))):
+def list_desk_keys(request: Request, principal: Principal = Depends(require_account_scope("observe"))):
     """The account's desk keys: the public halves of the keys its desks sign camera registrations
     with, each with its label (which desk), expiry and whether it has been revoked."""
     return {"desk_keys": request.app.state.metastore.desk_keys(principal.account_id)}
@@ -1264,7 +1288,7 @@ def list_desk_keys(request: Request, principal: Principal = Depends(require_scop
 
 @admin.post("/registrations", responses={200: {"model": DeviceRegistered}})
 def register_device(body: RegistrationIn, request: Request,
-                    principal: Principal = Depends(require_scope("register"))):
+                    principal: Principal = Depends(require_account_scope("register"))):
     """Register a camera's keys to the account: a record signed by one of the account's desk keys
     (`openmv-ota flash factory` uploads it). The signature is checked against the account's desk
     keys -- unrevoked, unexpired now, and the record freshly issued -- so a token alone registers
@@ -1338,7 +1362,7 @@ def register_device(body: RegistrationIn, request: Request,
 
 @admin.get("/devices/{device_id}/registration", responses={200: {"model": Registration}})
 def device_registration(device_id: str, request: Request,
-                        principal: Principal = Depends(require_scope("observe"))):
+                        principal: Principal = Depends(require_account_scope("observe"))):
     """A camera's registration: its keys, which desk registered it and when, the signed record
     itself (exactly as the desk signed it), and how its signed check-ins are going: the last good
     one, and how many were refused and why."""
@@ -1354,7 +1378,7 @@ def device_registration(device_id: str, request: Request,
 
 @admin.delete("/devices/{device_id}/registration", responses={200: {"model": DeviceReleased}})
 def release_device(device_id: str, request: Request,
-                   principal: Principal = Depends(require_scope("manage"))):
+                   principal: Principal = Depends(require_account_scope("manage"))):
     """Release a camera the account holds: its registration, its account binding and its fleet
     row go, so another account can register (claim) it. Its past data stays with this account.
     The server's root token can release any account's camera -- how a disputed board is settled;
@@ -1373,7 +1397,7 @@ def release_device(device_id: str, request: Request,
 @admin.get("/unclaimed", responses={200: {"model": UnclaimedList}})
 def list_unclaimed(request: Request, limit: int = Query(50, ge=1, le=200),
                    offset: int = Query(0, ge=0),
-                   principal: Principal = Depends(require_scope("observe"))):
+                   principal: Principal = Depends(require_account_scope("observe"))):
     """Boards checking in under the account that it hasn't claimed: a board type the registrar
     never registers (an Arduino board) with no registration here. Served update offers only until
     claimed -- connect it over USB and run `openmv-ota flash register`, logged in. Most recently
@@ -1489,7 +1513,7 @@ def fleet(request: Request, product_id: int | None = None, cohort: str | None = 
 @admin.get("/data/usage", responses={200: {"model": DataUsage},
                                     404: {"description": "this server has no datalake"},
                                     502: {"description": "the datalake did not answer"}})
-def data_usage(request: Request, principal: Principal = Depends(require_scope("observe"))):
+def data_usage(request: Request, principal: Principal = Depends(require_account_scope("observe"))):
     """The account's device data as the datalake meters it: what it stores, what it uploaded
     today against its daily quota, the uploads that quota refused today, and how long data is
     kept. The read that says why a console or a chart went quiet mid-day: past the quota, the
@@ -1537,7 +1561,8 @@ def dashboard(request: Request,
         "rollouts_paused_failure": ms.count_rollouts(account_id=acct, state="paused",
                                                      pause_reason="failure_limit",
                                                      products=scoped),
-        "advisories": ms.count_advisories(acct),
+        # advisories are per release and not filtered by product: a limited token gets none
+        "advisories": 0 if principal.products else ms.count_advisories(acct),
         "refused": ms.count_audit(account_id=acct, action="device.refused", products=scoped),
         "quiet_hours": quiet_hours,
     }
@@ -1547,7 +1572,7 @@ def dashboard(request: Request,
 def activity(request: Request, limit: int = Query(6, ge=1, le=50),
              action_not: str | None = Query(None, description="hide one action, e.g. the "
                                                               "periodic `advisory.scan`"),
-             principal: Principal = Depends(require_scope("observe"))):
+             principal: Principal = Depends(require_account_scope("observe"))):
     """What has been happening, grouped: the newest event of each (action, actor) with
     how many times that pair appears, newest group first.
 
@@ -1748,6 +1773,10 @@ def list_advisories(request: Request, release_id: str | None = None,
     ms = request.app.state.metastore
     if release_id is not None:
         _owned(ms.get_release(release_id), principal)
+    elif principal.products:
+        # the account-wide list names every product's releases: a limited token asks per release
+        raise HTTPException(status_code=403, detail="this token is limited to a list of "
+                            "products: pass release_id")
     return {"advisories": ms.list_advisories(account_id=principal.account_id,
                                              release_id=release_id, active_only=active_only,
                                              sort=sort, direction=dir, limit=limit,
@@ -1768,12 +1797,18 @@ def scan_advisories(body: AdvisoryScanRequest, request: Request,
     from . import advisor
 
     st = request.app.state
-    if body.release_id is not None:
-        rel = _owned(st.metastore.get_release(body.release_id), principal)
-        out = advisor.scan_release(st, rel, actor=principal.name)
-        return {"releases_scanned": 1, "findings": out["findings"], "new": out["new"]}
-    out = advisor.scan_account(st, principal.account_id, actor=principal.name)
-    return out
+    try:
+        if body.release_id is not None:
+            rel = _owned(st.metastore.get_release(body.release_id), principal)
+            out = advisor.scan_release(st, rel, actor=principal.name, wait=False)
+            return {"releases_scanned": 1, "findings": out["findings"], "new": out["new"]}
+        if principal.products:
+            raise HTTPException(status_code=403, detail="this token is limited to a list of "
+                                "products: pass release_id")
+        return advisor.scan_account(st, principal.account_id, actor=principal.name, wait=False)
+    except advisor.ScanBusy:
+        raise HTTPException(status_code=409, detail="a scan of this account is already "
+                            "running; its findings appear when it ends") from None
 
 
 @admin.get("/releases/{release_id}/manifest",
@@ -2154,7 +2189,7 @@ def _own_hook(ms, webhook_id: str, principal: Principal) -> dict:
 
 
 @admin.get("/webhooks", responses={200: {"model": WebhookList}})
-def list_webhooks(request: Request, principal: Principal = Depends(require_scope("manage"))):
+def list_webhooks(request: Request, principal: Principal = Depends(require_account_scope("manage"))):
     """The account's endpoints, and the event catalogue a subscription may name. Secrets
     are never listed: one was shown at creation, `rotate` mints another."""
     ms = request.app.state.metastore
@@ -2164,7 +2199,7 @@ def list_webhooks(request: Request, principal: Principal = Depends(require_scope
 
 @admin.post("/webhooks", responses={200: {"model": WebhookCreated}})
 def create_webhook(body: WebhookCreate, request: Request,
-                   principal: Principal = Depends(require_scope("manage"))):
+                   principal: Principal = Depends(require_account_scope("manage"))):
     """Subscribe an HTTPS endpoint to some of the account's events. Every matching audit
     entry is POSTed to it as JSON, signed with the secret this call returns ONCE. The URL
     must resolve to a public address (a self-host may allow private ones); at most 20
@@ -2185,7 +2220,7 @@ def create_webhook(body: WebhookCreate, request: Request,
 
 @admin.get("/webhooks/{webhook_id}", responses={200: {"model": Webhook}})
 def get_webhook(webhook_id: str, request: Request,
-                principal: Principal = Depends(require_scope("manage"))):
+                principal: Principal = Depends(require_account_scope("manage"))):
     """One endpoint: its subscription, its consecutive-failure count, and the last
     delivery's status."""
     return _public_hook(_own_hook(request.app.state.metastore, webhook_id, principal))
@@ -2193,7 +2228,7 @@ def get_webhook(webhook_id: str, request: Request,
 
 @admin.patch("/webhooks/{webhook_id}", responses={200: {"model": Webhook}})
 def update_webhook(webhook_id: str, body: WebhookPatch, request: Request,
-                   principal: Principal = Depends(require_scope("manage"))):
+                   principal: Principal = Depends(require_account_scope("manage"))):
     """Change the URL, the subscription or the description, or switch the endpoint off
     and on. Re-enabling one the server disabled clears its failure count."""
     ms = request.app.state.metastore
@@ -2217,7 +2252,7 @@ def update_webhook(webhook_id: str, body: WebhookPatch, request: Request,
 
 @admin.delete("/webhooks/{webhook_id}", responses={200: {"model": WebhookDeleted}})
 def delete_webhook(webhook_id: str, request: Request,
-                   principal: Principal = Depends(require_scope("manage"))):
+                   principal: Principal = Depends(require_account_scope("manage"))):
     """Remove an endpoint and its delivery history. Pending deliveries are dropped."""
     ms = request.app.state.metastore
     hook = _own_hook(ms, webhook_id, principal)
@@ -2229,7 +2264,7 @@ def delete_webhook(webhook_id: str, request: Request,
 
 @admin.post("/webhooks/{webhook_id}/rotate", responses={200: {"model": WebhookCreated}})
 def rotate_webhook(webhook_id: str, request: Request,
-                   principal: Principal = Depends(require_scope("manage"))):
+                   principal: Principal = Depends(require_account_scope("manage"))):
     """A new signing secret, shown once; the old one stops verifying immediately."""
     ms = request.app.state.metastore
     _own_hook(ms, webhook_id, principal)
@@ -2242,7 +2277,7 @@ def rotate_webhook(webhook_id: str, request: Request,
 
 @admin.post("/webhooks/{webhook_id}/test", responses={200: {"model": WebhookPinged}})
 def ping_webhook(webhook_id: str, request: Request,
-                 principal: Principal = Depends(require_scope("manage"))):
+                 principal: Principal = Depends(require_account_scope("manage"))):
     """Queue a `webhook.ping` event to this endpoint alone, whatever it subscribes to,
     so a receiver can be checked end to end. The worker sends it on its next pass."""
     ms = request.app.state.metastore
@@ -2257,7 +2292,7 @@ def ping_webhook(webhook_id: str, request: Request,
 def list_deliveries(webhook_id: str, request: Request,
                     status: str | None = Query(None, description="pending, delivered or dead"),
                     limit: int = Query(50, ge=1, le=_MAX_PAGE), offset: int = 0,
-                    principal: Principal = Depends(require_scope("manage"))):
+                    principal: Principal = Depends(require_account_scope("manage"))):
     """What was sent to this endpoint, newest first: the event, the attempt count, the
     last response code or error, and when it landed. Bodies are not kept."""
     ms = request.app.state.metastore
@@ -2270,7 +2305,7 @@ def list_deliveries(webhook_id: str, request: Request,
 
 @admin.post("/webhooks/{webhook_id}/deliveries/{delivery_id}/retry", responses={200: {"model": Delivery}})
 def retry_delivery(webhook_id: str, delivery_id: str, request: Request,
-                   principal: Principal = Depends(require_scope("manage"))):
+                   principal: Principal = Depends(require_account_scope("manage"))):
     """Send a dead delivery again, now. The attempt count carries on from where it was."""
     ms = request.app.state.metastore
     _own_hook(ms, webhook_id, principal)

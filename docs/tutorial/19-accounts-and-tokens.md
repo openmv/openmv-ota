@@ -207,6 +207,14 @@ nothing else in the account — not the other products, and not the account-leve
 of tokens and limits. It is how you hand a customer a view of their own line without a
 view of the fleet.
 
+A limited token gets a 403 on the routes that act on the account as a whole, where there
+is no product to hold it to: webhooks, the activity feed, the account's roots and desk
+keys, registering or releasing a camera or reading its registration, binding a camera to
+the account, the unclaimed list, data usage, the account-wide advisory list and scan (it
+passes a `release_id`), and creating, renaming or deleting a cohort. It assigns devices to a
+cohort by product, not by id, and pins a device once that device has checked in under one
+of its products.
+
 | Flag | Effect |
 |---|---|
 | `--account-id ID` | The account the token acts for. |

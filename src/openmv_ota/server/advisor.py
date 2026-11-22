@@ -49,6 +49,9 @@ _scan_locks: dict[str, threading.Lock] = {}
 _scan_locks_guard = threading.Lock()
 
 
+MAX_COMPONENTS = 5000           # a firmware's SBOM has tens; each one is queries to OSV
+
+
 def _account_lock(account_id: str) -> threading.Lock:
     with _scan_locks_guard:
         return _scan_locks.setdefault(account_id, threading.Lock())
@@ -180,12 +183,28 @@ class OsvClient:
         return self._details[vuln_id]
 
 
-def scan_release(state, rel: dict, actor: str = SCHEDULER) -> dict:
+class ScanBusy(Exception):
+    """The account's scan is already running (raised only to a caller that will not wait)."""
+
+
+def _locked(account_id: str, wait: bool, fn):
+    """Run ``fn`` under the account's scan lock. ``wait=False`` is the API's: a request that
+    queued behind a running scan held one of the server's worker threads for as long as the
+    scan took, and a few dozen of them were every thread there is."""
+    lock = _account_lock(account_id)
+    if not lock.acquire(blocking=wait):
+        raise ScanBusy
+    try:
+        return fn()
+    finally:
+        lock.release()
+
+
+def scan_release(state, rel: dict, actor: str = SCHEDULER, wait: bool = True) -> dict:
     """Scan ONE release's SBOM; reconcile and audit. A release without an SBOM
     has nothing to scan and reports zero findings (never an error -- evidence
     is worth carrying, not worth failing a scan run over)."""
-    with _account_lock(rel.get("account_id", "")):
-        return _scan_release(state, rel, actor)
+    return _locked(rel.get("account_id", ""), wait, lambda: _scan_release(state, rel, actor))
 
 
 def _audit_cleared(state, rel_id: str, cleared: list[dict], reason: str, actor: str,
@@ -208,8 +227,16 @@ def _scan_release(state, rel: dict, actor: str) -> dict:
     components: list[dict] = []
     if rel.get("sbom_key"):
         try:
-            components = json.loads(state.storage.get(rel["sbom_key"])).get(
-                "components", []) or []
+            doc = json.loads(state.storage.get(rel["sbom_key"]))
+            components = doc.get("components", []) or [] if isinstance(doc, dict) else None
+            # An SBOM is the publisher's own file, checked at upload only for being JSON. One
+            # that is not a table of components, or has more of them than any firmware has
+            # (each is a round trip to the advisory service), is one this scan cannot read.
+            if (not isinstance(components, list) or len(components) > MAX_COMPONENTS
+                    or not all(isinstance(c, dict) and isinstance(c.get("properties") or [], list)
+                               and all(isinstance(p, dict) for p in c.get("properties") or [])
+                               for c in components)):
+                raise ValueError("not a component list this scan reads")
         except (ServerError, ValueError):
             # an SBOM we cannot read is not evidence the release is clean: scanning nothing
             # would reconcile to zero findings and clear every standing advisory. Keep them.
@@ -239,13 +266,12 @@ def _scan_release(state, rel: dict, actor: str) -> dict:
             "new": result["new"], "cleared": result["cleared"]}
 
 
-def scan_account(state, account_id: str, actor: str = SCHEDULER) -> dict:
+def scan_account(state, account_id: str, actor: str = SCHEDULER, wait: bool = True) -> dict:
     """Scan every release the account's fleet still cares about -- and CLEAR
     the findings of releases that left rotation. A release nobody runs and
     nobody offers is out of scope, and stale advisories lingering on it would
     make the security list grow forever."""
-    with _account_lock(account_id):
-        return _scan_account(state, account_id, actor)
+    return _locked(account_id, wait, lambda: _scan_account(state, account_id, actor))
 
 
 def _scan_account(state, account_id: str, actor: str) -> dict:

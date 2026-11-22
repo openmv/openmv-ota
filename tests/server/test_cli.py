@@ -453,3 +453,23 @@ def test_the_store_itself_refuses_to_delete_a_missing_or_active_account(tmp_path
         s.delete_account(live)
     assert s.get_account(live) is not None
     s.close()
+
+
+def test_token_rotate_keeps_a_product_limit_and_refuses_a_revoked_token(tmp_path, monkeypatch, capsys):
+    """The CLI's rotate had the two faults the API's had: the replacement of a limited token
+    was for the whole account, and a revoked token came back live."""
+    from openmv_ota.server.auth import hash_token
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    s = _store(tmp_path)
+    s.migrate()
+    s.add_token(hash_token("lim"), "partner", ["observe"], account_id="a", products=[7])
+    s.add_token(hash_token("dead"), "old", ["publish"], account_id="a")
+    s.revoke_token(hash_token("dead"))
+    s.close()
+    assert main(["server", "token", "rotate", hash_token("lim")]) == 0
+    new = capsys.readouterr().out.strip()
+    s = _store(tmp_path)
+    assert list(s.get_token(hash_token(new))["products"]) == [7]
+    s.close()
+    assert main(["server", "token", "rotate", hash_token("dead")]) == 1
+    assert "revoked" in capsys.readouterr().err

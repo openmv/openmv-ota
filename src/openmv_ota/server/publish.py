@@ -8,6 +8,7 @@ and never holds a key -- so it can refuse an inconsistent set, but it can't manu
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import zlib
@@ -24,6 +25,8 @@ from .auth import Principal, require_scope
 from .schemas import Published
 
 publish = APIRouter(prefix="/api/v1/admin")
+
+MAX_DELTAS = 32            # one per base version still in the field; each is held in memory
 
 
 # Decompressed bytes are pulled through zlib this many at a time, so no single call can inflate
@@ -136,11 +139,7 @@ def _verify_artifacts(body: dict, image_bytes: bytes, deltas: dict) -> None:
         raise HTTPException(status_code=400,
                             detail="manifest declares delta(s) not uploaded: %s"
                                    % ", ".join(missing))
-    extra = sorted(set(deltas) - declared)
-    if extra:
-        raise HTTPException(status_code=400,
-                            detail="delta(s) uploaded that the manifest does not declare: %s"
-                                   % ", ".join(extra))
+    # (a part the manifest does not declare never gets here: the route refuses it unread)
     by_name = {rep["url"].rsplit("/", 1)[-1]: rep for rep in reps}
     for filename in sorted(declared):
         if _verify_encrypted(by_name[filename], deltas[filename], filename):
@@ -281,17 +280,17 @@ async def publish_release(request: Request, background: BackgroundTasks,
     # device's cross-flash guard: two product lines sharing one would offer each other's
     # firmware. Detect rather than trust the arithmetic. The account already has releases
     # for this id under a different name; the fix is an explicit product_id in the config.
+    # A product-limited token publishes only into its own products. 404, not 403: the
+    # error must not tell a limited credential which product ids exist.
+    if not principal.may(product_id):
+        raise HTTPException(status_code=404)
+
     known = ms.product_manifest_name(product_id, account_id=account_id)
     if known is not None and body.get("product") and known != body["product"]:
         raise HTTPException(status_code=409,
                             detail="product_id %d already belongs to %r in this account; "
                                    "%r would collide. Set an explicit product_id in the "
                                    "project config." % (product_id, known, body["product"]))
-
-    # A product-limited token publishes only into its own products. 404, not 403: the
-    # error must not tell a limited credential which product ids exist.
-    if not principal.may(product_id):
-        raise HTTPException(status_code=404)
 
     latest = ms.latest_release_payload_version(product_id, account_id=account_id)
     if latest is not None and payload_version <= latest and not allow_republish:
@@ -318,9 +317,24 @@ async def publish_release(request: Request, background: BackgroundTasks,
     # device patches against the release it is RUNNING -- one delta reaches only the devices
     # that never updated. Each is matched to its representation by filename.
     uploads = list(delta or [])
-    deltas = {(u.filename or "").rsplit("/", 1)[-1]:
-              await _read_capped(u, settings.max_image_bytes, "delta") for u in uploads}
-    _verify_artifacts(body, image_bytes, deltas)
+    # Only what the manifest declares is read at all: each part is held in memory, so an
+    # upload of undeclared parts was a way to make the server hold as much as it would take.
+    declared = {rep["url"].rsplit("/", 1)[-1] for rep in body["representations"]
+                if rep.get("format") == DELTA_FORMAT}
+    names = [(u.filename or "").rsplit("/", 1)[-1] for u in uploads]
+    extra = sorted(set(names) - declared)
+    if len(declared) > MAX_DELTAS:
+        raise HTTPException(status_code=400, detail="the manifest declares %d deltas; a "
+                            "release carries at most %d" % (len(declared), MAX_DELTAS))
+    if extra or len(names) != len(set(names)):
+        raise HTTPException(status_code=400, detail="delta part(s) the manifest does not "
+                            "declare, or sent twice: %s" % ", ".join(extra or names))
+    deltas = {name: await _read_capped(u, settings.max_image_bytes, "delta")
+              for name, u in zip(names, uploads, strict=True)}
+    # OFF THE EVENT LOOP. Inflating and hashing an image and its deltas is seconds of CPU,
+    # and this route is a coroutine: run inline, one upload stalled every check-in, download
+    # and API call on the server for as long as it took.
+    await asyncio.to_thread(_verify_artifacts, body, image_bytes, deltas)
 
     # The SBOM rides beside the artifacts when the client sends one: the dependency evidence
     # for the exact bytes this release ships, served per release instead of living only on the
@@ -338,14 +352,16 @@ async def publish_release(request: Request, background: BackgroundTasks,
     reps = body["representations"]
     manifest_key = "manifests/%s/manifest.bin" % release_id
     image_key = "artifacts/%s/%s" % (release_id, _rep(reps, "full")["url"])
-    storage.put(manifest_key, manifest_bytes, "application/octet-stream")
-    storage.put(image_key, image_bytes, "application/gzip")
-    for filename, patch in deltas.items():
-        storage.put("artifacts/%s/%s" % (release_id, filename), patch, "application/gzip")
-    sbom_key = None
-    if sbom_bytes is not None:
-        sbom_key = "sbom/%s/sbom.cdx.json" % release_id
-        storage.put(sbom_key, sbom_bytes, "application/json")
+    def _store():
+        storage.put(manifest_key, manifest_bytes, "application/octet-stream")
+        storage.put(image_key, image_bytes, "application/gzip")
+        for filename, patch in deltas.items():
+            storage.put("artifacts/%s/%s" % (release_id, filename), patch, "application/gzip")
+        if sbom_bytes is not None:
+            storage.put("sbom/%s/sbom.cdx.json" % release_id, sbom_bytes, "application/json")
+
+    await asyncio.to_thread(_store)                     # an object-store upload: off the loop too
+    sbom_key = "sbom/%s/sbom.cdx.json" % release_id if sbom_bytes is not None else None
 
     ms.add_release(release_id=release_id, product_id=product_id, product=body.get("product"),
                    version=body.get("version"), payload_version=payload_version,

@@ -42,7 +42,8 @@ X-OMV-Signature: v=1;ts=1791720000;sig=3045...
 `sig` is a DER ECDSA P-256 signature, by the camera's identity key, over
 SHA-256(`omv-checkin-v1\n` + `ts` + `\n` + the exact body bytes), with `ts` the camera's Unix
 time. The server checks it against the identity key in the camera's registration and takes
-it only within five minutes of its own clock, so a recorded check-in can't be replayed. A
+it only within five minutes of its own clock, and only in order: a request signed at or before
+the time of the last one it took from that camera counts as stale. A
 camera that has just booted cold has no clock yet and sends its first check-in unsigned; the
 answer's `Date` header sets the clock for the next one. Only a signed check-in gets the full
 treatment (a fleet row, telemetry, Live and ingest); an unsigned one, or one signed at a stale
@@ -104,9 +105,17 @@ resumes an interrupted download instead of restarting it.
 
 **`POST /api/v1/feedback`** — the explicit terminal outcome of an offered update:
 `device_id`, `board`, `product_id`, `release_id`, and `status` (`installed` or `failed`,
-optionally a `reason`). Recorded only for registered devices. The stock device library does
-not send it: the server reads the outcome of an offer from the camera's next check-in. Both
-count as `reported` in a rollout's status.
+optionally a `reason`, kept to 200 characters). It carries an `X-OMV-Signature` header as a
+check-in does, signed over `omv-feedback-v1` where a check-in signs `omv-checkin-v1`, so one
+is never taken for the other. It is recorded only with a signature that verifies, under the
+camera's own account and for a release of that account; anything else is answered
+`{"ok": false}`. The stock
+device library does not send it: the server reads the outcome of an offer from the camera's
+next check-in. Both count as `reported` in a rollout's status.
+
+A body over 64 KiB on either route is a `413`. A `board` that is not a firmware board name
+in capitals, or a `device_id` or `account_id` that is not letters, digits, `_`, `.` and `-`
+(64 at most), is answered as an unregistered camera is: no update, nothing kept.
 
 **`GET /healthz`** — liveness: `{"ok": true, "commit": "8b12ee7"}` (the commit the server was built from; empty
 when it was not recorded).

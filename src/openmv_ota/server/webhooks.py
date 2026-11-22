@@ -96,6 +96,21 @@ def sign(secret: str, ts: int, body: bytes) -> str:
     return f"t={ts},v1={mac}"
 
 
+# IPv6 ranges that are a wrapper around an IPv4 address and that `is_global` calls public:
+# NAT64 (a gateway forwards them to the IPv4 inside, private or not) and the old
+# IPv4-compatible form.
+_V4_WRAPPERS = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("::/96"))
+
+
+def _public(addr) -> bool:
+    """Whether ``addr`` is somewhere on the public internet. `is_global`, and not a list of
+    the private kinds: a list missed 100.64.0.0/10, the carrier-grade NAT range overlay
+    networks hand out."""
+    if addr.version == 6 and any(addr in net for net in _V4_WRAPPERS):
+        return False
+    return addr.is_global and not addr.is_multicast
+
+
 def check_url(url: str, *, allow_private: bool = False, resolve=None) -> str:
     """The endpoint URL, or a WebhookError. HTTPS only (HTTP is allowed to loopback for a
     self-host that opted in); the host must resolve, and to no private, loopback,
@@ -116,10 +131,35 @@ def check_url(url: str, *, allow_private: bool = False, resolve=None) -> str:
         raise WebhookError("the host does not resolve") from None
     for info in infos:
         addr = ipaddress.ip_address(info[4][0])
-        if not allow_private and (addr.is_private or addr.is_loopback or addr.is_link_local
-                                  or addr.is_multicast or addr.is_reserved or addr.is_unspecified):
+        if not allow_private and not _public(addr):
             raise WebhookError("the host resolves to a private address")
     return url.strip()
+
+
+def pinned(url: str, *, allow_private: bool = False, resolve=None) -> tuple[str, str, str]:
+    """``(url, host header, server name)`` to deliver ``url`` with: the same URL with its
+    host swapped for ONE address the name resolves to now, checked as :func:`check_url`
+    checks it. Connecting to that address, and not to the name, is what closes the gap
+    between the check and the connection: a name resolved twice can answer public the first
+    time and private the second. The TLS handshake still asks for, and verifies, the name."""
+    check_url(url, allow_private=allow_private, resolve=resolve)
+    parts = urlsplit(url.strip())
+    resolve = resolve or socket.getaddrinfo
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        addrs = [info[4][0] for info in resolve(parts.hostname, port)]
+    except OSError:
+        raise WebhookError("the host does not resolve") from None
+    for a in addrs:                                 # again: this is the lookup that is USED
+        if not allow_private and not _public(ipaddress.ip_address(a)):
+            raise WebhookError("the host resolves to a private address")
+    if not addrs:
+        raise WebhookError("the host does not resolve")
+    ip = addrs[0]
+    literal = "[%s]" % ip if ":" in ip else ip
+    netloc = literal if parts.port is None else "%s:%d" % (literal, parts.port)
+    host = parts.hostname if parts.port is None else "%s:%d" % (parts.hostname, parts.port)
+    return parts._replace(netloc=netloc).geturl(), host, parts.hostname
 
 
 def payload_for(hook: dict, entry: dict, delivery: dict) -> dict:
@@ -151,8 +191,13 @@ class Deliverer:
     def _client(self):
         if self._http is None:                     # pragma: no cover - wired in prod only
             import httpx
+            # NO CONNECTION REUSE. A delivery goes to an ADDRESS, with the endpoint's name as
+            # the TLS server name; the pool keys a connection by the address alone, so a kept
+            # connection made (and its certificate checked) for one name would carry the next
+            # delivery to another name at the same address.
             self._http = httpx.Client(timeout=self._settings.webhook_timeout_s,
-                                      follow_redirects=False)
+                                      follow_redirects=False, trust_env=False,
+                                      limits=httpx.Limits(max_keepalive_connections=0))
         return self._http
 
     def run_once(self, now: float | None = None) -> dict:
@@ -182,13 +227,29 @@ class Deliverer:
                        "X-OpenMV-Signature": sign(hook["secret"], ts, body)}
             code, error = None, ""
             try:
-                r = self._client().post(hook["url"], content=body, headers=headers,
-                                        timeout=self._settings.webhook_timeout_s)
-                code = r.status_code
+                # Resolved and checked at every send, not only when the endpoint was saved (a
+                # name that pointed somewhere public then can point inside the network now),
+                # and the connection goes to the address that was checked.
+                url, host, name = pinned(hook["url"],
+                                         allow_private=self._settings.webhook_allow_private)
+                # The STATUS and nothing after it: the endpoint's answer is never read. Read
+                # whole (and inflated: the client asks for gzip unless told otherwise) it was
+                # as much memory as the endpoint cared to send, in the server's own process.
+                with self._client().stream(
+                        "POST", url, content=body,
+                        headers=dict(headers, Host=host, Connection="close",
+                                     **{"Accept-Encoding": "identity"}),
+                        timeout=self._settings.webhook_timeout_s,
+                        extensions={"sni_hostname": name}) as r:
+                    code = r.status_code
                 if not 200 <= code < 300:
                     error = f"HTTP {code}"
+            except WebhookError as e:
+                error = str(e)
             except Exception as e:                 # noqa: BLE001 - any transport failure is a retry
-                error = str(e)[:200] or type(e).__name__
+                # The kind of failure and no more: the transport's own message names hosts
+                # and ports, and the account that owns the endpoint reads this back.
+                error = type(e).__name__
             attempt = d["attempt"] + 1
             if not error:
                 self._ms.finish_delivery(d["delivery_id"], status="delivered", attempt=attempt,

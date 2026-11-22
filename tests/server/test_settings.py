@@ -32,6 +32,9 @@ def test_summary_redacts_secrets():
                                     swd_ids_verify_url="u").summary())
     assert "swd_ids_verify_token = ***" in text and "supersecret" not in text
     assert "swd_ids_verify_url = u" in text
+    text = "\n".join(ServerSettings(keykeeper_token="kk-secret", datalake_admin_token="dl-secret",
+                                    swd_ids_verify_url="u").summary())
+    assert "kk-secret" not in text and "dl-secret" not in text
 
 
 def test_summary_hides_test_downgrade_hook_when_off_shouts_when_on():
@@ -53,3 +56,9 @@ def test_render_port_and_database_url_aliases(monkeypatch):
 def test_kwargs_override_env(monkeypatch):
     monkeypatch.setenv("PORT", "1000")
     assert ServerSettings(port=8080).port == 8080          # programmatic override wins over env
+
+
+def test_summary_keeps_the_database_password_to_itself():
+    out = "\n".join(ServerSettings(database_url="postgresql://ota:hunter2@db.internal:5432/ota",
+                                   swd_ids_verify_url="u").summary())
+    assert "hunter2" not in out and "postgresql://ota:***@db.internal:5432/ota" in out

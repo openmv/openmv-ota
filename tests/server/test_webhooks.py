@@ -97,7 +97,10 @@ def test_an_endpoint_receives_matching_events_signed(tmp_path, monkeypatch):
     assert deliverer.run_once(now=time.time() + 1) == {"sent": 1, "failed": 0, "dead": 0}
     assert len(rx.calls) == 1
     req = rx.calls[0]
-    assert str(req.url) == "https://hooks.example/ota" and req.headers["content-type"] == "application/json"
+    # sent to the ADDRESS the name was checked at, asking for the name (Host, and the TLS server name)
+    assert str(req.url) == "https://93.184.216.34/ota" and req.headers["host"] == "hooks.example"
+    assert req.extensions["sni_hostname"] == "hooks.example"
+    assert req.headers["content-type"] == "application/json"
     assert req.headers["x-openmv-event"] == "rollout.stop" and req.headers["x-openmv-attempt"] == "1"
     body = _verify(secret, req)
     assert body["type"] == "rollout.stop" and body["account_id"] == "a1" and body["actor"] == "ci"
@@ -257,8 +260,12 @@ def test_the_device_path_raises_its_own_events(tmp_path, monkeypatch):
     assert camera.check(c, checkin).status_code == 200            # no second enrolment
     assert camera.check(c, {**checkin, "fallback_reason": "boot-loop"}).status_code == 200
     assert camera.check(c, {**checkin, "fallback_reason": "boot-loop"}).status_code == 200  # same reason: once
-    assert c.post("/api/v1/feedback", json={"device_id": "aa", "product_id": 7, "board": "OPENMV_N6",
-                                            "release_id": "rel_1", "status": "failed", "reason": "sha"}).json()["ok"]
+    store.add_release(release_id="rel_1", product_id=7, product="P", version="2.0.0",
+                      payload_version=2, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=1, representations=[], manifest_key="m", image_key="i",
+                      account_id="a1")                                # the report is about a release of its account
+    assert camera.feedback(c, {"device_id": "aa", "product_id": 7, "board": "OPENMV_N6",
+                               "release_id": "rel_1", "status": "failed", "reason": "sha"}).json()["ok"]
     actions = [e["action"] for e in c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]]
     assert actions.count("device.enrolled") == 1 and actions.count("device.fallback") == 1
     assert actions.count("install.failed") == 1
@@ -277,3 +284,93 @@ def test_leftover_deliveries_for_a_switched_off_endpoint_die_quietly(tmp_path, m
     assert out["dead"] >= 1 and out["sent"] == 0 and rx.calls == []
     with pytest.raises(wh.WebhookError, match="too long"):
         wh.check_url("https://x.example/" + "a" * 2100, resolve=_resolve_public)
+
+
+def test_an_endpoint_is_checked_again_at_every_send(tmp_path, monkeypatch):
+    """The address check ran when the endpoint was saved and never again, so a name that
+    resolved somewhere public then could point inside the network at delivery. And the
+    transport's own error text, which names hosts and ports, went back to the account."""
+    c, store, rx, deliverer = _app(tmp_path, monkeypatch)
+    hook = c.post("/api/v1/admin/webhooks", headers=AUTH,
+                  json={"url": "https://hooks.example/", "events": ["token.*"]}).json()
+    store.append_audit(actor="ci", action="token.issue", entity_type="token", entity_id="t",
+                       account_id="a1")
+    monkeypatch.setattr(wh.socket, "getaddrinfo",
+                        lambda h, p: [(None, None, None, None, ("10.0.0.7", p))])
+    deliverer.run_once(now=time.time() + 1)
+    assert rx.calls == []                                               # never sent
+    rows = c.get("/api/v1/admin/webhooks/%s/deliveries" % hook["webhook_id"],
+                 headers=AUTH).json()["deliveries"]
+    assert [r["last_error"] for r in rows] == ["the host resolves to a private address"]
+    # a transport failure is reported by its kind alone
+    monkeypatch.setattr(wh.socket, "getaddrinfo", _resolve_public)
+    rx.raise_error = True
+    deliverer.run_once(now=time.time() + 3600)
+    rows = c.get("/api/v1/admin/webhooks/%s/deliveries" % hook["webhook_id"],
+                 headers=AUTH).json()["deliveries"]
+    assert rows[0]["last_error"] == "ConnectError"
+
+
+@pytest.mark.parametrize("addr", ["100.64.0.1", "10.1.2.3", "127.0.0.1", "169.254.169.254",
+                                  "192.168.1.1", "::1", "fd00::1", "0.0.0.0", "224.0.0.1"])
+def test_an_address_that_is_not_public_is_refused(addr):
+    """100.64.0.0/10 is the one a list of the private kinds misses."""
+    with pytest.raises(wh.WebhookError, match="private address"):
+        wh.check_url("https://x.example/", resolve=lambda h, p: [(0, 0, 0, 0, (addr, p))])
+
+
+def test_a_delivery_connects_to_the_address_it_checked():
+    """Checking the name and then handing the NAME to the HTTP client is two lookups: one
+    that answers public for the check and private for the connection got through."""
+    answers = iter([[(0, 0, 0, 0, ("93.184.216.34", 443))],      # the check
+                    [(0, 0, 0, 0, ("10.0.0.7", 443))]])          # the lookup that is used
+    with pytest.raises(wh.WebhookError, match="private address"):
+        wh.pinned("https://rebind.example/h", resolve=lambda h, p: next(answers))
+    assert wh.pinned("https://x.example:8443/h?a=1", resolve=_resolve_public) == (
+        "https://93.184.216.34:8443/h?a=1", "x.example:8443", "x.example")
+    v6 = lambda h, p: [(0, 0, 0, 0, ("2606:2800:220:1:248:1893:25c8:1946", p))]   # noqa: E731
+    assert wh.pinned("https://x.example/h", resolve=v6)[0] == \
+        "https://[2606:2800:220:1:248:1893:25c8:1946]/h"
+    with pytest.raises(wh.WebhookError, match="does not resolve"):
+        wh.pinned("https://x.example/h", resolve=lambda h, p: [] if p else None)
+
+
+@pytest.mark.parametrize("addr", ["64:ff9b::a00:1", "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe", "::a00:1"])
+def test_an_ipv6_wrapper_around_an_ipv4_address_is_not_public(addr):
+    """NAT64 forwards 64:ff9b::/96 to the IPv4 address inside, private or not."""
+    with pytest.raises(wh.WebhookError, match="private address"):
+        wh.check_url("https://x.example/", resolve=lambda h, p: [(0, 0, 0, 0, (addr, p))])
+    assert wh._public(__import__("ipaddress").ip_address("2606:2800:220:1:248:1893:25c8:1946"))
+
+
+def test_a_delivery_reads_the_status_and_none_of_the_answer(tmp_path, monkeypatch):
+    """The endpoint's answer was read whole, and inflated: a small gzip body was as much
+    memory as its owner liked, in the server's process."""
+    c, store, rx, deliverer = _app(tmp_path, monkeypatch)
+    read = []
+
+    class _Body(httpx.SyncByteStream):
+        def __iter__(self):
+            read.append(1)
+            yield b"x" * 1024
+
+    def endpoint(request):
+        rx.calls.append(request)
+        return httpx.Response(200, stream=_Body())
+    deliverer._http = httpx.Client(transport=httpx.MockTransport(endpoint))
+    c.post("/api/v1/admin/webhooks", headers=AUTH, json={"url": "https://hooks.example/", "events": ["token.*"]})
+    store.append_audit(actor="ci", action="token.issue", entity_type="token", entity_id="t", account_id="a1")
+    assert deliverer.run_once(now=time.time() + 1)["sent"] == 1
+    assert read == [] and rx.calls[-1].headers["accept-encoding"] == "identity"
+
+
+def test_a_name_that_stops_resolving_between_the_check_and_the_send_is_refused():
+    answers = iter([[(0, 0, 0, 0, ("93.184.216.34", 443))]])
+
+    def once(h, p):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise OSError("gone") from None
+    with pytest.raises(wh.WebhookError, match="does not resolve"):
+        wh.pinned("https://x.example/h", resolve=once)

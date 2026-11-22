@@ -110,7 +110,7 @@ ignore = [
 # FastAPI's dependency-injection idiom is a call in the default, evaluated once by design
 extend-immutable-calls = [
     "fastapi.Depends", "fastapi.File", "fastapi.Query", "fastapi.Header",
-    "openmv_ota.server.auth.require_scope",
+    "openmv_ota.server.auth.require_scope", "openmv_ota.server.auth.require_account_scope",
 ]
 
 [tool.ruff.lint.per-file-ignores]

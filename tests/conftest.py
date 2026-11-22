@@ -96,6 +96,16 @@ TEST_KEY_PASSPHRASE = "test-passphrase"
 
 
 @pytest.fixture(autouse=True)
+def _no_signed_history():
+    """The server remembers, per process, the newest time each camera signed. Every test's
+    cameras share a few device ids and one process, so a test starts with none remembered."""
+    import sys
+    loaded = sys.modules.get("openmv_ota.server.app")       # not installed in every CI job
+    if loaded is not None:
+        loaded._LAST_SIGNED.clear()
+
+
+@pytest.fixture(autouse=True)
 def _stub_ca_bundle(monkeypatch):
     """Creating an OTA project downloads the CA root bundle; stub that network call
     everywhere so tests stay offline. The dedicated fetch tests import the real
