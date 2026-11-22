@@ -1431,7 +1431,11 @@ def forget_device(device_id: str, request: Request,
 
     A camera that DOES check in again is simply a device the server has not seen before:
     it enrols from scratch. To stop one coming back, retire its registration -- this call
-    is about the fleet, not about entitlement."""
+    is about the fleet, not about entitlement.
+
+    A registered camera stays of the product it was under when a token limited to a list
+    of products forgets it: it can enrol again under that product only. Forgotten by a
+    token for the whole account, it enrols under whatever product it reports next."""
     ms = request.app.state.metastore
     dev = ms.get_device(device_id)
     if dev is None or dev.get("account_id") != principal.account_id \
@@ -1453,6 +1457,11 @@ def forget_device(device_id: str, request: Request,
         data["data_deleted"] = purged["deleted"]
         data["data_bytes"] = purged["bytes"]
     ms.forget_device(device_id)
+    if not principal.products:
+        # A token for the whole account lets the camera go from its product too: it enrols
+        # under whatever it reports next. One limited to a product does not get to decide
+        # that -- its camera would otherwise walk into any other product of the account.
+        ms.set_registration_product(device_id, None)
     ms.append_audit(actor=principal.name, action="device.forget", entity_type="device",
                     entity_id=device_id, data=data,
                     account_id=principal.account_id, product_id=dev.get("product_id"))

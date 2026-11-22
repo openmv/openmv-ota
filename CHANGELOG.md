@@ -170,6 +170,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A camera's product outlives its fleet row.** The rule that a camera does not move
+  itself between products applied only while it had a fleet row, and a token limited to
+  one product can forget its own camera: forgotten, the camera enrolled under any product
+  of the account it named. The product is now remembered on the registration and checked
+  at enrolment too; only a forget by a token for the whole account clears it. A feedback
+  report from a camera with no fleet row is refused (it was accepted for a release of any
+  product of the account).
+- **A camera's reports reach the audit trail on a daily budget, after its row is written.**
+  A fallback reason that changed every check-in, eight made-up boot-journal entries each
+  time, or a failed-install report as often as it liked were each an audit row and a
+  webhook delivery; and a check-in the store refused left its rows behind to be written
+  again. One camera now causes at most 48 such rows a day, and nothing is audited for a
+  check-in whose row was not stored. `payload_version`, `publish_seq`, `product_id`, a
+  stub's version and a slot's version and hash are bounded to what stores them.
 - **A refused check-in is audited once a day per camera, not once per reason.** A refusal
   needs no key: anyone can name a registered camera and send a signature header that does
   not parse. It was audited whenever the reason differed from the last one, so two reasons

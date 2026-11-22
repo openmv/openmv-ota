@@ -292,3 +292,24 @@ def test_a_limited_token_cannot_reach_another_products_release_through_a_pin(tmp
         assert c.get("/api/v1/admin" + path, headers=LIMITED).status_code == 403
     assert c.get("/api/v1/admin/dashboard", headers=LIMITED).json()["advisories"] == 0
     assert c.get("/api/v1/admin/advisories", headers=WHOLE).status_code == 200
+
+
+def test_a_limited_token_forgets_a_fleet_row_not_the_cameras_product(tmp_path):
+    """Forgetting was the way a camera changed product: gone from the fleet, it enrolled
+    under whatever it reported next. A token limited to one product can forget its own
+    camera, so with a key that signs as that camera it walked it into any other product of
+    the account. The product now stays on the registration unless the one forgetting holds
+    the whole account."""
+    from tests.server import camera
+    c, store = _app(tmp_path)
+    for dev in ("dev_%d" % MINE, "dev_%d" % THEIRS):
+        camera.register(store, dev, ACCOUNT)
+        store.set_registration_product(dev, MINE)
+    store.execute("UPDATE devices SET product_id = ? WHERE device_id = ?",
+                  (MINE, "dev_%d" % THEIRS))
+    assert c.delete("/api/v1/admin/devices/dev_%d?keep_data=true" % MINE,
+                    headers=LIMITED).status_code == 200
+    assert store.get_registration("dev_%d" % MINE)["product_id"] == MINE
+    assert c.delete("/api/v1/admin/devices/dev_%d?keep_data=true" % THEIRS,
+                    headers=WHOLE).status_code == 200
+    assert store.get_registration("dev_%d" % THEIRS)["product_id"] is None
