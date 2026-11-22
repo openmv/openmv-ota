@@ -283,6 +283,13 @@ _CHUNK = 4096
 _RESP_HEADERS_MAX = 64     # most a sane server sends is a handful; this only has to be far enough
 #                              above normal that it never trips on a real reply while still ending a
 #                              header stream that never does.
+_RESP_LINE_KEEP = 128        # of a status or header line: all this reader looks at is its
+#                              start (the status, Content-Length, Date). The rest is read and
+#                              dropped, so a line of any length costs this much RAM and no more.
+_RESP_DEADLINE_MS = 30000    # for the whole answer, status line to last body byte. The socket
+#                              timeout bounds one recv, and an answer dripped a byte per timeout
+#                              passed every recv while it kept the poll loop, and the app's
+#                              scheduler with it, for as long as the server cared to.
 _RESP_MAX = 8 * 1024         # a check-in reply is grants + version info;
                              # kept roomy on purpose -- rejecting a real
                              # reply breaks OTA, the costlier failure
@@ -927,6 +934,8 @@ def _remember_network():  # pragma: no cover  (device: /flash)  # hil-residual-f
 
 # THE CHECK-IN CADENCE. Pure, so the host suite pins every number below.
 _POLL_DEFAULT_S = 3600       # the wait when neither the app nor the server names one
+_POLL_MAX_S = 86400          # the longest wait a server's answer can ask for
+_POLL_MIN_S = 5              # ...and the shortest
 _JITTER = 0.15               # +/- spread on every wait the DEVICE picks (the server jitters its own)
 _BACKOFF_FIRST_S = 10        # first retry after a failed check-in; doubles per consecutive miss
 _BACKOFF_MAX_SHIFT = 16      # bounds the doubling's int long before the cap is ever the limit
@@ -973,6 +982,15 @@ def _next_poll(resp, interval, r):
     ``interval`` None leaves the device SERVER-PACED: it waits whatever the server said (the
     server has already jittered it), or ``_POLL_DEFAULT_S`` if it said nothing."""
     told = resp.get("poll_after_s")
+    # The reply is unsigned: a number in it must not be able to silence the camera, or spin
+    # it. No wait it names outlasts a day or is under a few seconds, and anything that is not
+    # a positive number is no answer.
+    if not isinstance(told, (int, float)) or isinstance(told, bool) or told <= 0:
+        told = None
+    elif told > _POLL_MAX_S:
+        told = _POLL_MAX_S
+    elif told < _POLL_MIN_S:
+        told = _POLL_MIN_S
     if interval is None:
         return told or _POLL_DEFAULT_S
     own = _jittered(interval, r)
@@ -1118,8 +1136,11 @@ def _checkin_relieved(attempt, relieve, collect):
 
 
 def _offer(resp):
-    """The manifest URL to install, or None -- pure."""
-    return resp.get("manifest_url") if resp.get("update") else None
+    """The manifest URL to install, or None -- pure. An offer names an https URL and nothing
+    else: the reply is unsigned, and a path in it would send the installer to a file on the
+    camera, with no TLS in the way."""
+    url = resp.get("manifest_url") if resp.get("update") else None
+    return url if isinstance(url, str) and url.startswith("https://") else None
 
 
 # INSTALL FROM A FRESH HEAP. An update is installed in place only on the BOOT check-in, before
@@ -1561,16 +1582,37 @@ def _server_date(value):  # pragma: no cover  (device: RTC)
         pass  # hil-residual: bare pass; timestamps stay as they were
 
 
-def _read_capped(sock, limit, clen=None):  # pragma: no cover  (device network)
+def _resp_line(sock, deadline):  # pragma: no cover  (device network)
+    """One status or header line of the check-in answer: its first ``_RESP_LINE_KEEP`` bytes,
+    the rest read and dropped. ``readline()`` grows its buffer until a newline comes, so the
+    server chose how much RAM a check-in took; and each byte it sent restarted the socket
+    timeout, so it chose how long. A byte at a time off the TLS record already in RAM."""
+    import time  # hil-residual: device clock import (no marker can witness a clock read)
+    line = bytearray()
+    while True:
+        if time.ticks_diff(deadline, time.ticks_ms()) < 0:
+            raise OSError("check-in answer took too long")  # hil-residual: bare raise (a server dripping its answer; inject-only)
+        b = sock.read(1)
+        line += b[:_RESP_LINE_KEEP - len(line)]      # nothing once the line is full
+        if not b or b == b"\n":                      # the newline, or the end of the answer
+            break
+    log.debug("checkin: header line")                 # HIL path witness (a line read, bounded)
+    return bytes(line)  # hil-residual: bare return of the kept bytes
+
+
+def _read_capped(sock, limit, clen=None, deadline=None):  # pragma: no cover  (device network)
     """Read a response body, capped at ``limit``. When the Content-Length ``clen`` is known, read
     EXACTLY that many bytes and stop -- never wait for EOF: the WINC1500 reports a peer close only
     after the socket timeout elapses, so an EOF-terminated read stalls a whole _CHECKIN_TIMEOUT every
     poll. Without a length (chunked / connection-close), fall back to read-to-EOF. Never ``read(-1)``:
     a captive portal or broken proxy must not size our allocation. Bounded chunks joined once."""
+    import time  # hil-residual: device clock import (no marker can witness a clock read)
     if clen is not None and clen > limit:
         raise OSError("check-in response over %d bytes" % limit)  # hil-residual: bare raise (declared over cap)
     chunks, total = [], 0
     while clen is None or total < clen:
+        if deadline is not None and time.ticks_diff(deadline, time.ticks_ms()) < 0:
+            raise OSError("check-in answer took too long")  # hil-residual: bare raise (a server dripping its body; inject-only)
         d = sock.read(_CHUNK if clen is None else min(_CHUNK, clen - total))
         if not d:                                     # EOF (peer closed) -- a short body, or the no-length case
             break  # hil-residual: EOF before the declared length -- a TRUNCATED body. Every server we talk to sends Content-Length (witnessed by run.checkin_clen), so the loop normally exits on total==clen and this fires only when the peer closes early; reaching it needs a fault-injected short response
@@ -1666,6 +1708,7 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
     import json
     import socket
     import ssl
+    import time  # hil-residual: device clock import (no marker can witness a clock read)
     scheme, _, rest = server_url.rstrip("/").partition("://")
     hostport, _, _ = rest.partition("/")
     host, _, port = hostport.partition(":")
@@ -1689,7 +1732,8 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
             "Content-Type: application/json\r\nContent-Length: %d\r\n%s"
             "Connection: close\r\n\r\n" % (host, len(payload), _signature_header(payload))
         ).encode() + payload)
-        status_line = ss.readline()
+        deadline = time.ticks_add(time.ticks_ms(), _RESP_DEADLINE_MS)
+        status_line = _resp_line(ss, deadline)
         # A 429 is the server pacing a crowd (the per-IP / per-/64 check-in limit), not a broken
         # link: its body is an ordinary {"update": false, "poll_after_s": n} with a short, jittered
         # n. Read it like a 200 -- the loop waits n (or its own interval, if that is longer: see
@@ -1711,7 +1755,7 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
         #                                              bounds TIME, the same thing relax()'s budget
         #                                              bounds one level up.
         while True:                                  # skip headers, noting Content-Length
-            line = ss.readline()
+            line = _resp_line(ss, deadline)
             if line in (b"\r\n", b"\n", b""):
                 break
             left -= 1
@@ -1726,9 +1770,10 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
                     clen = None  # hil-residual: bare assign
             elif line[:5].lower() == b"date:":  # hil-residual: header dispatch; the taken branch is witnessed by the callee's `clock: server date` (every check-in: uvicorn and Cloudflare both send Date)
                 _server_date(line[5:])  # hil-residual: the witness is emitted by the CALLEE (`clock: server date`); the audit cannot see across the call boundary
-        resp = json.loads(_read_capped(ss, _RESP_MAX, clen))
-        if throttled:
-            resp["throttled"] = True  # hil-residual: needs a throttling server (see above); tells _next_poll this poll_after_s is load-shedding, not the server's default pacing
+        resp = json.loads(_read_capped(ss, _RESP_MAX, clen, deadline))
+        if not isinstance(resp, dict):
+            raise OSError("check-in answer is not an object")  # hil-residual: bare raise (a server that answers JSON that is not an object; inject-only)
+        resp["throttled"] = throttled  # the STATUS LINE's word, never the body's: tells _next_poll this poll_after_s is load-shedding, not the server's default pacing
         log.debug("checkin: parsed")                  # HIL path witness (headers skipped + JSON)
         return resp  # hil-residual: bare return of the parsed response
     finally:

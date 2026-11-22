@@ -420,6 +420,10 @@ def test_register_with_a_key_is_idempotent_replaces_not_appends():
     ({"update": False, "manifest_url": "https://s/m.bin"}, None),
     ({"update": True}, None),
     ({}, None),
+    # the reply is unsigned: a path would send the installer to a file on the camera
+    ({"update": True, "manifest_url": "/flash/m.bin"}, None),
+    ({"update": True, "manifest_url": "http://s/m.bin"}, None),
+    ({"update": True, "manifest_url": 7}, None),
 ])
 def test_offer(resp, expect):
     assert rt._offer(resp) == expect

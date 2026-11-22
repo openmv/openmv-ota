@@ -687,7 +687,7 @@ def _manifest_parse(data):
 
 
 def _update_reject(body, product_id, platform_version, rollback_floor, account_id="",
-                   stub_version=None):
+                   stub_version=None, running=0):
     """Device-relative pre-flight check on a verified manifest body -- the mirror of
     boot.evaluate_slot's image checks (and openmv_ota.ota.manifest.update_reject_reason).
     ``stub_version`` is the boot stub that chose this boot (None without one): an image
@@ -710,6 +710,13 @@ def _update_reject(body, product_id, platform_version, rollback_floor, account_i
     key = body.get("publish_seq", 0) if product_id == 0 else body.get("payload_version", 0)
     if key < rollback_floor:
         return "rollback"
+    # ...and it has to be NEWER than the image this camera runs (``running``: that image's
+    # key, 0 in recovery where nothing runs). The floor admits the running release itself,
+    # and installing it again is an erase of the other slot for nothing: whoever answers the
+    # check-in could replay the current manifest with junk for an image and cost the camera
+    # its fallback, over and over.
+    if running and key <= running:
+        return "not-newer"
     return None
 
 
@@ -1286,6 +1293,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     mv = memoryview(work)
     off = 0
     since_gc = 0
+    status_at = slot_size - 2 * block
     n = primed                                       # a primed first chunk is already in `work`
     while off < slot_size:
         feed()                                       # before the (recv + delta reconstruct) fill
@@ -1295,6 +1303,16 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         if n == 0:
             break                                    # source exhausted; the size check below rejects short
         chunk = mv[:n]
+        # THE STATUS SECTOR IS THE CAMERA'S, NEVER THE IMAGE'S. A published image leaves it
+        # blank; the floors above and the arm sequence below are the only writers. These bytes
+        # are programmed before the sha256 below can refuse them, so a stream that carried a
+        # CONFIRMED marker beside an old signed image, or a floor entry, would leave it on
+        # flash for the next boot to believe. Refused here, before the write.
+        lo = off if off > status_at else status_at
+        hi = off + n if off + n < status_at + block else status_at + block
+        if lo < hi and not _is_blank(mv[lo - off:hi - off]):
+            log.warning("install: reject status bytes")
+            raise OSError("image carries status-sector bytes")
         if digest is not None:
             digest.update(chunk)                     # the image as signed: before the cipher
         if crypt is not None and off < crypt_size:
@@ -1563,6 +1581,7 @@ class _ResumingBody(io.IOBase):
 # between the socket and DeflateIO's inflate window, on boards where that window is
 # already most of the free heap. Two buffers of this size is the whole cost of
 # decryption -- nothing here is sized by the image, the response, or a length field.
+_HOLD_HEAP = 32 * 1024    # free heap under which the inflate window's place is held (open_chain)
 _DEC_CHUNK = 256
 _AES_BLOCK = 16
 _AES_CBC = 2                 # cryptolib's MODE_CBC
@@ -1593,8 +1612,15 @@ class _Decrypt(io.IOBase):
         self._pbuf = bytearray(_DEC_CHUNK)    # its plaintext
         self._have = 0
         self._off = 0
+        self.hold = None                      # see open_chain: a placeholder, let go on the first read
 
     def readinto(self, buf):
+        if self.hold is not None:
+            # DeflateIO's first read allocates its state, THEN reads the gzip header (through
+            # here), THEN allocates its window. Letting the placeholder go at this point is what
+            # puts the window where the placeholder was and the state somewhere else.
+            self.hold = None
+            gc.collect()
         if self._have == 0:
             self._fill()
             if self._have == 0:
@@ -1699,7 +1725,7 @@ def _lockbox_key(lockbox, enc, se=None):
 
 def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop,
                     floor=0, base_version=0, delta_capable=True,
-                    base_body_sha=""):  # pragma: no cover
+                    base_body_sha="", epoch_floor=0):  # pragma: no cover
     """Pre-erase: fetch the signed manifest, verify its signature against the frozen
     trusted keys (exactly as boot.py verifies an image trailer), apply the device-relative
     checks (board / platform / anti-rollback), and pick a representation. Returns
@@ -1728,21 +1754,21 @@ def _fetch_manifest(manifest_url, ca_pem, cfg, verify, socket, ssl, feed=_noop,
     except Exception as e:  # hil-residual: connection-phase failure wrapper (needs a dropped link / bad cert to reach; the happy path fetches cleanly)
         raise _TransportError("manifest fetch failed: %r" % (e,))  # hil-residual: bare raise (cause kept in the message; run() logs it as deferred + retries)
     return _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version,  # hil-residual: bare delegation into the host-tested vet (its markers witness the outcome)
-                         delta_capable, base_body_sha)  # hil-residual: continuation of the same delegation
+                         delta_capable, base_body_sha, epoch_floor)  # hil-residual: continuation of the same delegation
 
 
 def _fetch_manifest_file(manifest_path, cfg, verify, floor=0, base_version=0,
-                         delta_capable=True, base_body_sha=""):
+                         delta_capable=True, base_body_sha="", epoch_floor=0):
     """The on-disk twin of ``_fetch_manifest``: read the signed manifest from a mounted
     filesystem (an SD card holding the published artifacts) and hand it to the same
     verify + vetting. An unreadable path raises OSError straight to the app -- unlike a
     dropped link it is not transient, so it is a rejection, never a deferred retry."""
     return _vet_manifest(manifest_path, _read_manifest_file(manifest_path), cfg, verify,
-                         floor, base_version, delta_capable, base_body_sha)
+                         floor, base_version, delta_capable, base_body_sha, epoch_floor)
 
 
 def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_capable,
-                  base_body_sha=""):
+                  base_body_sha="", epoch_floor=0):
     """Verify + vet a signed manifest already in RAM and pick a representation -- the
     pure-CPU half of the manifest phase, shared by the HTTPS fetch and the on-disk
     path. Returns ``(image_url, fmt, expect_sha, wbits, alt, enc, crypt)``; raises OSError
@@ -1766,7 +1792,10 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
         if root is None or not verify(_ES256, root, c["signature"], c["region"]):
             log.warning("install: reject untrusted key")
             raise OSError("manifest signed by an untrusted key")
-        if c["epoch"] < getattr(cfg, "last_epoch", 0):
+        # ...by the running image's epoch or the floor on flash, whichever is higher: in
+        # recovery no image is mounted, and the floor is all there is.
+        last_epoch = getattr(cfg, "last_epoch", 0)
+        if c["epoch"] < (last_epoch if last_epoch > epoch_floor else epoch_floor):
             log.warning("install: reject untrusted key")
             raise OSError("manifest signed by a retired key")
         if not verify(m["sig_alg"], c["pubkey"], m["signature"], m["region"]):
@@ -1777,7 +1806,9 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
         last_stub = getattr(cfg, "last_stub", None)       # (stub_version, reason) from boot.py
         reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
                                 getattr(cfg, "ACCOUNT_ID", ""),
-                                last_stub[0] if last_stub else None)
+                                last_stub[0] if last_stub else None,
+                                getattr(cfg, "last_publish_seq" if cfg.PRODUCT_ID == 0
+                                        else "last_payload_version", 0))
         if reason is not None:
             log.warning("install: reject vetting")   # rejected: witness the boundary
             raise OSError("manifest rejected (%s)" % reason)
@@ -1790,6 +1821,10 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
     image_url = _resolve_url(manifest_url, rep["url"])
     fmt = rep.get("format")
     expect_sha = body_dict.get("sha256")
+    if not isinstance(expect_sha, str) or len(expect_sha) != 64:
+        # No hash, no integrity gate on the download: _install_stream checks only what it is given.
+        log.warning("install: reject vetting")
+        raise OSError("manifest names no image sha256")
     # The slot cipher's inputs, on a board whose stub keeps the slots encrypted: the trailer's
     # signed-region hash (the tweak's input) and how far the cipher reaches. Signed with the
     # rest; a manifest without them cannot be installed there, because the keystream must be
@@ -2404,12 +2439,12 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
             image_url, fmt, expect_sha, wbits, alt, enc, crypt_in = _fetch_manifest_file(  # hil-residual: file-manifest dispatch; _fetch_manifest_file -> _vet_manifest is host-tested end-to-end with real files (no bench SD rig)
                 manifest_url, cfg, verify,
                 floor=floor, base_version=base_version, delta_capable=delta_capable,
-                base_body_sha=base_body_sha)
+                base_body_sha=base_body_sha, epoch_floor=epoch)
         else:
             image_url, fmt, expect_sha, wbits, alt, enc, crypt_in = _fetch_manifest(  # hil-residual: HTTPS dispatch; witnessed by `install: manifest accepted` on every bench install leg
                 manifest_url, ca_pem, cfg, verify, socket, ssl, feed,
                 floor=floor, base_version=base_version, delta_capable=delta_capable,
-                base_body_sha=base_body_sha)
+                base_body_sha=base_body_sha, epoch_floor=epoch)
     except Exception as e:
         # Two very different failures land here and only ONE is a rejected update. A REJECTION -- bad
         # signature/key, failed vetting, or a corrupt/unparseable manifest -- must read as install.reject
@@ -2493,6 +2528,23 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
         # fitting and MemoryError x3. The armed-watchdog gc_collect hook exists for
         # pause control; this one is for the allocation itself.
         gc.collect()  # hil-residual: pre-DeflateIO collect; effect only visible on small-heap classics (no fleet marker)
+        if enc and wbits and gc.mem_free() < _HOLD_HEAP:
+            # A SMALL HEAP IS ALSO A FRAGMENTED ONE. Measured on the M7 (50 KB of heap) at this
+            # line: 15.7 KB free, the largest hole 5328 bytes. DeflateIO's first read takes its
+            # state (about 1.3 KB) and then its window (4096) -- first fit put the state at the
+            # head of that one hole, and the window then missed it by a hundred bytes:
+            # MemoryError with three windows' worth of heap free. Hold a window-sized block
+            # there so the state goes to a smaller hole; the decrypt layer lets it go between
+            # the two allocations.
+            #
+            # ``wbits`` GATES THE MEASUREMENT, not only the hold: gc.mem_free() walks the whole
+            # heap, and on the N6's (megabytes) that walk straight after the collect above
+            # outlasted a 100 ms watchdog window -- every install reset at this line. Only a
+            # small-heap board's image carries a small window, so a large heap never walks.
+            try:  # hil-residual: small-heap arm (under 32 KB free with an encrypted image): the classics' file legs take it, and no marker of theirs is in the map
+                body.hold = bytearray(_window_bytes(wbits))  # hil-residual: same arm; its effect is the M7's encrypted install fitting at all
+            except MemoryError:  # hil-residual: no hole takes a window at all; the read below says so itself
+                pass  # hil-residual: bare pass (same arm)
         dio = deflate.DeflateIO(body, deflate.GZIP, wbits)  # wbits 0 = format default
         if fmt == _DELTA_FORMAT:
             # Delta: stream-decompress the patch and reconstruct the image against the

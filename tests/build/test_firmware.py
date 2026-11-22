@@ -1436,9 +1436,10 @@ def test_board_overlay_asks_for_the_small_tflm_op_set_and_takes_a_feature_alread
     (bd / "imlib_config.h").write_text(
         "// Enable find_datamatrices() (26 KB)\n// #define IMLIB_ENABLE_DATAMATRICES\n"
         "#define IMLIB_ENABLE_BARCODES\n#define IMLIB_ENABLE_FIND_DISPLACEMENT\n"
-        "#define IMLIB_ENABLE_FIND_LBP\n")
+        "#define IMLIB_ENABLE_FIND_LBP\n#define IMLIB_ENABLE_LINPOLAR\n"
+        "#define IMLIB_ENABLE_LOGPOLAR\n#define IMLIB_ENABLE_GET_SIMILARITY\n")
     overlay = fw._board_overlay(repo, "OPENMV4", tmp_path / "t2")
     cfg = (overlay / "imlib_config.h").read_text()
     assert "// #define IMLIB_ENABLE_DATAMATRICES\n" in cfg                 # left as the firmware has it
-    assert cfg.count("dropped by openmv-ota") == 3
+    assert cfg.count("dropped by openmv-ota") == 6
     assert "TFLM_SMALL" not in (overlay / "board_config.mk").read_text()   # not a board the table names

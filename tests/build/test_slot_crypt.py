@@ -191,7 +191,7 @@ def test_install_stream_ciphers_the_body_and_leaves_the_pad_blank():
     crypt_size = 3 * block
     image = body.ljust(slot - 2 * block, b"\xff")
     import hashlib
-    image += bytes(block)                       # status sector (the stream writes its marks)
+    image += b"\xff" * block                    # status sector: blank, the camera's to write
     image += b"\xff" * block                    # trailer block (pad; not what this test is about)
     flash = _Flash(slot)
     base = 0x71400000
@@ -215,7 +215,7 @@ def test_install_stream_without_a_cipher_still_skips_blank_chunks():
     block = 4096
     slot = 8 * block
     body = os.urandom(block) + b"\xff" * block + os.urandom(block)
-    image = body.ljust(slot - 2 * block, b"\xff") + bytes(block) + b"\xff" * block
+    image = body.ljust(slot - 2 * block, b"\xff") + b"\xff" * (2 * block)
     flash = _Flash(slot)
     INST._install_stream(_Source(image), flash.write, flash.read, slot, block, lambda: None,
                          None, None, INST.REPR_FULL, None, None, counter=1, floor=0)

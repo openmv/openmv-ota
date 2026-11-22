@@ -926,7 +926,7 @@ def test_install_stream_gc_collect_runs_on_cadence():
     every = inst("_GC_EVERY")
     front = 3 * every                                # a few cadence intervals
     image = bytearray(b"\xff" * front)
-    for i in range(0, front, block):                 # non-blank every chunk so each is written
+    for i in range(0, front - 2 * block, block):     # non-blank every body chunk so each is written
         image[i:i + 4] = b"DATA"
     calls = []
     flash = _FakeFlash(front)
@@ -992,7 +992,7 @@ def test_progress_reset_restarts_the_ten_percent_steps():
 
 
 def test_install_stream_repr_marker_verify_fails():
-    block, front = 4096, 2 * 4096
+    block, front = 4096, 3 * 4096
     so = front - 2 * block
 
     class DropRepr(_FakeFlash):
@@ -1005,7 +1005,7 @@ def test_install_stream_repr_marker_verify_fails():
     image[:4] = b"DATA"
     flash = DropRepr(front)
     flash.erase(front)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="repr marker verify failed"):
         inst("_install_stream")(_SourceOf(bytes(image)), flash.write,
                                 flash.readback, front, block, _noop, None, None,
                                 inst("REPR_FULL"))
@@ -1022,10 +1022,10 @@ def test_install_stream_sha_ok():
 
 
 def test_install_stream_sha_mismatch_raises():
-    block, front = 4096, 2 * 4096
+    block, front = 4096, 3 * 4096
     image = bytearray(b"\xff" * front)
     image[:4] = b"DATA"
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="sha256 does not match"):
         _run_install(bytes(image), front, block, expect_sha="00" * 32)
 
 
@@ -1311,6 +1311,14 @@ def test_vet_manifest_trusts_only_a_root_signed_certificate():
         vet("/sd/m.bin", good, _vet_cfg(roots={0: rogue}), verify, 0, 0, True)
     with pytest.raises(OSError, match="retired key"):                   # epoch below the floor
         vet("/sd/m.bin", good, _vet_cfg(last_epoch=3), verify, 0, 0, True)
+    with pytest.raises(OSError, match="retired key"):                   # ...or the floor on flash:
+        vet("/sd/m.bin", good, _vet_cfg(), verify, 0, 0, True, epoch_floor=3)   # recovery mounts no image
+    assert vet("/sd/m.bin", good, _vet_cfg(last_epoch=2), verify, 0, 0, True, epoch_floor=2) is not None
+    for sha in (None, "ab" * 31, 7):                                    # no hash, no integrity gate
+        body = _sd_body()
+        body.pop("sha256") if sha is None else body.update(sha256=sha)
+        with pytest.raises(OSError, match="names no image sha256"):
+            vet("/sd/m.bin", _host_manifest(body=body), _vet_cfg(), verify, 0, 0, True)
     spec = algorithm_for(ES256)
     signer, other = generate_private_key(spec), generate_private_key(spec)
     m = Manifest(body=_sd_body(), certificate=trust.certificate(other), sig_alg=ES256)
@@ -1642,7 +1650,7 @@ def test_install_stream_erase_verify_fails():
 
 def test_install_stream_write_verify_fails():
     block = 4096
-    front = 2 * block
+    front = 3 * block
 
     class BadWrite(_FakeFlash):
         def write(self, off, data):
@@ -1652,7 +1660,7 @@ def test_install_stream_write_verify_fails():
     image[:4] = b"DATA"
     flash = BadWrite(front)
     flash.erase(front)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="write verify failed"):
         inst("_install_stream")(_SourceOf(bytes(image)), flash.write,
                                 flash.readback, front, block, _noop)
 
@@ -2218,3 +2226,93 @@ def test_open_collects_fed_right_after_the_handshake():
     get = src.index("sock.write(_request_bytes(")
     reader = src.index("_Reader(readinto, feed)")
     assert connect < collect < get < reader
+
+
+# --- the status sector is the camera's: a stream may not carry a byte of it -------------------
+
+@pytest.mark.parametrize("where", ["confirmed", "floor", "epoch", "last"])
+def test_install_stream_refuses_status_bytes_before_writing_them(where):
+    """The sha256 gate runs after the last chunk is on flash. A stream that put a CONFIRMED
+    marker beside an old signed image, zeroed the carried floor, or wrote a floor of its own
+    would leave that for the next boot to read, whatever the gate said afterwards."""
+    from openmv_ota.ota import status
+    block, front = 4096, 6 * 4096
+    so = front - 2 * block
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    image[front - block:front - block + 4] = b"OMVR"       # a trailer is the image's to carry
+    at = {"confirmed": so + status.CONFIRMED_OFFSET, "floor": so + inst("_FLOOR_OFF"),
+          "epoch": so + inst("_EPOCH_OFF"), "last": so + block - 1}[where]
+    image[at] = 0x00
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    with pytest.raises(OSError, match="status-sector bytes"):
+        inst("_install_stream")(_SourceOf(bytes(image), step=1000), flash.write, flash.readback,
+                                front, block, _noop, None, "00" * 32, None, None, None,
+                                counter=5, floor=7, epoch=1)
+    sector = bytes(flash.mem[so:so + block])
+    carried = {so + inst("_FLOOR_OFF"), so + inst("_EPOCH_OFF")}
+    # what the installer carried is there; nothing of the stream's is
+    assert all(o in carried for o, _n in flash.writes if so <= o < so + block)
+    assert sector[status.PENDING_OFFSET:status.PENDING_OFFSET + 16] == b"\xff" * 16
+    assert sector[at - so] == 0xFF or (at in carried)
+    assert flash.mem[front - block:front - block + 4] == b"\xff" * 4    # refused before the trailer
+
+
+def test_install_stream_takes_a_blank_status_sector_split_across_fills():
+    block, front = 4096, 5 * 4096
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    image[front - block:front - block + 4] = b"OMVR"
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    inst("_install_stream")(_SourceOf(bytes(image), step=777), flash.write, flash.readback,
+                            front, block, _noop, None, None, None, None, None, counter=1)
+    assert flash.mem[front - 2 * block:front - 2 * block + 16] == inst("PENDING")
+
+
+# --- an offer has to be NEWER than what runs --------------------------------------------------
+
+def test_a_manifest_for_the_release_already_running_is_refused_before_the_erase():
+    """The floor admits the running release itself. Whoever answers the check-in could
+    replay its manifest with junk for an image: the other slot is erased, the install fails,
+    the camera resets and does it again, with no fallback left."""
+    reject = inst("_update_reject")
+    body = {"schema": 1, "product_id": 7, "payload_version": 0x01010000, "publish_seq": 40}
+    assert reject(body, 7, 0, 0x01000000) is None                          # no image running: recovery
+    assert reject(body, 7, 0, 0x01000000, running=0x01000000) is None      # newer than what runs
+    assert reject(body, 7, 0, 0x01000000, running=0x01010000) == "not-newer"
+    assert reject(body, 7, 0, 0x01000000, running=0x02000000) == "not-newer"
+    # a camera that changes product orders by the publish counter, here too
+    assert reject(body, 0, 0, 10, running=39) is None
+    assert reject(body, 0, 0, 10, running=40) == "not-newer"
+    # through the vet: the running image's key comes off the config boot.py filled in
+    vet, verify = inst("_vet_manifest"), __import__("tests.trust", fromlist=["x"]).verify
+    raw = _host_manifest(body=_sd_body())
+    cfg = _vet_cfg()
+    cfg.last_payload_version = _sd_body()["payload_version"]
+    with pytest.raises(OSError, match="not-newer"):
+        vet("/sd/m.bin", raw, cfg, verify, 0, 0, True)
+    cfg.last_payload_version -= 1
+    assert vet("/sd/m.bin", raw, cfg, verify, 0, 0, True) is not None
+
+
+def test_the_decrypt_layer_lets_a_held_block_go_on_its_first_read():
+    """On a small heap the installer holds the inflate window's place with a placeholder, so
+    DeflateIO's state lands in a smaller hole; the decrypt layer drops it on the first read,
+    which DeflateIO makes between allocating its state and its window. (Measured on the M7:
+    15.7 KB free, largest hole 5328 bytes, and the state then the window missed it by a
+    hundred.)"""
+    import gzip
+
+    from openmv_ota.ota import payload
+
+    artifact = gzip.compress(b"slot image bytes" * 61, mtime=0)
+    keys = {1: payload.new_key()}
+    ciphertext, enc = payload.encrypt_artifact(artifact, keys)
+    stream = inst("_decrypting")(_Dribble(ciphertext, 64), enc, keys, _HostAes)
+    assert stream.hold is None                           # nothing held unless the installer asks
+    stream.hold = bytearray(4096)
+    first = bytearray(16)
+    assert stream.readinto(first) == 16 and stream.hold is None
+    assert bytes(first) + _drain(stream) == artifact

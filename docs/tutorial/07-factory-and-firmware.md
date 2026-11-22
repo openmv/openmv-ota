@@ -131,10 +131,11 @@ The project's OTA flag steers the build automatically:
   On the **OpenMV Cam H7** (`OPENMV4`) the OTA firmware does not fit as-is — the frozen
   boot script, recovery installer and PEM parsing overflow its 1664 KB code region by
   about 45 KB — so the build turns off `find_barcodes()`, `find_datamatrices()`,
-  `find_displacement()` and `find_lbp()`, the methods with the least overlap with an
-  OTA product. It does that with a temporary copy of the board directory
+  `find_displacement()`, `find_lbp()`, `linpolar()`, `logpolar()` and
+  `get_similarity()`, the methods with the least overlap with an OTA product. It does that with a temporary copy of the board directory
   (`make OMV_BOARD_CONFIG_DIR=<copy>`), so the firmware tree is still not touched. The
-  stock firmware for that board keeps all four; an app that calls any of them is
+  stock firmware for that board keeps them (`find_datamatrices()` aside, which it too ships
+  off); an app that calls any of them is
   refused by [`build romfs`](06-building.md#build-romfs) rather than failing
   on the camera. The **OpenMV Cam H7 Plus** (`OPENMV4P`) is one step behind: its stock
   firmware already fills both code regions, so its OTA firmware turns off

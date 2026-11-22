@@ -259,6 +259,48 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   manages every account on the server, or an `accounts` token named after another operator,
   which acted as that operator (accounts are filed under the token's name). Only a token
   with `accounts.all` can issue either operator scope now; the rest get a 403.
+- **An encrypted install fits on the OpenMV Cam M7 again, with room to spare.** With 15.7 KB
+  of its 50 KB heap free, the largest hole was 5328 bytes, and the decompressor's first
+  read needs its state (about 1.3 KB) and then its 4 KiB window: first fit put the state at
+  the head of that hole and the window missed it by a hundred bytes, so any growth in the
+  device library failed the install with `MemoryError`. Under 32 KB free, the installer now
+  holds the window's place while the state is allocated, so the two go to different holes.
+  Only a small-window image measures the heap at all: the measurement walks every block,
+  and on the OpenMV N6's heap that walk outlasted a 100 ms watchdog window.
+- **A check-in answer costs the camera a fixed amount of RAM and at most 30 seconds.** The
+  status and header lines were read with `readline()`, which grows until a newline comes,
+  so whoever answered the check-in chose how much heap it took; and every byte restarted
+  the 15-second socket timeout, so an answer dripped a byte at a time held the poll loop
+  for as long as it kept coming. A line is now read to its end and kept to its first 128
+  bytes, and the whole answer has one deadline.
+- **A download could write the slot's status sector before its hash was checked.** The
+  installer streams the image over the whole slot and checks the sha256 after the last
+  chunk, so bytes the stream placed in the status sector stayed on flash when the check
+  failed. Whoever served the image (the update server, the image host, or the network path
+  on a board whose TLS is unverified) could leave a `confirmed` marker beside an old signed
+  image, which boots without the anti-rollback check, or a floor entry no image can meet,
+  which no update recovers from. A published image leaves that sector blank; the installer
+  refuses a stream that does not, before the write.
+- **A boot stub's record no longer carries a slot past its marks or the floor.** On a
+  board with a stub, `boot.py` mounted the slot the stub's install record names even when
+  it was unmarked or below the anti-rollback floor, on the reasoning that the stub had
+  chosen it. The stub also boots by its record when it finds no slot at all, and then the
+  slot holds whatever a failed install left: on the boards whose slots are not ciphered
+  (Portenta H7, Giga, Nicla Vision), an old signed image. Only an exhausted attempt budget
+  still follows the record.
+- **An update has to be newer than what runs.** The installer refused a manifest below the
+  floor and took one equal to the running release, so a replayed current manifest with
+  junk for an image erased the other slot, failed, and repeated. Refused before the erase
+  (`not-newer`); recovery, where nothing runs, is unchanged.
+- **Unsigned answers are held to less.** A check-in answer's `poll_after_s` is capped at a
+  day and `throttled` is read from the status line alone (one answer could put the next
+  check-in days out); recovery takes an offer only as an `https://` URL, as the runtime
+  does; on the H7 Plus and Pure Thermal, where both slots are deciphered into one RAM
+  buffer, the slot that wins is read and hashed again before it is mounted.
+- **Smaller installer gates.** A manifest with no image sha256 is refused (it installed with
+  no integrity check on the download). A retired key's manifest is refused by the epoch
+  floor on flash as well as the running image's, which covers recovery. An update offer
+  must name an `https://` URL; a path sent the installer to a file on the camera.
 
 - **The compromised eMudhra root is out of every trust store this tool ships or installs.**
   Eight eMudhra (emSign) intermediate CA keys were compromised in October 2026, and the root
@@ -274,6 +316,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   trusted it.
 
 ### Changed
+
+- **The OpenMV Cam H7's OTA firmware drops `linpolar()`, `logpolar()` and
+  `get_similarity()`.** It was 704 bytes from the top of its flash, and the installer and
+  boot fixes in this release are more than that. With the three off it has about 5 KB.
 
 - **Five boards' OTA firmware uses the small TFLM op set.** The firmware's TensorFlow Lite
   Micro library grew (openmv, 2026-11-19) and the OTA firmware stopped fitting on the

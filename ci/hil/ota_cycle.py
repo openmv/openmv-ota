@@ -591,6 +591,7 @@ COVERAGE = {
     "boot: no prior mount": "boot.no_prior_mount",            # mp_init didn't auto-mount /rom (blank romfs)
     "checkin: server ok": "run.checkin_http",            # the check-in POST got a 200
     "checkin: body read": "run.body_read",               # response body read to EOF (capped)
+    "checkin: header line": "run.header_line",          # a status/header line read a byte at a time, bounded
     "checkin: body chunk": "run.body_chunk",             # a bounded body chunk accumulated (read loop body)
     "checkin: content length": "run.checkin_clen",       # the server declared Content-Length -> the body
     #                                                      read is EXACT (no slow-EOF stall on the WINC)
@@ -650,7 +651,7 @@ SCENARIOS = {
         "desc": "happy path: delta install -> trial -> confirm -> promote",
         "publish": "delta", "app": "confirm", "end": "promoted",
         "expect": ["boot.mount", "boot.ready", "app.seal", "log.configured", "run.clock", "run.checkin_http",
-                   "run.body_read", "run.body_chunk", "run.checkin_clen", "run.checkin_parsed",
+                   "run.body_read", "run.body_chunk", "run.header_line", "run.checkin_clen", "run.checkin_parsed",
                    "run.checkin_closed",
                    "run.checkin", "run.status", "run.boot_result", "run.identity",
                    "run.identity_uid", "run.offer", "run.asset_read", "run.asset_closed",
