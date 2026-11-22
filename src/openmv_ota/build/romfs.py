@@ -729,6 +729,7 @@ def build_factory_romfs(
     no_account: bool = False,
     key_passphrase_file: str | Path | None = None,
     allow_dev_key: bool = False,
+    publish_seq: int | None = None,
 ) -> list[BuildResult]:
     """Compose the PROVISIONING ROMFS partition image per target -- the image flashed at
     manufacture. Under A/B that is the SAME factory-signed image written into both slots with
@@ -751,6 +752,15 @@ def build_factory_romfs(
     if not p.config.ota:
         raise BuildError("factory-romfs needs an OTA project (create with "
                          "`openmv-ota project new --ota`)", exit_code=1)
+    if p.config.platform and not publish_seq:
+        # The factory image SEEDS the floor a camera orders by. For a platform camera that is
+        # the publish counter: signed as 0 it seeded a floor of 0, and a camera fresh from the
+        # line took any release the account had ever published, the oldest included.
+        raise BuildError(
+            "this project sets `platform`, so the factory image takes the account's next "
+            "publish counter from the server -- log in (`openmv-ota client login`) and build "
+            "again. It is the floor a new camera starts from: without one, nothing the "
+            "account ever published is too old for it.", exit_code=1)
     if not p.config.account_id and not no_account:
         # v1 made this an ERROR because the golden slot was permanent: an accountless golden
         # was burned for the life of the device and would strand it on fallback. Under A/B no
@@ -775,6 +785,7 @@ def build_factory_romfs(
     key_id = factory_key if factory_key is not None else FACTORY_KEY_ID_BASE
     signer = _load_signer(p, app_dir, key_id, require_role="factory",
                           key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
+    signer.publish_seq = checked_publish_seq(publish_seq)
     ctx = ModelContext(
         sdk_home=p.sdk_home, vela_path=p.vela_path, stedgeai_path=p.stedgeai_path,
         vela_optimise=vela_optimise, stedgeai_optimization=stedgeai_optimization,

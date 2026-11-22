@@ -200,6 +200,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   again. One camera now causes at most 48 such rows a day, and nothing is audited for a
   check-in whose row was not stored. `payload_version`, `publish_seq`, `product_id`, a
   stub's version and a slot's version and hash are bounded to what stores them.
+- **A platform project's factory image carries the publish counter.** The counter fix
+  reached `build ota-romfs` only: `build factory-romfs` took none, so a platform camera's
+  factory slots were signed with 0 and seeded an anti-rollback floor of 0, and a camera
+  fresh from the line accepted any release the account had ever published. The factory
+  build now takes the account's next counter and refuses a platform build without one.
+- **A project file frozen into firmware is a file of the project.** `[ota].ca`,
+  `certs/ca.pem` and the `device/` modules were read wherever their paths led, so a
+  project naming `/proc/self/environ` as its CA, or carrying a link in `device/`, put the
+  build machine's secrets (a key passphrase, a token) into the firmware image. Each must
+  now be a regular file inside the project, and a CA must be a PEM bundle.
 - **The boot code imports nothing from a volume someone can write.** MicroPython's import
   path starts with the current directory, which the firmware sets to `/flash`, or to the SD
   card when one is in, and only then the frozen modules. `boot.py` is frozen, but its

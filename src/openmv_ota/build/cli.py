@@ -268,6 +268,7 @@ def cmd_factory_romfs(args: argparse.Namespace) -> int:
             factory_key=args.factory_key, keep_build_dir=args.keep_build_dir,
             no_account=args.no_account,
             key_passphrase_file=args.key_passphrase_file, allow_dev_key=args.allow_dev_key,
+            publish_seq=_publish_seq_for(args.project),
         )
     except BuildError as e:
         print("error: %s" % e, file=sys.stderr)

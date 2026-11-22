@@ -1955,3 +1955,30 @@ def test_an_app_tree_holds_no_links(tmp_path):
     (app / "keys").symlink_to(tmp_path)
     with pytest.raises(BuildError, match="symbolic link"):
         stage_app(app, tmp_path / "staged")
+
+
+def test_a_platform_factory_image_carries_the_counter_and_seeds_its_floor(make_project):
+    """The factory image seeds the floor a camera orders by, and for a platform camera that
+    is the publish counter. `build factory-romfs` took none, so both factory slots were
+    signed with 0 and seeded a floor of 0: a camera fresh from the line took any release the
+    account had ever published. Refused without one; signed and seeded with it."""
+    from openmv_ota.build.errors import BuildError
+    from openmv_ota.build.romfs import build_factory_romfs
+    from openmv_ota.ota import geometry
+    from openmv_ota.ota.trailer import parse_trailer
+    from openmv_ota.project import load_project
+    root, repo, app = make_project(ota=True, dev=True, ca="tiny",
+                                   app_files={"main.py": "print(1)\n",
+                                              "settings.json": '{"app_version": "1.0.0"}\n'})
+    cfg = root / "openmv-ota.toml"
+    cfg.write_text(cfg.read_text().replace("[ota]", "[ota]\nplatform = true\n", 1))
+    with pytest.raises(BuildError, match="the factory image takes the account's next"):
+        build_factory_romfs(root, app=app, firmware=repo, compile_py=False,
+                            convert_models=False, allow_dev_key=True)
+    [r] = build_factory_romfs(root, app=app, firmware=repo, compile_py=False,
+                              convert_models=False, allow_dev_key=True, publish_seq=4242)
+    target = load_project(root, firmware=repo).board("OPENMV_N6")
+    block = geometry.ota_block(target.erase_size)
+    image = r.output.read_bytes()
+    for end in (target.front_size, 2 * target.front_size):          # slot A, slot B
+        assert parse_trailer(image[end - block:end]).publish_seq == 4242

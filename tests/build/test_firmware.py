@@ -1443,3 +1443,43 @@ def test_board_overlay_asks_for_the_small_tflm_op_set_and_takes_a_feature_alread
     assert "// #define IMLIB_ENABLE_DATAMATRICES\n" in cfg                 # left as the firmware has it
     assert cfg.count("dropped by openmv-ota") == 6
     assert "TFLM_SMALL" not in (overlay / "board_config.mk").read_text()   # not a board the table names
+
+
+def test_a_project_file_frozen_into_firmware_is_a_file_of_the_project(tmp_path):
+    """What these paths name is frozen into an image that leaves the build machine. An
+    `[ota].ca` of `/proc/self/environ` put the build's environment (its key passphrase, its
+    token) in the firmware; so did a `certs/ca.pem`, or a `device/` module, that was a link."""
+    from openmv_ota.build.errors import BuildError
+    from openmv_ota.build.firmware import _project_bytes, _recovery_ca
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("PASSPHRASE=hunter2\n")
+    root = tmp_path / "proj"
+    (root / "certs").mkdir(parents=True)
+    (root / "device").mkdir()
+    (root / "certs" / "notes.txt").write_text("not a certificate\n")
+    (root / "certs" / "link.pem").symlink_to(secret)
+    (root / "device" / "openmv_log.py").symlink_to(secret)
+    for ca in (str(secret), "../secret.txt", "certs/link.pem", "certs/../../secret.txt"):
+        with pytest.raises(BuildError, match="must be a file inside the project"):
+            _recovery_ca(_FakeProj(root, ca=ca), _FakeTarget())
+    with pytest.raises(BuildError, match="does not look like a PEM certificate bundle"):
+        _recovery_ca(_FakeProj(root, ca="certs/notes.txt"), _FakeTarget())
+    (root / "certs" / "ca.pem").symlink_to(secret)                  # the default bundle too
+    with pytest.raises(BuildError, match="must be a file inside the project"):
+        _recovery_ca(_FakeProj(root), _FakeTarget(recovery_ca_bundle=True))
+    with pytest.raises(BuildError, match="must be a file inside the project"):
+        _project_bytes(_FakeProj(root), "device/openmv_log.py", "device/openmv_log.py")
+
+
+def test_a_linked_device_module_fails_the_firmware_build(make_project, monkeypatch, tmp_path):
+    from openmv_ota.build.errors import BuildError
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=True)
+    secret = tmp_path / "client.toml"
+    secret.write_text('[server]\ntoken = "t"\n')
+    log = Path(root) / "device" / "openmv_log.py"
+    log.unlink()
+    log.symlink_to(secret)
+    with pytest.raises(BuildError, match="must be a file inside the project"):
+        fw.build_firmware(root, firmware=repo, keep_build_dir=True)

@@ -139,4 +139,16 @@ budget for now; these are the free/cheap passes to run first, in order.
   - A camera offered a release of another product while it could not sign (cold clock), and
     unpinned before its next signed check-in, reads as `device.product_mismatch` until it
     is pinned again or forgotten.
+  - Round 6 (host): `keys retire` re-certifies every entry of `trusted_keys.json` without
+    checking that its existing certificate verifies under the root; the keykeeper checks a
+    registration's signature but not its freshness, and seals for expired desks; USB serial
+    strings in `flash list`, the camera's `SE-ERROR` text and server `detail` in errors
+    print unfiltered; `flash bootloader -b OPENMV_AE3` runs the project's
+    `tools/alif/toolkit/*.py`, and a committed `openmv-ota.local.toml` picks the SDK home
+    whose `dfu-util` runs; the SDK archive's `.sha256` comes from the same host as the
+    archive and `SDK_VERSION` is not validated before it names a URL and a directory.
+  - Round 6 (device): an unverified offer with a new `release_id` reboots the camera before
+    anything is fetched (a hostile server can loop it); the factory window signs any 32
+    bytes with the identity key (console access); a `.hilcov_uart` file on a volume turns
+    on debug logging; the installer's header reader keeps up to 64 headers of 4 KiB.
 - **When there is budget** — a targeted pentest of the update + signing chain only.
