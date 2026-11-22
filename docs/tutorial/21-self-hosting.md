@@ -100,7 +100,7 @@ serves:
 | env var | what it does |
 |---|---|
 | `OPENMV_OTA_CORS_ALLOW_ORIGINS` | comma-separated origins allowed to call the API from a browser, e.g. `https://dashboard.example.com`. Empty (the default) sends no CORS headers; `*` is **refused at startup** — a wildcard would let any page on the internet read admin responses with a token it obtained some other way |
-| `OPENMV_OTA_TRUSTED_PROXY_IPS` | which upstream peers may set `X-Forwarded-For`; set `*` behind a PaaS proxy so the per-IP rate limiter sees the real client, not the proxy |
+| `OPENMV_OTA_TRUSTED_PROXY_IPS` | which upstream peers may set `X-Forwarded-For`, so the per-IP rate limiter sees the real client and not the proxy. Name the proxy's addresses where you can. `*` trusts the header from anyone, which is only sound when the server is reachable through the proxy alone **and** the proxy replaces the header a client sent (one that appends to it lets every client pick the address it is limited as) |
 
 **OpenMV service grants (optional integrations)**
 

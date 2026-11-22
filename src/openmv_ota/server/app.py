@@ -31,7 +31,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from openmv_ota import __version__
 from openmv_ota.ota import checkin_sig
@@ -486,6 +486,19 @@ class CheckIn(BaseModel):
     # with every check-in; each one new to the server becomes a ``device.boot`` audit event.
     stub: dict | None = None
 
+    @field_validator("product", "app_version", "slot", "representation", "fallback_reason")
+    @classmethod
+    def _short(cls, v):
+        """A camera's words are kept in its fleet row, the audit trail and every webhook they
+        reach, and the camera chooses them: each is a short one, cut, never refused (this
+        endpoint does not turn a camera away over a cosmetic field)."""
+        return v[:_REASON_MAX] if v else v
+
+    @field_validator("streams")
+    @classmethod
+    def _few(cls, v):
+        return [s[:_STREAM_MAX] for s in v[:_STREAMS_MAX]]
+
 
 def _stub_fields(stub) -> tuple[int | None, str | None]:
     """The device-row columns from a check-in's ``stub``: ``(version, reason)``, the reason
@@ -520,6 +533,7 @@ class Feedback(BaseModel):
 
 
 _REASON_MAX = 200           # a failure reason is a short code, not a place to write
+_STREAMS_MAX, _STREAM_MAX = 16, 64     # image streams a camera names, and a name's length
 
 
 def _identity(req) -> str:
@@ -633,8 +647,12 @@ def _account(ms, ro, rel, checkin, existing, offered):
     prev_offered = existing["last_offered_release_id"] if existing else None
     prev_fallback = existing["fallback_reason"] if existing else None
     prev_pv = existing["current_payload_version"] if existing else None
+    # EACH COUNTER COUNTS CAMERAS, ONCE EACH (count_once). They pause the rollout and advance a
+    # ramp, and every input here is the camera's own report: counted per transition, one camera
+    # alternating its reports could fail a rollout into a pause, or pad `attempted` past a
+    # stage's gate, by itself.
     if offered and prev_offered != rel["release_id"]:            # newly entering this rollout
-        ms.bump_rollout(rid, attempted=1)
+        ms.count_once(rid, checkin.device_id, "attempted")
     # a device we offered this release, now *transitioning to running it* -> a success
     # Each outcome also lands in the install history (deployments, one row per device and
     # release), which the dashboards chart. The device never POSTs /feedback on its own, so
@@ -642,13 +660,13 @@ def _account(ms, ro, rel, checkin, existing, offered):
     # updates while the rollout said 1/1.
     if (prev_offered == rel["release_id"] and prev_pv != rel["payload_version"]
             and checkin.payload_version == rel["payload_version"]):
-        ms.bump_rollout(rid, updated=1)
+        ms.count_once(rid, checkin.device_id, "updated")
         ms.record_deployment(device_id=checkin.device_id, release_id=rel["release_id"],
                              product_id=checkin.product_id, status="installed",
                              account_id=ro.get("account_id", ""))
     # a device we offered this release, transitioning *into* a fallback -> one failure
     if prev_offered == rel["release_id"] and checkin.fallback_reason and not prev_fallback:
-        ms.bump_rollout(rid, failures=1)
+        ms.count_once(rid, checkin.device_id, "failures")
         ms.record_deployment(device_id=checkin.device_id, release_id=rel["release_id"],
                              product_id=checkin.product_id, status="failed",
                              reason=checkin.fallback_reason, account_id=ro.get("account_id", ""))
@@ -867,6 +885,19 @@ def _offer_answer(st, rel, manifest_url, device_id: str):
     return answer
 
 
+def _sent_to_product(ms, existing, checkin, account_id) -> bool:
+    """Whether this account sent this camera to the product it now reports: the release it
+    was last offered, or the one it is pinned to, is a release of that product. Both are what
+    the server did, so a camera cannot report its way into either."""
+    for release_id in (existing.get("last_offered_release_id"),
+                       ms.get_device_pin(checkin.device_id, account_id)):
+        rel = ms.get_release(release_id) if release_id else None
+        if rel is not None and (rel.get("account_id") or "") == account_id \
+                and rel["product_id"] == checkin.product_id:
+            return True
+    return False
+
+
 def _offer_only(st, checkin, cohort, existing, account_id, nothing):
     """An update offer and nothing else: no fleet row, no telemetry, no grants. What a check-in
     gets that can't prove which camera sent it."""
@@ -963,10 +994,13 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     elif signed == "refused":
         # Counted on the camera's registration (none to count on for an unregistered id: zero
         # footprint), and audited when it is news, not on every poll of a camera that keeps failing.
+        # Filed under the product the camera is KNOWN to be (its fleet row), not the one this
+        # request names: a refused request is one nobody proved they sent.
         if ms.note_refused_checkin(checkin.device_id, refusal):
             ms.append_audit(actor="checkin", action="device.checkin_refused", entity_type="device",
                             entity_id=checkin.device_id, data={"reason": refusal},
-                            account_id=account_id, product_id=checkin.product_id)
+                            account_id=account_id,
+                            product_id=existing["product_id"] if existing else None)
         if refusal != "stale":
             return nothing
     if signed != "signed":
@@ -975,6 +1009,23 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         # a replay. A stale signature proves no more than none, so it gets what none gets.
         return _offer_only(st, checkin, existing["cohort"] if existing else "__default__",
                            existing, account_id, nothing)
+    if existing is not None and existing["product_id"] != checkin.product_id and \
+            not _sent_to_product(ms, existing, checkin, account_id):
+        # A CAMERA DOES NOT MOVE ITSELF BETWEEN PRODUCTS. Its signature says which camera, not
+        # which product: the product is a number in a body the camera wrote. Taken at its word
+        # it got an ingest grant for the other product's data, a place in that product's fleet
+        # (and in the view of a token limited to it), and a vote in its rollouts. A camera
+        # changes product because the account SENT it there (a pin to another product's
+        # release: the claim primitive), and that is the server's own record, not the
+        # camera's word. Without it the fleet row's product stands and this check-in gets
+        # what an unsigned one gets; forgetting the device lets it enrol under what it reports.
+        if ms.note_product_mismatch(checkin.device_id):
+            ms.append_audit(actor="checkin", action="device.product_mismatch",
+                            entity_type="device", entity_id=checkin.device_id,
+                            data={"product_id": existing["product_id"],
+                                  "reported": checkin.product_id},
+                            account_id=account_id, product_id=existing["product_id"])
+        return _offer_only(st, checkin, existing["cohort"], existing, account_id, nothing)
     if existing is None and ms.over_device_limit(account_id) and \
             (ms.get_registration(checkin.device_id) or {}).get("account_id") != account_id:
         # A NEW device past the account's entitlement: not registered (zero footprint,

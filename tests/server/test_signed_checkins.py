@@ -106,9 +106,119 @@ def test_bad_signatures_are_counted_and_audited_when_news(tmp_path):
     refused = _audit(store, "device.checkin_refused")
     assert len(refused) == 1                                           # news once, then counted
     assert refused[0]["data"] == {"reason": "bad signature"}
-    _check(c, body, camera.sign(key, body, ts=int(time.time()) - 3600))   # a different reason: news
-    assert sorted(e["data"]["reason"] for e in _audit(store, "device.checkin_refused")) == \
-        ["bad signature", "stale"]
+    # A DIFFERENT REASON IS NOT NEWS. A refusal needs no key, so two reasons in turn (a header
+    # that doesn't parse, a version nobody speaks) made every request a row in the account's
+    # audit trail and a delivery to each of its webhooks.
+    _check(c, body, camera.sign(key, body, ts=int(time.time()) - 3600))
+    for header in ("v=2;ts=1;sig=00", "v=1;ts=1;sig=zz") * 3:
+        assert _check(c, body, header) == NOTHING
+    reg = store.get_registration(DEV)
+    assert (reg["refused_checkins"], reg["last_refusal"]) == (9, "malformed")   # still counted
+    assert len(_audit(store, "device.checkin_refused")) == 1
+    # A day on, a camera that is still failing is news again.
+    store.execute("UPDATE device_registrations SET last_refused_at = ? WHERE device_id = ?",
+                  ("2020-01-01T00:00:00+00:00", DEV))
+    _check(c, body, forged)
+    assert len(_audit(store, "device.checkin_refused")) == 2
+
+
+def test_a_refused_check_in_is_filed_under_the_cameras_product_not_the_one_it_names(tmp_path):
+    c, store = _app(tmp_path)
+    key = _register(store)
+    body = _body()
+    _check(c, body, camera.sign(key, body))                            # in the fleet under BID
+    named = json.loads(body)
+    named["product_id"] = BID + 1
+    _check(c, json.dumps(named).encode(), "v=1;ts=1;sig=zz")
+    assert [e["product_id"] for e in _audit(store, "device.checkin_refused")] == [BID]
+
+
+def test_a_camera_does_not_move_itself_to_another_product(tmp_path):
+    c, store = _app(tmp_path)
+    key = _register(store)
+    body = _body()
+    _check(c, body, camera.sign(key, body, ts=int(time.time()) - 2))
+    other = json.loads(body)
+    other["product_id"] = BID + 1
+    other = json.dumps(other).encode()
+    r = _check(c, other, camera.sign(key, other, ts=int(time.time()) - 1))
+    assert "live" not in r and "ingest" not in r                       # what an unsigned one gets
+    assert store.get_device(DEV)["product_id"] == BID                  # the fleet row stands
+    seen = _audit(store, "device.product_mismatch")
+    assert [(e["product_id"], e["data"]) for e in seen] == \
+        [(BID, {"product_id": BID, "reported": BID + 1})]
+    _check(c, other, camera.sign(key, other))                          # again: counted once a day
+    assert len(_audit(store, "device.product_mismatch")) == 1
+    store.execute("UPDATE devices SET product_mismatch_at = ? WHERE device_id = ?",
+                  ("2020-01-01T00:00:00+00:00", DEV))
+    assert store.note_product_mismatch(DEV) is True                    # a day on, news again
+    assert store.note_product_mismatch("OPENMV_N6:nobody") is False    # no fleet row to note it on
+    # The move is the account's. Pinned to a release of the other product, the camera is
+    # offered it, and reporting that product afterwards is the server's own doing.
+    store.add_release(release_id="rel2", product_id=BID + 1, product="Q", version="3.0.0",
+                      payload_version=0x03000000, min_platform_version=0, image_sha256="ab" * 32,
+                      image_size=3, representations=[{"format": "full", "url": "x.img.gz",
+                                                      "size": 3}],
+                      manifest_key="m/rel1", image_key="i/rel1", account_id=ACCT)
+    store.set_device_pin(DEV, "rel2", account_id=ACCT)
+    time.sleep(1.1)
+    assert _check(c, body, camera.sign(key, body))["release_id"] == "rel2"
+    store.set_device_pin(DEV, None, account_id=ACCT)                   # unpinned: it was OFFERED
+    moved = json.dumps({**json.loads(other), "payload_version": 0x03000000}).encode()
+    time.sleep(1.1)
+    assert "live" in _check(c, moved, camera.sign(key, moved))
+    assert store.get_device(DEV)["product_id"] == BID + 1
+    # Or forgotten: the camera enrols under what it reports.
+    store.forget_device(DEV)
+    time.sleep(1.1)
+    _check(c, body, camera.sign(key, body))
+    assert store.get_device(DEV)["product_id"] == BID
+    # A pin alone says so too (a camera offered while it could not sign leaves no offer on its row).
+    store.set_device_pin(DEV, "rel2", account_id=ACCT)
+    store.execute("UPDATE devices SET last_offered_release_id = NULL WHERE device_id = ?", (DEV,))
+    time.sleep(1.1)
+    _check(c, moved, camera.sign(key, moved))
+    assert store.get_device(DEV)["product_id"] == BID + 1
+
+
+def test_a_cameras_words_are_cut_short_not_refused(tmp_path):
+    c, store = _app(tmp_path)
+    key = _register(store)
+    body = json.dumps({**json.loads(_body()), "app_version": "v" * 5000,
+                       "fallback_reason": "r" * 5000, "streams": ["s" * 500] * 100}).encode()
+    assert _check(c, body, camera.sign(key, body))["update"] is True
+    row = store.get_device(DEV)
+    assert len(row["current_version"]) == 200 and len(row["fallback_reason"]) == 200
+    assert len(str(row["streams"])) <= 16 * (64 + 4)                   # 16 names of 64 at most
+
+
+def test_one_camera_is_one_of_each_rollout_counter(tmp_path):
+    c, store = _app(tmp_path)
+    key = _register(store)
+    store.update_rollout("ro1", failure_threshold=0.9)
+    ts = int(time.time()) - 60
+
+    def report(**kw):
+        nonlocal ts
+        ts += 1
+        body = json.dumps({**json.loads(_body()), **kw}).encode()
+        return _check(c, body, camera.sign(key, body, ts=ts))
+
+    report()                                                           # offered: attempted
+    for _ in range(4):                                                 # a reason, none, a reason...
+        report(fallback_reason="x")
+        report()
+    ro = store.get_rollout("ro1")
+    assert (ro["attempted"], ro["failures"], ro["state"]) == (1, 1, "paused")
+    # ...and running the release then the old one again does not enter the rollout twice.
+    store.update_rollout("ro1", state="active")
+    report(payload_version=0x02000000)
+    report()
+    report(payload_version=0x02000000)
+    ro = store.get_rollout("ro1")
+    assert (ro["attempted"], ro["updated"], ro["failures"]) == (1, 1, 1)
+    with pytest.raises(ValueError):
+        store.count_once("ro1", DEV, "percent")
 
 
 def test_an_unsigned_check_in_gets_offers_only(tmp_path):
@@ -134,7 +244,7 @@ def test_a_bad_signature_gets_nothing(tmp_path):
     assert store.get_device(DEV) is None
     assert store.get_registration(DEV)["refused_checkins"] == 3
     assert [e["data"] for e in _audit(store, "device.checkin_refused")] == \
-        [{"reason": "bad signature"}, {"reason": "malformed"}]
+        [{"reason": "bad signature"}]
 
 
 def test_a_stale_signature_gets_offers_only(tmp_path):
