@@ -1581,6 +1581,7 @@ class _ResumingBody(io.IOBase):
 # between the socket and DeflateIO's inflate window, on boards where that window is
 # already most of the free heap. Two buffers of this size is the whole cost of
 # decryption -- nothing here is sized by the image, the response, or a length field.
+_HOLD_HEAP = 32 * 1024    # free heap under which the inflate window's place is held (open_chain)
 _DEC_CHUNK = 256
 _AES_BLOCK = 16
 _AES_CBC = 2                 # cryptolib's MODE_CBC
@@ -1611,8 +1612,15 @@ class _Decrypt(io.IOBase):
         self._pbuf = bytearray(_DEC_CHUNK)    # its plaintext
         self._have = 0
         self._off = 0
+        self.hold = None                      # see open_chain: a placeholder, let go on the first read
 
     def readinto(self, buf):
+        if self.hold is not None:
+            # DeflateIO's first read allocates its state, THEN reads the gzip header (through
+            # here), THEN allocates its window. Letting the placeholder go at this point is what
+            # puts the window where the placeholder was and the state somewhere else.
+            self.hold = None
+            gc.collect()
         if self._have == 0:
             self._fill()
             if self._have == 0:
@@ -2520,6 +2528,18 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
         # fitting and MemoryError x3. The armed-watchdog gc_collect hook exists for
         # pause control; this one is for the allocation itself.
         gc.collect()  # hil-residual: pre-DeflateIO collect; effect only visible on small-heap classics (no fleet marker)
+        if enc and gc.mem_free() < _HOLD_HEAP:
+            # A SMALL HEAP IS ALSO A FRAGMENTED ONE. Measured on the M7 (50 KB of heap) at this
+            # line: 15.7 KB free, the largest hole 5328 bytes. DeflateIO's first read takes its
+            # state (about 1.3 KB) and then its window (4096) -- first fit put the state at the
+            # head of that one hole, and the window then missed it by a hundred bytes:
+            # MemoryError with three windows' worth of heap free. Hold a window-sized block
+            # there so the state goes to a smaller hole; the decrypt layer lets it go between
+            # the two allocations.
+            try:
+                body.hold = bytearray(_window_bytes(wbits))
+            except MemoryError:  # hil-residual: no hole takes a window at all; the read below says so itself
+                pass  # hil-residual: bare pass (same arm)
         dio = deflate.DeflateIO(body, deflate.GZIP, wbits)  # wbits 0 = format default
         if fmt == _DELTA_FORMAT:
             # Delta: stream-decompress the patch and reconstruct the image against the
