@@ -175,6 +175,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   manages every account on the server, or an `accounts` token named after another operator,
   which acted as that operator (accounts are filed under the token's name). Only a token
   with `accounts.all` can issue either operator scope now; the rest get a 403.
+- **An encrypted install fits on the OpenMV Cam M7 again, with room to spare.** With 15.7 KB
+  of its 50 KB heap free, the largest hole was 5328 bytes, and the decompressor's first
+  read needs its state (about 1.3 KB) and then its 4 KiB window: first fit put the state at
+  the head of that hole and the window missed it by a hundred bytes, so any growth in the
+  device library failed the install with `MemoryError`. Under 32 KB free, the installer now
+  holds the window's place while the state is allocated, so the two go to different holes.
 - **A check-in answer costs the camera a fixed amount of RAM and at most 30 seconds.** The
   status and header lines were read with `readline()`, which grows until a newline comes,
   so whoever answered the check-in chose how much heap it took; and every byte restarted

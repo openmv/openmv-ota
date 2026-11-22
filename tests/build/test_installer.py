@@ -2295,3 +2295,24 @@ def test_a_manifest_for_the_release_already_running_is_refused_before_the_erase(
         vet("/sd/m.bin", raw, cfg, verify, 0, 0, True)
     cfg.last_payload_version -= 1
     assert vet("/sd/m.bin", raw, cfg, verify, 0, 0, True) is not None
+
+
+def test_the_decrypt_layer_lets_a_held_block_go_on_its_first_read():
+    """On a small heap the installer holds the inflate window's place with a placeholder, so
+    DeflateIO's state lands in a smaller hole; the decrypt layer drops it on the first read,
+    which DeflateIO makes between allocating its state and its window. (Measured on the M7:
+    15.7 KB free, largest hole 5328 bytes, and the state then the window missed it by a
+    hundred.)"""
+    import gzip
+
+    from openmv_ota.ota import payload
+
+    artifact = gzip.compress(b"slot image bytes" * 61, mtime=0)
+    keys = {1: payload.new_key()}
+    ciphertext, enc = payload.encrypt_artifact(artifact, keys)
+    stream = inst("_decrypting")(_Dribble(ciphertext, 64), enc, keys, _HostAes)
+    assert stream.hold is None                           # nothing held unless the installer asks
+    stream.hold = bytearray(4096)
+    first = bytearray(16)
+    assert stream.readinto(first) == 16 and stream.hold is None
+    assert bytes(first) + _drain(stream) == artifact

@@ -2536,8 +2536,8 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
             # MemoryError with three windows' worth of heap free. Hold a window-sized block
             # there so the state goes to a smaller hole; the decrypt layer lets it go between
             # the two allocations.
-            try:
-                body.hold = bytearray(_window_bytes(wbits))
+            try:  # hil-residual: small-heap arm (under 32 KB free with an encrypted image): the classics' file legs take it, and no marker of theirs is in the map
+                body.hold = bytearray(_window_bytes(wbits))  # hil-residual: same arm; its effect is the M7's encrypted install fitting at all
             except MemoryError:  # hil-residual: no hole takes a window at all; the read below says so itself
                 pass  # hil-residual: bare pass (same arm)
         dio = deflate.DeflateIO(body, deflate.GZIP, wbits)  # wbits 0 = format default
