@@ -168,11 +168,20 @@ def test_a_camera_does_not_move_itself_to_another_product(tmp_path):
     time.sleep(1.1)
     assert "live" in _check(c, moved, camera.sign(key, moved))
     assert store.get_device(DEV)["product_id"] == BID + 1
-    # Or forgotten: the camera enrols under what it reports.
+    assert store.get_registration(DEV)["product_id"] == BID + 1        # remembered off the row
+    # FORGOTTEN, IT IS STILL OF THAT PRODUCT. A token limited to one product can forget its
+    # camera's fleet row, and the camera then named any product of the account as it enrolled.
     store.forget_device(DEV)
+    time.sleep(1.1)
+    r = _check(c, body, camera.sign(key, body))
+    assert "live" not in r and store.get_device(DEV) is None
+    # A token for the whole account lets it go from the product too (the admin route does
+    # this when the one forgetting is not limited): it enrols under what it reports.
+    store.set_registration_product(DEV, None)
     time.sleep(1.1)
     _check(c, body, camera.sign(key, body))
     assert store.get_device(DEV)["product_id"] == BID
+    assert store.get_registration(DEV)["product_id"] == BID
     # A pin alone says so too (a camera offered while it could not sign leaves no offer on its row).
     store.set_device_pin(DEV, "rel2", account_id=ACCT)
     store.execute("UPDATE devices SET last_offered_release_id = NULL WHERE device_id = ?", (DEV,))
@@ -449,3 +458,62 @@ def test_a_forgotten_camera_stays_with_the_account_it_is_registered_to(tmp_path)
     assert store.device_account(DEV)["account_id"] == ACCT
     _check(c, body, camera.sign(key, body))
     assert store.get_device(DEV)["account_id"] == ACCT
+
+
+def test_what_a_camera_reports_reaches_the_audit_trail_on_a_daily_budget(tmp_path):
+    """Eight made-up journal entries a check-in, a fallback reason that changes every time,
+    a failed install as often as it likes: each was an audit row and a webhook delivery, for
+    as long as a camera with a registered key cared to send them."""
+    from openmv_ota.server.metastore import DEVICE_AUDIT_PER_DAY
+    c, store = _app(tmp_path)
+    key = _register(store)
+    ts = int(time.time()) - 200
+    seq = 0
+
+    def report(**kw):
+        nonlocal ts, seq
+        ts += 1
+        journal = [[seq + i, 0, 1, 0, 0, 0] for i in range(8)]
+        seq += 8
+        body = json.dumps({**json.loads(_body()), "stub": {"version": 1, "journal": journal},
+                           **kw}).encode()
+        return _check(c, body, camera.sign(key, body, ts=ts))
+
+    for i in range(12):
+        report(fallback_reason="r%d" % i)
+    caused = [e for e in store.read_audit(account_id=ACCT)
+              if e["action"] in ("device.boot", "device.fallback")]
+    assert len(caused) == DEVICE_AUDIT_PER_DAY                         # 108 asked for
+    for _ in range(3):                                                 # failed installs too
+        fb = json.dumps({"device_id": "dev1", "board": "OPENMV_N6", "product_id": BID,
+                         "release_id": "rel1", "status": "failed", "reason": "x"}).encode()
+        ts += 1
+        c.post("/api/v1/feedback", content=fb, headers={
+            "Content-Type": "application/json",
+            "X-OMV-Signature": camera.sign(key, fb, ts=ts, context=checkin_sig.FEEDBACK_CONTEXT)})
+    assert _audit(store, "install.failed") == []
+    assert store.deployment_counts("rel1")["failed"] == 1              # recorded all the same
+    # The next day it has a day's worth again; a camera with no fleet row has none.
+    store.execute("UPDATE devices SET audit_day = ? WHERE device_id = ?", ("2020-01-01", DEV))
+    assert store.audit_budget(DEV) is True
+    assert store.audit_budget("OPENMV_N6:nobody") is False
+
+
+def test_a_check_ins_numbers_fit_what_stores_them(tmp_path):
+    """A version past its column was an error from the store, after the request had written
+    its audit rows: the journal mark never moved, and the same rows were written again."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    for field, value in (("payload_version", 2 ** 31), ("payload_version", -1),
+                         ("publish_seq", 2 ** 48), ("product_id", 2 ** 32)):
+        body = json.dumps({**json.loads(_body()), field: value}).encode()
+        assert camera.post(c, body, camera.sign(key, body)).status_code == 422
+    body = json.dumps({**json.loads(_body()), "stub": {"version": 2 ** 40, "reason": 0},
+                       "slots": [{"running": True, "body_sha256": "ab" * 5000},
+                                 {"running": False, "payload_version": "junk"}]}).encode()
+    assert _check(c, body, camera.sign(key, body))["update"] is True
+    row = store.get_device(DEV)
+    assert row["stub_version"] is None and row["fallback_payload_version"] is None
+    assert len(row["body_sha256"]) == 64
+    assert store.read_audit(account_id=ACCT)[0]["action"]              # and it enrolled once
+    assert len(_audit(store, "device.enrolled")) == 1

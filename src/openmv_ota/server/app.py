@@ -31,7 +31,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from openmv_ota import __version__
 from openmv_ota.ota import checkin_sig
@@ -451,15 +451,20 @@ def favicon():  # the OpenMV aperture icon mark (browsers request this path by d
     return FileResponse(_DOCS_DIR / "favicon.ico", media_type="image/x-icon")
 
 
+_INT32_MAX = 0x7FFFFFFF      # the largest version (or stub version) a fleet row holds
+
+
 class CheckIn(BaseModel):
     device_id: str
-    product_id: int                          # the release<->device join key (from identity())
+    # The numbers are bounded by what stores them: one past its column was an error from the
+    # store, after the request had already written what it writes first.
+    product_id: int = Field(ge=0, le=0xFFFFFFFF)   # the release<->device join key (from identity())
     account_id: str = ""                     # the maker's account (from identity()); '' = self-host
     board: str | None = None               # camera model, display-only
     product: str | None = None
     app_version: str | None = None
-    payload_version: int = 0
-    publish_seq: int = 0                     # the running image's account publish counter
+    payload_version: int = Field(0, ge=0, le=_INT32_MAX)
+    publish_seq: int = Field(0, ge=0, lt=2 ** 48)   # the running image's account publish counter
     orders_by_seq: bool = False              # ...and whether THIS camera compares it
     #                                          (its firmware's PRODUCT_ID is 0, so it can be
     #                                          moved between products and a per-product
@@ -510,7 +515,8 @@ def _stub_fields(stub) -> tuple[int | None, str | None]:
     if not isinstance(stub, dict):
         return None, None
     version, reason = stub.get("version"), stub.get("reason")
-    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+    if isinstance(version, bool) or not isinstance(version, int) \
+            or not 0 <= version <= _INT32_MAX:
         return None, None
     if isinstance(reason, bool) or not isinstance(reason, int):
         return version, "unknown"
@@ -1009,23 +1015,28 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         # a replay. A stale signature proves no more than none, so it gets what none gets.
         return _offer_only(st, checkin, existing["cohort"] if existing else "__default__",
                            existing, account_id, nothing)
-    if existing is not None and existing["product_id"] != checkin.product_id and \
-            not _sent_to_product(ms, existing, checkin, account_id):
+    # The product this camera is KNOWN under: its fleet row's, or with no row (never enrolled,
+    # or forgotten) the one its registration remembers from the last row it had.
+    known = existing["product_id"] if existing is not None else \
+        (ms.get_registration(checkin.device_id) or {}).get("product_id")
+    if known is not None and known != checkin.product_id and \
+            not _sent_to_product(ms, existing or {}, checkin, account_id):
         # A CAMERA DOES NOT MOVE ITSELF BETWEEN PRODUCTS. Its signature says which camera, not
         # which product: the product is a number in a body the camera wrote. Taken at its word
         # it got an ingest grant for the other product's data, a place in that product's fleet
         # (and in the view of a token limited to it), and a vote in its rollouts. A camera
         # changes product because the account SENT it there (a pin to another product's
         # release: the claim primitive), and that is the server's own record, not the
-        # camera's word. Without it the fleet row's product stands and this check-in gets
-        # what an unsigned one gets; forgetting the device lets it enrol under what it reports.
+        # camera's word. Without it the known product stands and this check-in gets what an
+        # unsigned one gets. Forgetting the device with a token for the WHOLE account lets it
+        # enrol under what it reports; one limited to a product forgets the row and no more.
         if ms.note_product_mismatch(checkin.device_id):
             ms.append_audit(actor="checkin", action="device.product_mismatch",
                             entity_type="device", entity_id=checkin.device_id,
-                            data={"product_id": existing["product_id"],
-                                  "reported": checkin.product_id},
-                            account_id=account_id, product_id=existing["product_id"])
-        return _offer_only(st, checkin, existing["cohort"], existing, account_id, nothing)
+                            data={"product_id": known, "reported": checkin.product_id},
+                            account_id=account_id, product_id=known)
+        return _offer_only(st, checkin, existing["cohort"] if existing else "__default__",
+                           existing, account_id, nothing)
     if existing is None and ms.over_device_limit(account_id) and \
             (ms.get_registration(checkin.device_id) or {}).get("account_id") != account_id:
         # A NEW device past the account's entitlement: not registered (zero footprint,
@@ -1047,29 +1058,7 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
             offered, manifest_url = False, None
     _account(ms, ro, rel, checkin, existing, offered)
     release_id = rel["release_id"] if offered else None
-    if existing is None:
-        ms.append_audit(actor="checkin", action="device.enrolled", entity_type="device",
-                        entity_id=checkin.device_id,
-                        data={"product_id": checkin.product_id, "board": checkin.board,
-                              "version": checkin.app_version},
-                        account_id=account_id, product_id=checkin.product_id)
-    if checkin.fallback_reason and (existing is None
-                                    or existing.get("fallback_reason") != checkin.fallback_reason):
-        ms.append_audit(actor="checkin", action="device.fallback", entity_type="device",
-                        entity_id=checkin.device_id,
-                        data={"product_id": checkin.product_id, "reason": checkin.fallback_reason,
-                              "version": checkin.app_version},
-                        account_id=account_id, product_id=checkin.product_id)
-    # What the boot stub decided since the server last heard: one audit event per journal
-    # entry it has not seen, so a slot refused or a repair from the other slot reaches the
-    # audit trail (and the account's webhooks) instead of a UART nobody is reading.
     journal = _journal_entries(checkin.stub)
-    for entry in boot_journal.after(journal, existing.get("journal_seq") if existing else None):
-        ms.append_audit(actor="checkin", action="device.boot", entity_type="device",
-                        entity_id=checkin.device_id,
-                        data={"product_id": checkin.product_id, "version": checkin.app_version,
-                              **boot_journal.describe(entry)},
-                        account_id=account_id, product_id=checkin.product_id)
     ms.upsert_device(
         device_id=checkin.device_id, product_id=checkin.product_id, board=checkin.board, cohort=cohort,
         current_version=checkin.app_version, current_payload_version=checkin.payload_version,
@@ -1082,6 +1071,42 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         stub=_stub_fields(checkin.stub), journal_seq=journal[-1].seq if journal else None,
         last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
         account_id=account_id)
+    if existing is None or existing["product_id"] != checkin.product_id:
+        # The product this camera is in the fleet under, kept on its registration: the fleet
+        # row can be forgotten (by a token limited to one product, too), and what it enrols
+        # under next is then checked against this, not taken from what it reports.
+        ms.set_registration_product(checkin.device_id, checkin.product_id)
+    # WHAT A CAMERA REPORTS REACHES THE AUDIT TRAIL AFTER ITS ROW IS WRITTEN, AND ON A DAILY
+    # BUDGET. After: a report the store refused used to leave its audit rows behind and its
+    # journal mark where it was, so the same rows were written again by the next one. On a
+    # budget: the trail is one append-only chain for the whole server and every row is a
+    # delivery to each of the account's webhooks, while a camera chooses its fallback reason
+    # and its journal's numbers -- eight fresh entries a check-in, for as long as it liked.
+    if existing is None:
+        ms.append_audit(actor="checkin", action="device.enrolled", entity_type="device",
+                        entity_id=checkin.device_id,
+                        data={"product_id": checkin.product_id, "board": checkin.board,
+                              "version": checkin.app_version},
+                        account_id=account_id, product_id=checkin.product_id)
+    if checkin.fallback_reason and (existing is None
+                                    or existing.get("fallback_reason") != checkin.fallback_reason) \
+            and ms.audit_budget(checkin.device_id):
+        ms.append_audit(actor="checkin", action="device.fallback", entity_type="device",
+                        entity_id=checkin.device_id,
+                        data={"product_id": checkin.product_id, "reason": checkin.fallback_reason,
+                              "version": checkin.app_version},
+                        account_id=account_id, product_id=checkin.product_id)
+    # What the boot stub decided since the server last heard: one audit event per journal
+    # entry it has not seen, so a slot refused or a repair from the other slot reaches the
+    # audit trail (and the account's webhooks) instead of a UART nobody is reading.
+    for entry in boot_journal.after(journal, existing.get("journal_seq") if existing else None):
+        if not ms.audit_budget(checkin.device_id):
+            break
+        ms.append_audit(actor="checkin", action="device.boot", entity_type="device",
+                        entity_id=checkin.device_id,
+                        data={"product_id": checkin.product_id, "version": checkin.app_version,
+                              **boot_journal.describe(entry)},
+                        account_id=account_id, product_id=checkin.product_id)
     if manifest_url:
         resp = {"update": True, "manifest_url": manifest_url, "release_id": release_id,
                 "poll_after_s": _paced(st.settings)}
@@ -1140,13 +1165,15 @@ def feedback(report: Feedback, request: Request, raw: bytes = Depends(_raw_body)
     if rel is None or (rel.get("account_id") or "") != account_id:
         return {"ok": False}
     dev = ms.get_device(report.device_id)
-    if dev is not None and dev.get("product_id") != rel["product_id"]:
-        return {"ok": False}                 # not a release of the product this camera runs
+    if dev is None or dev.get("product_id") != rel["product_id"]:
+        # Not a release of the product this camera runs -- and a camera with no fleet row
+        # runs none: it was never offered anything, so it has no install to report.
+        return {"ok": False}
     reason = (report.reason or "")[:_REASON_MAX] or None
     ms.record_deployment(device_id=report.device_id, release_id=report.release_id,
                          product_id=rel["product_id"], status=report.status, reason=reason,
                          account_id=account_id)
-    if report.status == "failed":
+    if report.status == "failed" and ms.audit_budget(report.device_id):
         ms.append_audit(actor="device", action="install.failed", entity_type="device",
                         entity_id=report.device_id,
                         data={"release_id": report.release_id, "product_id": rel["product_id"],

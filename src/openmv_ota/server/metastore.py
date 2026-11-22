@@ -560,11 +560,25 @@ _MIGRATIONS: list[list[str]] = [
         # (note_product_mismatch): what keeps a camera that keeps saying so to a row a day.
         "ALTER TABLE devices ADD COLUMN product_mismatch_at TEXT",
     ],
+    [   # v41 -- the product a registered camera is in the fleet under, on its registration, so
+        # it outlives the fleet row (a row can be forgotten by a token limited to one product,
+        # and the camera's next check-in must not then choose its own). And the camera's daily
+        # budget of audit rows it can cause by what it reports (audit_budget).
+        "ALTER TABLE device_registrations ADD COLUMN product_id BIGINT",
+        "UPDATE device_registrations SET product_id = (SELECT d.product_id FROM devices d "
+        "WHERE d.device_id = device_registrations.device_id)",
+        "ALTER TABLE devices ADD COLUMN audit_day TEXT",
+        "ALTER TABLE devices ADD COLUMN audit_count INTEGER NOT NULL DEFAULT 0",
+    ],
 ]
 
 # How long after one refused check-in is audited the next one from the same camera is (see
 # note_refused_checkin); a check-in naming another product than the camera's likewise.
 REFUSAL_AUDIT_EVERY_S = 24 * 3600
+# Audit rows one camera's own reports can cause in a UTC day (audit_budget): its fallbacks, its
+# boot stub's journal entries, its failed installs. Generous for a camera having a bad day
+# (a journal carries 8 entries), and a ceiling for one that is making them up.
+DEVICE_AUDIT_PER_DAY = 48
 
 
 def _a_day_since(when: str | None) -> bool:
@@ -1888,6 +1902,22 @@ class SqlMetadataStore:
                      "last_refused_at = ?, last_refusal = ? WHERE device_id = ?",
                      (_now_iso(), reason, device_id))
         return not prev["refused_checkins"] or _a_day_since(prev["last_refused_at"])
+
+    def set_registration_product(self, device_id: str, product_id) -> None:
+        """Remember (or, with None, forget) the product a registered camera is in the fleet
+        under. Nothing to do for a camera with no registration."""
+        self.execute("UPDATE device_registrations SET product_id = ? WHERE device_id = ?",
+                     (product_id, device_id))
+
+    def audit_budget(self, device_id: str) -> bool:
+        """Take one of this camera's audit rows for today (``DEVICE_AUDIT_PER_DAY``). False
+        when today's are spent, or it has no fleet row to count them on."""
+        today = _now_iso()[:10]
+        return self.execute(
+            "UPDATE devices SET audit_count = CASE WHEN audit_day = ? THEN audit_count + 1 "
+            "ELSE 1 END, audit_day = ? WHERE device_id = ? AND "
+            "(audit_day IS NULL OR audit_day <> ? OR audit_count < ?)",
+            (today, today, device_id, today, DEVICE_AUDIT_PER_DAY)).rowcount == 1
 
     def note_product_mismatch(self, device_id: str) -> bool:
         """A camera's signed check-in named a product other than its fleet row's. True when

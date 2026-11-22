@@ -39,7 +39,10 @@ def fallback_payload_version(slots: list[dict] | None) -> int | None:
     other = next((s for s in slots if not s.get("running")), None)
     if other is None:
         return None
-    return int(other.get("payload_version") or 0) or None
+    version = other.get("payload_version")
+    if isinstance(version, bool) or not isinstance(version, int) or not 0 < version <= 0x7FFFFFFF:
+        return None                    # not a version a fleet row holds: unknown, like 0
+    return version
 
 
 def running_body_sha256(slots: list[dict] | None) -> str | None:
@@ -52,7 +55,8 @@ def running_body_sha256(slots: list[dict] | None) -> str | None:
     running = next((s for s in slots if s.get("running")), None)
     if running is None:
         return None
-    return str(running.get("body_sha256") or "") or None
+    sha = running.get("body_sha256")
+    return sha[:64] if isinstance(sha, str) and sha else None    # a SHA-256 in hex, no more
 
 
 def settled(slots: list[dict] | None) -> bool:
