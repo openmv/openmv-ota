@@ -452,13 +452,22 @@ def favicon():  # the OpenMV aperture icon mark (browsers request this path by d
 
 
 _INT32_MAX = 0x7FFFFFFF      # the largest version (or stub version) a fleet row holds
+_INT63_MAX = (1 << 63) - 1   # ...and the largest product id (signed 64-bit columns)
+
+
+def _storable(text: str) -> str:
+    """``text`` as a store keeps it: no NUL and no lone surrogate (JSON can carry both, and
+    Postgres refuses both -- an error after the request has started writing)."""
+    return text.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
 
 
 class CheckIn(BaseModel):
     device_id: str
     # The numbers are bounded by what stores them: one past its column was an error from the
     # store, after the request had already written what it writes first.
-    product_id: int = Field(ge=0, le=0xFFFFFFFF)   # the release<->device join key (from identity())
+    # A product id is 63 bits (a derived one is the top of a SHA-256): bounding it to 32 here
+    # turned away every camera of a project that never set a small one by hand.
+    product_id: int = Field(ge=0, le=_INT63_MAX)   # the release<->device join key (from identity())
     account_id: str = ""                     # the maker's account (from identity()); '' = self-host
     board: str | None = None               # camera model, display-only
     product: str | None = None
@@ -497,12 +506,12 @@ class CheckIn(BaseModel):
         """A camera's words are kept in its fleet row, the audit trail and every webhook they
         reach, and the camera chooses them: each is a short one, cut, never refused (this
         endpoint does not turn a camera away over a cosmetic field)."""
-        return v[:_REASON_MAX] if v else v
+        return _storable(v)[:_REASON_MAX] if v else v
 
     @field_validator("streams")
     @classmethod
     def _few(cls, v):
-        return [s[:_STREAM_MAX] for s in v[:_STREAMS_MAX]]
+        return [_storable(s)[:_STREAM_MAX] for s in v[:_STREAMS_MAX]]
 
 
 def _stub_fields(stub) -> tuple[int | None, str | None]:
@@ -1071,11 +1080,12 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         stub=_stub_fields(checkin.stub), journal_seq=journal[-1].seq if journal else None,
         last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
         account_id=account_id)
-    if existing is None or existing["product_id"] != checkin.product_id:
-        # The product this camera is in the fleet under, kept on its registration: the fleet
-        # row can be forgotten (by a token limited to one product, too), and what it enrols
-        # under next is then checked against this, not taken from what it reports.
-        ms.set_registration_product(checkin.device_id, checkin.product_id)
+    # The product this camera is in the fleet under, kept on its registration: the fleet row
+    # can be forgotten (by a token limited to one product, too), and what it enrols under
+    # next is then checked against this, not taken from what it reports. On EVERY check-in
+    # that wrote the row, not only one that changed it: a camera registered after it had a
+    # row, or enrolled while a forget was clearing the note, had a row and no note.
+    ms.set_registration_product(checkin.device_id, checkin.product_id)
     # WHAT A CAMERA REPORTS REACHES THE AUDIT TRAIL AFTER ITS ROW IS WRITTEN, AND ON A DAILY
     # BUDGET. After: a report the store refused used to leave its audit rows behind and its
     # journal mark where it was, so the same rows were written again by the next one. On a
