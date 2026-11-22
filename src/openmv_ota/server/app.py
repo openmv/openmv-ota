@@ -453,6 +453,7 @@ def favicon():  # the OpenMV aperture icon mark (browsers request this path by d
 
 _INT32_MAX = 0x7FFFFFFF      # the largest version (or stub version) a fleet row holds
 _INT63_MAX = (1 << 63) - 1   # ...and the largest product id (signed 64-bit columns)
+_UINT32_MAX = 0xFFFFFFFF     # ...and the largest payload version
 
 
 def _storable(text: str) -> str:
@@ -472,7 +473,7 @@ class CheckIn(BaseModel):
     board: str | None = None               # camera model, display-only
     product: str | None = None
     app_version: str | None = None
-    payload_version: int = Field(0, ge=0, le=_INT32_MAX)
+    payload_version: int = Field(0, ge=0, le=_UINT32_MAX)   # major << 24, major up to 255
     publish_seq: int = Field(0, ge=0, lt=2 ** 48)   # the running image's account publish counter
     orders_by_seq: bool = False              # ...and whether THIS camera compares it
     #                                          (its firmware's PRODUCT_ID is 0, so it can be
@@ -905,7 +906,10 @@ def _sent_to_product(ms, existing, checkin, account_id) -> bool:
     was last offered, or the one it is pinned to, is a release of that product. Both are what
     the server did, so a camera cannot report its way into either."""
     for release_id in (existing.get("last_offered_release_id"),
-                       ms.get_device_pin(checkin.device_id, account_id)):
+                       ms.get_device_pin(checkin.device_id, account_id),
+                       # a cohort pinned across products, under the product it is known as
+                       ms.get_cohort_pin(existing["product_id"], existing["cohort"],
+                                         account_id=account_id) if existing else None):
         rel = ms.get_release(release_id) if release_id else None
         if rel is not None and (rel.get("account_id") or "") == account_id \
                 and rel["product_id"] == checkin.product_id:
@@ -1024,11 +1028,15 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         # a replay. A stale signature proves no more than none, so it gets what none gets.
         return _offer_only(st, checkin, existing["cohort"] if existing else "__default__",
                            existing, account_id, nothing)
-    # The product this camera is KNOWN under: its fleet row's, or with no row (never enrolled,
-    # or forgotten) the one its registration remembers from the last row it had.
-    known = existing["product_id"] if existing is not None else \
-        (ms.get_registration(checkin.device_id) or {}).get("product_id")
-    if known is not None and known != checkin.product_id and \
+    # The product this camera is KNOWN under is the one on its registration: written by every
+    # check-in that stores its row, and kept when the row is forgotten. None is "not yet":
+    # never enrolled, forgotten by a token for the whole account, or registered again at a
+    # desk (reflashed, perhaps as another product) -- it enrols under what it reports.
+    # ``prev`` is where it was before its last move, until it confirms the image it moved
+    # to: a move that fails its trial reverts to the old image, which reports the old product.
+    noted = ms.get_registration(checkin.device_id) or {}
+    known, prev = noted.get("product_id"), noted.get("prev_product_id")
+    if known is not None and checkin.product_id not in (known, prev) and \
             not _sent_to_product(ms, existing or {}, checkin, account_id):
         # A CAMERA DOES NOT MOVE ITSELF BETWEEN PRODUCTS. Its signature says which camera, not
         # which product: the product is a number in a body the camera wrote. Taken at its word
@@ -1082,10 +1090,13 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         account_id=account_id)
     # The product this camera is in the fleet under, kept on its registration: the fleet row
     # can be forgotten (by a token limited to one product, too), and what it enrols under
-    # next is then checked against this, not taken from what it reports. On EVERY check-in
-    # that wrote the row, not only one that changed it: a camera registered after it had a
-    # row, or enrolled while a forget was clearing the note, had a row and no note.
-    ms.set_registration_product(checkin.device_id, checkin.product_id)
+    # next is then checked against this, not taken from what it reports. Written whenever
+    # it differs from what this check-in stored (a camera with a row and no note gets one);
+    # the product it left stays as ``prev`` until the camera confirms where it went.
+    if known != checkin.product_id:
+        ms.set_registration_product(checkin.device_id, checkin.product_id)
+    elif prev is not None and checkin.confirmed:
+        ms.settle_registration_product(checkin.device_id)
     # WHAT A CAMERA REPORTS REACHES THE AUDIT TRAIL AFTER ITS ROW IS WRITTEN, AND ON A DAILY
     # BUDGET. After: a report the store refused used to leave its audit rows behind and its
     # journal mark where it was, so the same rows were written again by the next one. On a
@@ -1179,7 +1190,7 @@ def feedback(report: Feedback, request: Request, raw: bytes = Depends(_raw_body)
         # Not a release of the product this camera runs -- and a camera with no fleet row
         # runs none: it was never offered anything, so it has no install to report.
         return {"ok": False}
-    reason = (report.reason or "")[:_REASON_MAX] or None
+    reason = _storable(report.reason or "")[:_REASON_MAX] or None
     ms.record_deployment(device_id=report.device_id, release_id=report.release_id,
                          product_id=rel["product_id"], status=report.status, reason=reason,
                          account_id=account_id)
