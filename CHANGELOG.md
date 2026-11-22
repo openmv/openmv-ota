@@ -175,6 +175,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   manages every account on the server, or an `accounts` token named after another operator,
   which acted as that operator (accounts are filed under the token's name). Only a token
   with `accounts.all` can issue either operator scope now; the rest get a 403.
+- **A check-in answer costs the camera a fixed amount of RAM and at most 30 seconds.** The
+  status and header lines were read with `readline()`, which grows until a newline comes,
+  so whoever answered the check-in chose how much heap it took; and every byte restarted
+  the 15-second socket timeout, so an answer dripped a byte at a time held the poll loop
+  for as long as it kept coming. A line is now read to its end and kept to its first 128
+  bytes, and the whole answer has one deadline.
 - **A download could write the slot's status sector before its hash was checked.** The
   installer streams the image over the whole slot and checks the sha256 after the last
   chunk, so bytes the stream placed in the status sector stayed on flash when the check

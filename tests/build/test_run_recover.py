@@ -409,3 +409,31 @@ def test_an_answer_cannot_silence_the_camera_for_longer_than_a_day():
     for junk in (-5, 0, "3600", None, True, [1], {"a": 1}):
         assert rt._next_poll({"poll_after_s": junk}, None, 0.5) == rt._POLL_DEFAULT_S, junk
         assert rt._next_poll({"poll_after_s": junk, "throttled": True}, 300, 0.5) == 300, junk
+
+
+def test_a_check_in_answer_line_costs_a_fixed_amount_of_ram_and_time(monkeypatch):
+    """`readline()` grew until a newline came, and each byte restarted the socket timeout:
+    the server chose how much RAM and how long a check-in took."""
+    import io
+    import time
+    now = [0]
+    monkeypatch.setattr(time, "ticks_ms", lambda: now[0], raising=False)
+    monkeypatch.setattr(time, "ticks_diff", lambda a, b: a - b, raising=False)
+    answer = io.BytesIO(b"HTTP/1.0 200 OK\r\nX-Long: " + b"a" * 100000 + b"\r\nDate: x\r\n\r\ntail")
+    assert rt._resp_line(answer, 1000) == b"HTTP/1.0 200 OK\r\n"
+    long = rt._resp_line(answer, 1000)
+    assert len(long) == rt._RESP_LINE_KEEP and long.startswith(b"X-Long: aaa")
+    assert rt._resp_line(answer, 1000) == b"Date: x\r\n"         # the rest of it was dropped
+    assert rt._resp_line(answer, 1000) == b"\r\n"
+    assert rt._resp_line(answer, 1000) == b"tail"                # the end of the answer
+    assert rt._resp_line(answer, 1000) == b""
+
+    class Drip:
+        def read(self, n):
+            now[0] += 400                                         # a byte, slowly, for ever
+            return b"a"
+    with pytest.raises(OSError, match="took too long"):
+        rt._resp_line(Drip(), now[0] + 1000)
+    now[0] = 5000
+    with pytest.raises(OSError, match="took too long"):
+        rt._read_capped(Drip(), 8192, None, 4000)
