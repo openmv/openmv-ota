@@ -591,6 +591,8 @@ def test_a_move_that_fails_its_trial_comes_back(tmp_path):
     assert store.get_device(DEV)["product_id"] == BID
     assert [e["data"]["reason"] for e in _audit(store, "device.fallback")] == ["trial-failed"]
     assert _audit(store, "device.product_mismatch") == []
+    reg = store.get_registration(DEV)                                  # back: nowhere further back
+    assert (reg["product_id"], reg["prev_product_id"]) == (BID, None)
     # Once it CONFIRMS where it moved to, the product it left is closed to it.
     report(product_id=BID + 1, payload_version=0x03000000)
     report(product_id=BID + 1, payload_version=0x03000000, confirmed=True)
@@ -656,3 +658,33 @@ def test_a_version_with_a_major_past_127_checks_in(tmp_path):
     row = store.get_device(DEV)
     assert (row["current_payload_version"], row["fallback_payload_version"]) == \
         (0xC8000000, 0xC7000000)
+
+
+def test_the_product_a_camera_left_is_open_for_a_day_not_for_good(tmp_path):
+    """Open "until it confirms the move" was open for as long as the camera chose not to say
+    so: it kept full standing in the product it had been moved out of, hopping back and
+    forth with no mismatch. The window is the server's: a day from the move."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    _rel2(store)
+    ts = int(time.time()) - 100
+
+    def report(**kw):
+        nonlocal ts
+        ts += 1
+        body = json.dumps({**json.loads(_body()), **kw}).encode()
+        return _check(c, body, camera.sign(key, body, ts=ts))
+
+    report(payload_version=0x02000000, confirmed=True)
+    store.set_device_pin(DEV, "rel2", account_id=ACCT)
+    report(payload_version=0x02000000, confirmed=True)                 # offered rel2
+    report(product_id=BID + 1, payload_version=0x03000000)             # moved, never confirms
+    assert store.registration_products(DEV) == (BID + 1, BID)
+    store.execute("UPDATE device_registrations SET product_moved_at = ? WHERE device_id = ?",
+                  ("2020-01-01T00:00:00+00:00", DEV))
+    assert store.registration_products(DEV) == (BID + 1, None)         # a day on: closed
+    store.set_device_pin(DEV, None, account_id=ACCT)
+    store.execute("UPDATE devices SET last_offered_release_id = NULL WHERE device_id = ?", (DEV,))
+    assert "live" not in report(payload_version=0x02000000, confirmed=True)
+    assert len(_audit(store, "device.product_mismatch")) == 1
+    assert store.registration_products("OPENMV_N6:nobody") == (None, None)

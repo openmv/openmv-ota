@@ -173,7 +173,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The product rule lets a legitimate camera through.** Three cases it turned away, found
   in review before a release. A move that fails its trial: the camera reverts to the image
   it had and reports that image's product, so the product it left stays open to it until
-  it confirms the one it moved to. A camera registered again at a desk (reflashed, perhaps
+  it confirms the one it moved to, comes back, or a day has passed since the move (the
+  server's clock, not the camera's word). A camera registered again at a desk (reflashed, perhaps
   as another product of the account) enrols as what it now is. A cohort pinned to another
   product's release moves its cameras as a device pin does. A mismatch is now audited for
   a camera with no fleet row as well. And a payload version is 32 bits (a major up to
