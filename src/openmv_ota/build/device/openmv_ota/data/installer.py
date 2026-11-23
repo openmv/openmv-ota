@@ -677,7 +677,7 @@ _TRAILER_BODY_SHA = 16                            # field index of body_sha256 (
 
 def _manifest_parse(data):
     """Structurally parse + CRC-check a manifest, returning a dict with the signed
-    ``body``, the ``sig_alg``, the ``signature``, the exact ``region`` the signature
+    ``body_raw`` (unparsed: see :func:`_manifest_body`), the ``sig_alg``, the ``signature``, the exact ``region`` the signature
     covers, and ``cert`` -- the signing key's certificate as boot.py reads a trailer's:
     ``root_id``, ``epoch``, ``kind``, ``pubkey``, the ``region`` the root signed and the
     root's ``signature``. Raises ValueError on any malformation. No crypto here: the
@@ -709,18 +709,25 @@ def _manifest_parse(data):
             or kind not in (0, 1) or pubkey[0] != 0x04:
         raise ValueError("bad manifest certificate")
     region = bytes(data[:_MANIFEST_BODY_OFFSET + body_size])
-    body = json.loads(data[_MANIFEST_BODY_OFFSET:_MANIFEST_BODY_OFFSET + body_size])
-    if not isinstance(body, dict):
-        # Vetting reads it with body.get(...): a list or a number would surface as an
-        # AttributeError out of install() instead of the documented rejection.
-        raise ValueError("manifest body is not an object")
     signature = bytes(data[_MANIFEST_BODY_OFFSET + body_size:body_end])
     cert = {"root_id": root_id, "epoch": epoch, "kind": kind, "pubkey": bytes(pubkey),
             "region": bytes(data[_MANIFEST_HEADER_SIZE:
                                  _MANIFEST_HEADER_SIZE + _MANIFEST_CERT_SIGNED]),
             "signature": bytes(cert_sig)}
-    return {"body": body, "sig_alg": sig_alg, "signature": signature, "region": region,
-            "cert": cert}
+    return {"body_raw": region[_MANIFEST_BODY_OFFSET:], "sig_alg": sig_alg,
+            "signature": signature, "region": region, "cert": cert}
+
+
+def _manifest_body(m):
+    """The signed body of a parsed manifest, as a dict. The caller has checked both
+    signatures: until then the body is anyone's bytes, and the parser builds an object
+    for each bracket of them."""
+    body = json.loads(m["body_raw"])
+    if not isinstance(body, dict):
+        # Vetting reads it with body.get(...): a list or a number would surface as an
+        # AttributeError out of install() instead of the documented rejection.
+        raise ValueError("manifest body is not an object")
+    return body
 
 
 def _update_reject(body, product_id, platform_version, rollback_floor, account_id="",
@@ -1876,7 +1883,7 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
             log.warning("install: reject bad signature")
             raise OSError("manifest signature does not verify")
 
-        body_dict = m["body"]
+        body_dict = _manifest_body(m)
         last_stub = getattr(cfg, "last_stub", None)       # (stub_version, reason) from boot.py
         reason = _update_reject(body_dict, cfg.PRODUCT_ID, cfg.PLATFORM_VERSION, floor,
                                 getattr(cfg, "ACCOUNT_ID", ""),

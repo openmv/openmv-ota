@@ -1777,7 +1777,7 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
             elif line[:5].lower() == b"date:":  # hil-residual: header dispatch; the taken branch is witnessed by the callee's `clock: server date` (every check-in: uvicorn and Cloudflare both send Date)
                 _server_date(line[5:])  # hil-residual: the witness is emitted by the CALLEE (`clock: server date`); the audit cannot see across the call boundary
         resp = _read_capped(ss, _RESP_MAX, clen, deadline)
-        if resp.count(b"[") + resp.count(b"{") > 64:
+        if resp.count(b"[") + resp.count(b"{") > 64 or resp.count(b",") > 256:
             # each is an object to the parser: 8 KiB of them is hundreds of KB of heap, and
             # running out here reads as the network stack's own exhaustion (a reboot)
             raise OSError("check-in answer nests too deep")  # hil-residual: bare raise (a hostile answer; inject-only)

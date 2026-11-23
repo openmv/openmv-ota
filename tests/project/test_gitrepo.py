@@ -236,4 +236,52 @@ def test_git_runs_no_filter_the_tree_s_own_config_defines(make_firmware, tmp_pat
     gitrepo.run_git(repo, "status", "--porcelain")
     assert gitrepo.is_dirty(repo) and not ran.exists()
     monkeypatch.setattr(gitrepo, "GIT", str(tmp_path / "no-such-git"))
-    assert gitrepo._no_filters(repo) == []
+    assert gitrepo._no_filters(repo) == {}
+
+
+def _clean_prog(tmp_path):
+    ran = tmp_path / "ran"
+    prog = tmp_path / "clean.sh"
+    prog.write_text("#!/bin/sh\ntouch %s\ncat\n" % ran)
+    prog.chmod(0o755)
+    return ran, prog
+
+
+def _change_a_file(repo, attributes):
+    tracked = [p for p in repo.iterdir() if p.is_file() and p.name != ".gitattributes"][0]
+    (repo / ".gitattributes").write_text(attributes)
+    tracked.write_bytes(tracked.read_bytes() + b"x")
+
+
+def test_a_filter_is_found_wherever_the_tree_s_config_keeps_it(make_firmware, tmp_path):
+    """In a file the config includes, in a worktree's config, under a name with an `=` in
+    it: each is the tree's own, and none of them runs."""
+    ran, prog = _clean_prog(tmp_path)
+    repo = make_firmware()
+    (repo / ".git" / "more").write_text('[filter "inc"]\n\tclean = %s\n' % prog)
+    gitrepo.run_git(repo, "config", "include.path", "more")
+    gitrepo.run_git(repo, "config", "extensions.worktreeConfig", "true")
+    gitrepo.run_git(repo, "config", "--worktree", "filter.wt.clean", str(prog))
+    gitrepo.run_git(repo, "config", "filter.a=b.clean", str(prog))
+    for name in ("inc", "wt", "a=b"):
+        _change_a_file(repo, "* filter=%s\n" % name)
+        assert gitrepo.is_dirty(repo) and gitrepo.describe(repo).endswith("-dirty")
+        assert not ran.exists(), name
+
+
+def test_a_submodule_s_filter_does_not_run(make_firmware, tmp_path):
+    """`git status` looks into a submodule with the submodule's own config."""
+    ran, prog = _clean_prog(tmp_path)
+    repo = make_firmware()
+    inner = make_firmware("inner")
+    gitrepo.run_git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                    str(inner), "lib/inner")
+    gitrepo.run_git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "sub")
+    sub = repo / "lib" / "inner"
+    gitrepo.run_git(sub, "config", "filter.x.clean", str(prog))
+    _change_a_file(sub, "* filter=x\n")
+    assert gitrepo.is_dirty(repo) and gitrepo.dirty_paths(repo)
+    assert not ran.exists()
+    # ...and the filter is live: git runs it when nothing stands in the way
+    subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True)
+    assert ran.exists()

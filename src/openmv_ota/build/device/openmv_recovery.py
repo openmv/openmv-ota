@@ -172,6 +172,18 @@ def http_date(value):
     return days * 86400 + hh * 3600 + mm * 60 + ss
 
 
+def _answer(raw):
+    """The check-in answer, parsed. It is unsigned, and the parser builds an object for each
+    bracket and each element: an answer made of them is refused, as the runtime refuses it."""
+    import json
+    if raw.count(b"[") + raw.count(b"{") > 64 or raw.count(b",") > 256:
+        raise OSError("check-in answer nests too deep")
+    resp = json.loads(raw)
+    if not isinstance(resp, dict):
+        raise OSError("check-in answer is not an object")
+    return resp
+
+
 def offered(code, raw):
     """The manifest URL the server offers, or ``None`` when it has nothing for this device (a
     429 is the server pacing a crowd: nothing, for now). Any other status is a refusal and
@@ -180,8 +192,7 @@ def offered(code, raw):
         return None
     if code != 200:
         raise OSError("check-in refused: HTTP %d" % code)
-    import json
-    resp = json.loads(raw)
+    resp = _answer(raw)
     url = resp.get("manifest_url") if resp.get("update") else None
     # an https URL and nothing else, as in the runtime's _offer: the reply is unsigned, and
     # a path would send the installer to a file on the camera
@@ -192,8 +203,7 @@ def offered_lockbox(raw):
     """The lockbox (hex) that came with an offer, or ``None``: an update encrypted for each
     camera is opened with it (see the installer's ``_lockbox_key``). Read only after
     :func:`offered` has found an offer in the same answer."""
-    import json
-    return json.loads(raw).get("lockbox")
+    return _answer(raw).get("lockbox")
 
 
 # --- device entry -----------------------------------------------------------

@@ -1271,7 +1271,7 @@ def test_manifest_parse_mirrors_host():
     got = inst("_manifest_parse")(raw)
     host = parse_manifest(raw)
     cert = C.parse(host.certificate)
-    assert got["body"] == host.body
+    assert inst("_manifest_body")(got) == host.body
     assert got["sig_alg"] == host.sig_alg
     assert got["signature"] == host.signature
     assert got["region"] == signed_region(raw)            # the bytes the signature covers
@@ -1325,7 +1325,7 @@ def test_manifest_parse_rejections():
 def test_manifest_body_that_is_not_an_object_is_a_value_error(body):
     """Vetting reads the body with .get(): a SIGNED manifest whose body is a list surfaced as an
     AttributeError out of install() -- not the ValueError/OSError an app is told to expect.
-    Now the parse refuses it, like the host codec does."""
+    Now reading the body refuses it, like the host codec does."""
     from openmv_ota.ota import ES256, algorithm_for
     from openmv_ota.ota.keys import generate_private_key, public_point_hex
     from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
@@ -1336,8 +1336,10 @@ def test_manifest_body_that_is_not_an_object_is_a_value_error(body):
     m = Manifest(body=body, certificate=trust.certificate(priv), sig_alg=ES256)
     m.signature = sign_region(priv, signed_region(m), spec)
     raw = pack_manifest(m)
+    parsed = inst("_manifest_parse")(raw)                  # the body is not read before the
+    assert "body" not in parsed                            # signatures: it is anyone's bytes
     with pytest.raises(ValueError, match="not an object"):
-        inst("_manifest_parse")(raw)
+        inst("_manifest_body")(parsed)
     del public_point_hex                                   # the roots are the only keys a camera has
 
     class Cfg:

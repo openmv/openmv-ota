@@ -213,9 +213,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the download fails like a dead link and is not reconnected. It is one allowance however
   many times the download reconnects, and bytes that write no image (headers, chunk
   framing, a stream that inflates to nothing) buy none of it.
-- **A check-in answer that nests too deep is refused before it is parsed.** Eight KiB of
-  open brackets is hundreds of KiB of heap to the JSON parser, and running out there read
-  as the network stack's own exhaustion, which ends in a reboot.
+- **A check-in answer that nests too deep, or lists too much, is refused before it is
+  parsed.** Eight KiB of open brackets, or of short list elements, is hundreds of KiB of
+  heap to the JSON parser, and running out there read as the network stack's own
+  exhaustion, which ends in a reboot. Recovery refuses the same answers.
+- **A manifest's body is parsed after its signatures verify.** It was parsed first, behind
+  only a checksum, so anyone's bytes reached the JSON parser.
 - **A short image file is refused before the erase.**
 - **A stream that ends short is refused before its last bytes are written.** They were
   programmed first, an odd count that is not a whole flash write unit.
@@ -227,9 +230,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   v2.2.1): the boot stub's include paths and device header, and the two firmware modules
   that named the old headers, follow.
 - **Host tools read a project's files and a firmware tree without running or following
-  them.** `git` is run with the tree's own monitor, hooks and content filters off; a
-  history file that is a link is neither read nor appended to, and one with a line that is
-  not an event still reads.
+  them.** `git` is run with the tree's own monitor, hooks and content filters off, wherever
+  its config keeps a filter (an included file, a worktree's config, a submodule's); a
+  history file that is a link, or sits in a linked directory, is neither read nor appended
+  to, and one with a line that is not an event still reads.
 
 - **A payload version is 32 bits.** A major up to 255, not 31 bits: check-ins accept it and
   Postgres stores it.

@@ -7,6 +7,7 @@ repos while mocking only the heavy clone / build seams.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -17,20 +18,50 @@ from .errors import ProjectError
 # Binary names, overridable for tests.
 GIT = "git"
 
+# The tree is one the project was pointed at, and its own config can name a program for git
+# to run (a filesystem monitor on any read of the index, hooks): read, never run.
+_QUIET = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null")
 
-def _no_filters(repo: Path) -> list[str]:
-    """Options that empty every content filter the tree's own config defines (`git status`
-    runs a filter's `clean` program on a changed file). Reading the config runs nothing."""
+
+def _filter_names(repo: Path, nested: bool, seen: set[str]) -> None:
+    """Collect the content filters a tree's own config defines -- the files it includes and
+    a worktree's config too -- and, with ``nested``, those of each submodule checked out
+    under it (`git status` looks into them with their own config). Reading runs nothing."""
+    def git(*args: str) -> list[str]:
+        proc = subprocess.run([GIT, *_QUIET, "-C", str(repo), *args],
+                              capture_output=True, text=True)
+        return proc.stdout.split("\0") if proc.returncode == 0 else []
+    fields = git("config", "--includes", "--show-scope", "--name-only", "-z",
+                 "--get-regexp", r"^filter\.")
+    for scope, name in zip(fields[0::2], fields[1::2], strict=False):
+        # the user's own filters (git-lfs) stay: without one a tree that uses it reads dirty
+        if scope in ("local", "worktree") and name.count(".") >= 2:
+            seen.add(name.rsplit(".", 1)[0])
+    if nested:
+        for entry in git("ls-files", "-s", "-z"):
+            mode, _, path = entry.partition("\t")
+            sub = repo / path
+            if mode.startswith("160000") and (sub / ".git").exists() and not sub.is_symlink():
+                _filter_names(sub, True, seen)
+
+
+def _no_filters(repo: Path, nested: bool = False) -> dict[str, str]:
+    """Environment that empties every content filter the tree's own config defines (`git
+    status` runs a filter's `clean` program on a changed file). It is the environment and
+    not `-c`: a filter's name may hold an `=`, which `-c` would read as the end of the key,
+    and git hands it down to the git it runs in a submodule."""
+    names: set[str] = set()
     try:
-        proc = subprocess.run([GIT, "-C", str(repo), "config", "--local", "--name-only",
-                               "--get-regexp", r"^filter\."], capture_output=True, text=True)
+        _filter_names(repo, nested, names)
     except FileNotFoundError:
-        return []           # run_git reports the missing binary
-    out: list[str] = []
-    for name in {n.rsplit(".", 1)[0] for n in proc.stdout.split() if n.count(".") >= 2}:
-        out += ["-c", name + ".clean=", "-c", name + ".smudge=", "-c", name + ".process=",
-                "-c", name + ".required=false"]
-    return out
+        return {}           # run_git reports the missing binary
+    pairs = [(name + key, value) for name in sorted(names) for key, value in
+             ((".clean", ""), (".smudge", ""), (".process", ""), (".required", "false"))]
+    env = {"GIT_CONFIG_COUNT": str(len(pairs))}
+    for i, (key, value) in enumerate(pairs):
+        env["GIT_CONFIG_KEY_%d" % i] = key
+        env["GIT_CONFIG_VALUE_%d" % i] = value
+    return env
 
 
 def run_git(repo: Path, *args: str, check: bool = True) -> str | None:
@@ -42,11 +73,10 @@ def run_git(repo: Path, *args: str, check: bool = True) -> str | None:
     """
     try:
         proc = subprocess.run(
-            # The tree is one the project was pointed at, and its own config can name a
-            # program for git to run (a filesystem monitor, hooks, a filter): read, never run.
-            [GIT, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-             *_no_filters(repo), "-C", str(repo), *args],
+            [GIT, *_QUIET, "-C", str(repo), *args],
             capture_output=True, text=True,
+            # only these two read the files of the tree, and of its submodules
+            env={**os.environ, **_no_filters(repo, args[:1] in (("status",), ("describe",)))},
         )
     except FileNotFoundError:
         raise ProjectError("git not found on PATH") from None
