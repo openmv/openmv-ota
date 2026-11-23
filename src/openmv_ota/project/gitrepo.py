@@ -27,7 +27,10 @@ def run_git(repo: Path, *args: str, check: bool = True) -> str | None:
     """
     try:
         proc = subprocess.run(
-            [GIT, "-C", str(repo), *args],
+            # The tree is one the project was pointed at, and its own config can name a
+            # program for git to run (a filesystem monitor, hooks): read, never run.
+            [GIT, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+             "-C", str(repo), *args],
             capture_output=True, text=True,
         )
     except FileNotFoundError:

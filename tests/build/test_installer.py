@@ -27,6 +27,17 @@ def inst(name):
     return getattr(_mod, name)
 
 
+@pytest.fixture(autouse=True)
+def clock(monkeypatch):
+    """The host has no ticks_ms and no sleep_ms: a clock that a sleep advances, so a wait
+    takes its time and the download's rate floor is measured as it is on a camera."""
+    now = [0]
+    assert _mod.sleep_ms(5) is None and _mod.ticks_ms() == 0     # the host's own: no-ops
+    monkeypatch.setattr(_mod, "ticks_ms", lambda: now[0])
+    monkeypatch.setattr(_mod, "sleep_ms", lambda ms: now.__setitem__(0, now[0] + ms))
+    return now
+
+
 # --- PENDING marker is pinned to the canonical one --------------------------
 
 def test_pending_marker_matches_status_module():
@@ -384,9 +395,9 @@ def test_reader_dead_link_trips_after_timeout():
         r.read_exact(1)
 
 
-def test_reader_drops_a_link_slower_than_1_kb_a_second():
+def test_reader_drops_a_link_slower_than_1_kb_a_second(clock):
     """A server that drips a byte per poll slice (50 B/s) never trips the dead-link timeout; the
-    rate floor ends it once the connection's minute of slack is spent."""
+    rate floor ends it once the download's minute is spent."""
     seq, got = {"n": 0}, bytearray()
 
     def recv(_n):
@@ -397,13 +408,29 @@ def test_reader_drops_a_link_slower_than_1_kb_a_second():
         while True:
             got += r.read_exact(1)
     slice_ms, slow = inst("_RECV_POLL_MS"), inst("_SLOW_MS")
-    assert len(got) == slow // (slice_ms - 1)            # each byte costs a slice and earns 1 ms
+    assert abs(len(got) - slow // slice_ms) <= 1         # a minute of it, and no more
+    assert clock[0] >= slow
 
 
-def test_a_reconnect_does_not_buy_another_minute_and_a_fast_start_not_an_hour():
+def test_bytes_that_are_not_the_image_buy_a_download_no_time(clock):
+    """The floor is by the clock, and only the image's bytes extend it. Counted in waits, and
+    for every byte received, a server that never paused -- chunk framing, headers -- kept an
+    install open for as long as it liked."""
+    def recv(_n):
+        clock[0] += 10                                     # a byte every 10 ms, never a wait
+        return b"x"
+    r, got = _R(recv, feed=lambda: None), 0
+    with pytest.raises(OSError, match="timed out"):
+        while True:
+            r.read_exact(1)
+            got += 1
+    assert abs(got - inst("_SLOW_MS") // 10) <= 1
+
+
+def test_a_reconnect_does_not_buy_another_minute_and_a_fast_start_not_an_hour(clock):
     """One budget for the whole download: handed to each connection's reader, and capped."""
     slow, slice_ms = inst("_SLOW_MS"), inst("_RECV_POLL_MS")
-    slack, got = [slow], 0
+    slack, got = [0, slow], 0
 
     def drip():                                              # 99 empty slices, then a byte
         seq = {"n": 0}
@@ -418,23 +445,29 @@ def test_a_reconnect_does_not_buy_another_minute_and_a_fast_start_not_an_hour():
             for _ in range(4):
                 r.read_exact(1)
                 got += 1
-    assert got == slow // (99 * slice_ms - 1)                # the one minute, however many sockets
-    fast = _R(lambda n: bytes(n), feed=lambda: None)
-    for _ in range(64):
-        fast.read_exact(4096)                                # 256 KB at once...
-    assert fast._slack[0] == 2 * slow                        # ...is two minutes of patience, no more
+    assert abs(got - slow // (99 * slice_ms)) <= 1           # the one minute, however many sockets
+    fast = [clock[0], slow]
+    inst("_slack_add")(1 << 20, fast)                        # a megabyte at once...
+    assert fast[1] == 2 * slow                               # ...is two minutes of patience, no more
 
 
-def test_reader_keeps_a_link_that_waits_but_delivers():
-    # 1 KB after every wait slice is 50 KB/s: the slack only grows, however long the download
-    seq = {"n": 0}
+def test_the_images_bytes_keep_a_slow_download_and_no_download_is_endless(clock, monkeypatch):
+    """What the decoder is handed is what counts: 1 KB every 20 ms is 50 KB/s, and the allowance
+    only grows. And a body is at most ``limit`` bytes: a stream of blocks that inflate to
+    nothing never comes back to the size check, at any rate."""
+    class _Slow:
+        def readinto(self, buf):
+            clock[0] += 20
+            return 1024
 
-    def recv(_n):
-        seq["n"] += 1
-        return bytes(min(_n, 1024)) if seq["n"] % 2 == 0 else None
-    r = _R(recv, feed=lambda: None)
-    for _ in range(4096):                                 # 4 MB, 82 s of waiting in all
-        assert len(r.read_exact(1024)) == 1024
+    inst("_slack_start")()
+    rb = inst("_ResumingBody")("u", None, None, None, lambda: None, None, _Slow(), 4096 * 1024)
+    for _ in range(4096):                                    # 4 MB over 82 s
+        assert rb.readinto(bytearray(1024)) == 1024
+    s = inst("_SLACK")
+    assert clock[0] - s[0] > inst("_SLOW_MS") and clock[0] - s[0] < s[1]
+    with pytest.raises(ValueError, match="larger than any image"):
+        rb.readinto(bytearray(1024))
 
 
 # --- _ResumingBody: surviving a link that drops mid-download -------------------------------
@@ -1471,9 +1504,10 @@ def test_vet_manifest_trusts_only_a_root_signed_certificate():
     with pytest.raises(OSError, match="untrusted key"):                 # root bytes differ
         rogue = trust.pub_bytes(generate_private_key(trust.SPEC))
         vet("/sd/m.bin", good, _vet_cfg(roots={0: rogue}), verify, 0, 0, True)
-    with pytest.raises(OSError, match="untrusted key"):                 # a factory key's certificate
-        vet("/sd/m.bin", _host_manifest(body=_sd_body(), epoch=2, kind=1), _vet_cfg(), verify,
-            0, 0, True)
+    # a factory key's certificate is taken too: the factory build's image is published under
+    # it, as a fleet's first release
+    assert vet("/sd/m.bin", _host_manifest(body=_sd_body(), epoch=2, kind=1), _vet_cfg(), verify,
+               0, 0, True) is not None
     with pytest.raises(OSError, match="retired key"):                   # epoch below the floor
         vet("/sd/m.bin", good, _vet_cfg(last_epoch=3), verify, 0, 0, True)
     with pytest.raises(OSError, match="retired key"):                   # ...or the floor on flash:
@@ -1777,6 +1811,38 @@ class _FakeBody:
 
 def test_read_all_reads_to_eof():
     assert inst("_read_all")(_FakeBody(b"manifest" * 200), 100000) == b"manifest" * 200
+
+
+def test_read_all_keeps_whole_buffers_however_small_the_reads():
+    """A body sent a byte a read was a bytes object a byte: for an 8 KiB manifest, a few
+    hundred KiB of heap at the sender's pace."""
+    class _Drip:
+        def __init__(self, data):
+            self.data, self.pos = data, 0
+
+        def readinto(self, buf):
+            if self.pos >= len(self.data) or not len(buf):
+                return 0
+            buf[0] = self.data[self.pos]
+            self.pos += 1
+            return 1
+    data = bytes(range(256)) * 5 + b"tail"
+    made = []
+    real = bytes
+
+    class _Counting(bytes):
+        def __new__(cls, *a):
+            made.append(1)
+            return real.__new__(cls, *a)
+    import builtins
+    assert inst("_read_all")(_Drip(data), 100000) == data
+    assert inst("_read_all")(_Drip(b""), 10) == b""
+    _mod.bytes = _Counting
+    try:
+        assert inst("_read_all")(_Drip(data), 100000) == data
+    finally:
+        del _mod.bytes
+    assert len(made) == 3 and builtins.bytes is real          # two whole buffers and the rest
 
 
 def test_read_all_rejects_oversize():
@@ -2087,6 +2153,26 @@ def test_install_stream_takes_a_primed_first_chunk():
                             None, None, None, None, work, None, 0, primed=n)
     assert flash.mem[:len(body)] == body
     assert flash.mem[front - 2 * block:front - 2 * block + 16] == inst("PENDING")
+
+
+def test_a_stream_that_ends_short_has_its_last_odd_bytes_refused_unwritten():
+    """The size check refuses a short image, and used to after its last chunk was programmed:
+    an odd count of bytes, which is not a whole flash write unit on any board."""
+    block = 4096
+    front = 4 * block
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    wrote = []
+    real = flash.write
+
+    def write(off, data):
+        wrote.append((off, len(data)))
+        real(off, data)
+    with pytest.raises(ValueError, match="image is %d bytes" % (block + 5)):
+        inst("_install_stream")(_SourceOf(b"\x5a" * (block + 5)), write, flash.readback, front,
+                                block, _noop, None, None, None, None, bytearray(block), None, 0)
+    assert wrote and all(off % 16 == 0 and n % 16 == 0 for off, n in wrote)
+    assert flash.mem[:32] == b"\xff" * 32                     # and never an image's head
 
 
 def test_install_stream_primed_short_image_is_still_rejected():

@@ -89,10 +89,23 @@ static XSPI_HandleTypeDef xspi = {0};
 static int xspi_flash_reset();
 static int xspi_flash_read_id(uint8_t *);
 
+static int xspi_flash_init_once(void);
+
 int xspi_flash_init(void) {
     if (xspi.Instance != NULL) {
         return 0;
     }
+    // A FAILED INIT IS NOT AN INITIALIZED DRIVER. The handle's instance is what says the
+    // driver is up, and it was set before anything could fail: after one bad reset poll or
+    // id read, every later call answered "already done" over a part nothing had set up.
+    int ret = xspi_flash_init_once();
+    if (ret != 0) {
+        spi_flash_deinit();
+    }
+    return ret;
+}
+
+static int xspi_flash_init_once(void) {
 
     uint32_t xspi_kclk = 0;
 

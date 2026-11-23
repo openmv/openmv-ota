@@ -151,6 +151,17 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 9 (device, host): **a decision**: `keys/backends.json` is committed with the
+    project and names what signs (a PKCS#11 module to load, a `module:callable` to import),
+    so building a project someone else made runs their code; taking those two from the
+    machine's own config, or asking on first use, would close it. A signed image that ships
+    a module named as a firmware one (`openmv_se`, `logging`) is imported ahead of it. The
+    download cap is twice the slot, not the manifest's signed size. The N6 stub's flash
+    reads and writes have no range checks of their own, a failed re-map leaves the part in
+    octal mode, and the prescaler rounds down; the H7 stub retries a dead QSPI part on
+    every call. A resumed download's `Content-Range` is not compared with what was asked.
+    The recovery check-in's body is read an object a read. A firmware tree's version
+    numbers are not range-checked.
   - Round 8 (host): `project new --force --ota` in a project that has keys replaces the
     roots, the signing keys, the payload keys and the key backup, and says so only in a
     warning afterwards; a fleet in the field can then no longer be updated. Wants its own

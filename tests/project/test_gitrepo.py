@@ -207,3 +207,16 @@ def test_pip_install_failure(monkeypatch):
     with pytest.raises(ProjectError) as ei:
         gitrepo.pip_install("mpy-cross==1.28.0")
     assert ei.value.exit_code == 1
+
+
+def test_git_runs_nothing_the_tree_s_own_config_names(make_firmware, tmp_path):
+    """A firmware tree is one the project was pointed at. Its config can name a program for
+    git to run on `status` (a filesystem monitor); reading the tree must not run it."""
+    repo = make_firmware()
+    ran = tmp_path / "ran"
+    hook = tmp_path / "monitor.sh"
+    hook.write_text("#!/bin/sh\ntouch %s\n" % ran)
+    hook.chmod(0o755)
+    gitrepo.run_git(repo, "config", "core.fsmonitor", str(hook))
+    gitrepo.run_git(repo, "status", "--porcelain")
+    assert not ran.exists()

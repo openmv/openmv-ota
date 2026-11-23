@@ -33,7 +33,7 @@ feed cadence driven from the main thread, with no reliance on ``select.poll`` or
 AE3's SSL poll() blocks through its own timeout, and relax()'s ISR is not serviced inside an
 mbedtls read, so only a main-thread feed is reliable there). A slow/paced link stays fed while a
 dead link (no data at all) stops producing and trips the watchdog after ``_SOCK_TIMEOUT``, and one
-that drips under 1 KB/s is dropped the same way once its minute of slack is spent (``_SLOW_MS``) ->
+that delivers the image under 1 KB/s is dropped the same way, by the clock (``_SLOW_MS``) ->
 a reboot into the surviving slot. The erase/write loops feed per block/piece the same way. ``relax()`` (an ISR feed that also does not yield) is a LAST
 RESORT, used ONLY for the two genuinely unsplittable single C calls with no seam to feed
 through: the TLS handshake (``_connect``) and this file's own ``exec`` compile (in
@@ -242,14 +242,28 @@ _RECV_POLL_MS = 20
 # STM32H7's internal flash keeps an ECC per 32 bytes, so the head is never part of an
 # earlier program -- the first chunk is written from this offset on.
 _HEAD = 32
-# The slowest link a download is waited on: 1 KB/s. A connection may spend this long waiting for
-# data, plus a millisecond per byte it has delivered; past that it is dropped like a dead one. Only
-# the waiting counts (not the flash writes between reads), so the number is the link's alone.
+# The slowest link a download is waited on: 1 KB/s. An install's download may take this long,
+# plus a millisecond per byte OF THE IMAGE it has delivered; past that it is dropped like a dead
+# link. By the clock, and for the image's bytes alone: counted in waits and for every byte
+# received, a server kept it open with what is not image -- chunk framing, headers, a
+# reconnect per byte -- for as long as it liked.
 _SLOW_MS = 60000
-# ...shared by every connection of one install (a reconnect does not start a fresh minute: a
-# server that sent a byte and stalled, connection after connection, held the installer for
-# good), and capped, so a fast start does not buy an hour of dripping afterwards.
-_SLACK = [_SLOW_MS]
+# [the tick the count began, the ms allowed since]. Shared by every connection of one install
+# (a reconnect does not start a fresh minute), and never more than two minutes ahead of the
+# clock, so a fast start does not buy an hour of dripping afterwards.
+_SLACK = [0, _SLOW_MS]
+
+
+def _slack_start(s=_SLACK):
+    s[0] = ticks_ms()
+    s[1] = _SLOW_MS
+
+
+def _slack_add(n, s=_SLACK):
+    s[1] += n
+    cap = ticks_diff(ticks_ms(), s[0]) + 2 * _SLOW_MS
+    if s[1] > cap:
+        s[1] = cap
 # "Operation would block" errnos a non-blocking recv may raise (EAGAIN/EWOULDBLOCK) even right after
 # poll reports readable -- a TLS socket can be TCP-readable with no whole record decrypted yet. Both
 # the positive (11) and MicroPython's negated (-11) form; treated as "no data yet", keep polling.
@@ -408,8 +422,7 @@ class _Reader:
         self._mv = memoryview(self._mem)
         self._lo = 0               # the unread bytes are _mem[_lo:_hi]
         self._hi = 0
-        # [ms the download may still wait]: +1 a byte, -1 a ms waited, at most 2 * _SLOW_MS
-        self._slack = [_SLOW_MS] if slack is None else slack
+        self._slack = [ticks_ms(), _SLOW_MS] if slack is None else slack   # see _SLACK
 
     def _fill(self):
         # MAIN-THREAD progress-fed recv. The socket is NON-BLOCKING (set by _open), so readinto
@@ -440,20 +453,16 @@ class _Reader:
                 if not (e.args and e.args[0] in _EAGAIN):
                     raise                             # a real error (ECONNRESET, ...) -> install fails
                 n = None
+            s = self._slack
+            if waited >= _SOCK_TIMEOUT * 1000 or ticks_diff(ticks_ms(), s[0]) > s[1]:
+                raise OSError(_ETIMEDOUT, "recv timed out")  # dead, or under 1 KB/s: NUMERIC errno -> transport (retry)
             if n:
                 self._hi += n
-                s = self._slack
-                s[0] += n
-                if s[0] > 2 * _SLOW_MS:
-                    s[0] = 2 * _SLOW_MS
                 return True
             if n is not None:                        # n == 0 -> EOF
                 return False
             sleep_ms(_RECV_POLL_MS)                  # n is None -> no data yet; feed + wait a slice
             waited += _RECV_POLL_MS
-            self._slack[0] -= _RECV_POLL_MS
-            if waited >= _SOCK_TIMEOUT * 1000 or self._slack[0] < 0:   # dead, or under 1 KB/s
-                raise OSError(_ETIMEDOUT, "recv timed out")  # dead link: NUMERIC errno -> transport (retry)
 
     def _newline(self):
         """Index of the first ``\\n`` in the unread bytes, or -1. A byte loop rather than
@@ -602,16 +611,21 @@ def _read_all(body, limit):
     """Read a whole (small) response body into bytes, capped at ``limit`` -- for the
     manifest, which is fetched into RAM rather than streamed to flash. Raises if it
     exceeds ``limit`` (a runaway/oversized manifest)."""
-    parts, total = [], 0
+    parts, total, k = [], 0, 0
     buf = bytearray(512)
+    mv = memoryview(buf)
     while True:
-        n = body.readinto(buf)
+        n = body.readinto(mv[k:])
         if not n:
+            parts.append(bytes(mv[:k]))
             return b"".join(parts)
         total += n
         if total > limit:
             raise ValueError("manifest larger than %d bytes" % limit)
-        parts.append(bytes(buf[:n]))                 # collect + join once, not o(n^2) +=
+        k += n
+        if k == 512:                                 # whole buffers only: a body sent a byte
+            parts.append(bytes(buf))                 # a read was an object a byte
+            k = 0
 
 
 def _read_manifest_file(path):
@@ -1343,8 +1357,11 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         want = _CHUNK if slot_size - off >= _CHUNK else slot_size - off
         if n == 0:
             n = _fill(source, mv, want, feed)
-        if n == 0:
-            break                                    # source exhausted; the size check below rejects short
+        if n < want:
+            # The source ended short of the slot: the size check below rejects it. Its last
+            # bytes are NOT written first -- an odd count is not a whole flash write unit.
+            off += n
+            break
         chunk = mv[:n]
         # THE STATUS SECTOR IS THE CAMERA'S, NEVER THE IMAGE'S. A published image leaves it
         # blank; the floors above and the arm sequence below are the only writers. These bytes
@@ -1589,7 +1606,8 @@ class _ResumingBody(io.IOBase):
     after which a resume gets a 404 and fails cleanly.
     """
 
-    def __init__(self, url, ca_pem, socket, ssl, feed, sock, body):
+    def __init__(self, url, ca_pem, socket, ssl, feed, sock, body, limit=None):
+        self._limit = limit      # the most bytes the image's download can be
         self._url, self._ca = url, ca_pem
         self._socket, self._ssl, self._feed = socket, ssl, feed
         self._sock, self._body = sock, body
@@ -1606,6 +1624,11 @@ class _ResumingBody(io.IOBase):
             self._pos += n
             if n:
                 self._stalls = 0                      # forward progress -> the budget resets
+                _slack_add(n)                         # the image's bytes buy the download its time
+                if self._limit is not None and self._pos > self._limit:
+                    # a stream with no end (blocks that inflate to nothing) is still a
+                    # download at any rate, and never returns to the size check
+                    raise ValueError("download larger than any image")
             return n
 
     def _reopen(self, err):
@@ -1747,7 +1770,7 @@ def _decrypting(body, enc, payload_keys, aes, content_key=None):
                     binascii.unhexlify(enc["iv"]), size, aes)
 
 
-def _open_body(image_url, ca_pem, socket, ssl, feed):
+def _open_body(image_url, ca_pem, socket, ssl, feed, limit=None):
     """The image byte stream ``DeflateIO`` will decompress: for an on-disk image a plain
     file object (already a C-level stream, and file reads don't drop -- no resume
     wrapper), else the HTTPS body wrapped so a dropped connection resumes at the
@@ -1755,7 +1778,7 @@ def _open_body(image_url, ca_pem, socket, ssl, feed):
     if _is_path(image_url):
         return open(image_url, "rb")
     sock, raw_body = _open(image_url, ca_pem, socket, ssl, feed)  # pragma: no cover  # hil-residual: HTTPS body open, relocated verbatim from run(); witnessed by install.download on every bench install leg
-    return _ResumingBody(image_url, ca_pem, socket, ssl, feed, sock, raw_body)  # pragma: no cover  # hil-residual: the resume wrapper, relocated verbatim from run(); its resume path is exercised by the bench drop/resume scenario
+    return _ResumingBody(image_url, ca_pem, socket, ssl, feed, sock, raw_body, limit)  # pragma: no cover  # hil-residual: the resume wrapper, relocated verbatim from run(); its resume path is exercised by the bench drop/resume scenario
 
 
 def _lockbox_key(lockbox, enc, se=None):
@@ -1841,9 +1864,9 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
         # outcome to the app and the fleet: the key is not one this camera trusts.
         c = m["cert"]
         root = cfg.ROOT_KEYS.get(c["root_id"])
-        if root is None or c["kind"] or not verify(_ES256, root, c["signature"], c["region"]):
-            # (kind: an OTA key's certificate is kind 0. A factory key signs what a desk
-            # flashes; over the air it is not a key this camera takes a release from.)
+        if root is None or not verify(_ES256, root, c["signature"], c["region"]):
+            # (Either kind of key: the factory build's own image is published under the
+            # factory key, as a fleet's first release and delta base.)
             log.warning("install: reject untrusted key")
             raise OSError("manifest signed by an untrusted key")
         # ...by the running image's epoch or the floor on flash, whichever is higher: in
@@ -2477,7 +2500,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                 return both  # hil-residual: same
         return base_read_at(base_off + off, n)  # hil-residual: bare return of the slot-relative base read
 
-    _SLACK[0] = _SLOW_MS   # this install's own minute (frozen, the module outlives an install)
+    _slack_start()         # this install's own minute (frozen, the module outlives an install)
     # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the
     # app (the target slot is untouched). Log the reason first: run() swallows this exception
     # (transient failures retry next poll), so without a line here a REJECTED update -- bad
@@ -2563,11 +2586,14 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
         a delta the patch reconstructor. Returns ``(body, source, repr_marker)``; ``body`` is
         set the moment it is open, so the retry cleanup can close it whatever fails after."""
         nonlocal body
+        # Each attempt's download starts with its minute HERE, when it opens: the clock that
+        # measures it also runs through the erase and the blank verify before it.
+        _slack_start()
         log.info("install: downloading %s (%s)" % (image_url, fmt))
         # The retry cleanup closes the BODY: for HTTPS the body owns whichever socket is live
         # after a resume (closing the original would leak the newer one -- see _ResumingBody);
         # for an on-disk image it is simply the open file.
-        body = _open_body(image_url, ca_pem, socket, ssl, feed)
+        body = _open_body(image_url, ca_pem, socket, ssl, feed, 2 * slot_size)
         if enc:
             # Decrypt UNDER the decompressor and OVER the resume: what arrives is
             # ciphertext, what DeflateIO sees is the gzip stream, and a dropped link
@@ -2612,7 +2638,6 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
 
     for attempt in range(attempts):
         try:
-            _SLACK[0] = _SLOW_MS                      # each attempt starts with its minute
             # COLLECT BEFORE THE ERASE, under relax(). Everything above -- the TLS session, the
             # ~68 KiB installer exec'd into RAM, the manifest parse and verify -- has churned the
             # heap, so the very next allocation can trigger an AUTOMATIC gc.collect(). That is one

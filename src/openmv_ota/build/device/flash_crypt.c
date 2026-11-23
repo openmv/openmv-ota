@@ -414,8 +414,15 @@ MP_REGISTER_MODULE(MP_QSTR_flash_crypt, flash_crypt_module);
 #include "py/obj.h"
 #include "py/mperrno.h"
 #include "services_lib_api.h"
-#include "peripheral_types.h"
-#include "global_map.h"
+#include "soc.h"                // Alif DFP v2: the device header (AES_Type, AES0_BASE)
+#include "sys_ctrl_aes.h"       // AES_CONTROL_*
+
+#ifndef OSPI0_XIP_BASE          // the DFP's own driver defines the map the same way
+#define OSPI0_XIP_BASE          (0xA0000000UL)
+#endif
+#ifndef OSPI0_XIP_SIZE
+#define OSPI0_XIP_SIZE          (0x20000000UL)
+#endif
 
 #define FLASH_CRYPT_TWEAK_SIZE  (ECB_SLOT_TWEAK_SIZE)
 #define FLASH_CRYPT_SE_HANDLE   (0)                 // se_services.c: MHU_SESS_MHU0, channel 0

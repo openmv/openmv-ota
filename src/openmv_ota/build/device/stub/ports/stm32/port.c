@@ -322,9 +322,14 @@ int port_flash_prog_begin(void) {
     if (!spi_flash_initialized()) {
         // First time: out of the bootloader's memory map and into a known flash state --
         // the driver resets the controller and hardware-resets the part (-> 1-line SPI).
-        spi_flash_deinit();
-        ret = xspi_flash_init();
-        log_kv("xspi init", ret);
+        // The bootloader's map is gone from here on, so a transient failure is tried again:
+        // there is nothing to fall back to that could still be read.
+        ret = -1;
+        for (int i = 0; i < 3 && ret != 0; i++) {
+            spi_flash_deinit();
+            ret = xspi_flash_init();
+            log_kv("xspi init", ret);
+        }
     } else {
         // Our own memory map: leave it the way the firmware's driver does, in place.
         ret = spi_flash_memory_unmap();

@@ -189,14 +189,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The boot stub's log ring checks its length.** The ring survives a reset in RAM the app
   can write; a length past the buffer made the stub write there before any slot was
   verified.
-- **A manifest is signed by an OTA key.** A factory key's certificate was accepted on a
-  manifest; it is refused like any key the camera does not trust.
 - **A download slower than 1 KB/s is dropped.** The installer's reader timed out only when a
   connection went silent for 30 seconds, so a server that dripped a byte at a time held the
-  installer, and stopped the app, for as long as it kept sending. A connection now gets a
-  minute of waiting plus a millisecond for every byte it delivers, two minutes at most;
-  past that it fails like a dead link. The budget is one for an install attempt, however
-  many times the download reconnects. Time spent writing flash does not count.
+  installer, and stopped the app, for as long as it kept sending. An install attempt's
+  download now gets a minute, plus a millisecond for every byte of the image it delivers,
+  never more than two minutes ahead of the clock; past that it fails like a dead link. It is
+  one allowance however many times the download reconnects, and bytes that are not the
+  image (headers, chunk framing) buy none of it. A download is also refused once it is
+  larger than any image for the slot could be.
+- **A stream that ends short is refused before its last bytes are written.** They were
+  programmed first, an odd count that is not a whole flash write unit.
+- **The manifest is read into whole buffers.** A server sending it a byte a read made the
+  installer hold an object per byte.
+- **The N6 boot stub tries a failed flash init again.** One bad reset poll or id read was
+  remembered as a working driver, after the bootloader's memory map had been dropped.
+- **The AE3 builds against the Alif DFP v2.** The firmware moved to it (`lib/alif-dfp`,
+  v2.2.1): the boot stub's include paths and device header, and the two firmware modules
+  that named the old headers, follow.
+- **Host tools read a project's files and a firmware tree without running or following
+  them.** `git` is run with the tree's own monitor and hooks off; a history file that is a
+  link is not appended to, and one with a line that is not an event still reads.
 
 - **A payload version is 32 bits.** A major up to 255, not 31 bits: check-ins accept it and
   Postgres stores it.
