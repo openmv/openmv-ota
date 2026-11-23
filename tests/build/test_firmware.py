@@ -1414,6 +1414,12 @@ def test_an_ota_board_without_a_stub_layout_builds_no_stub(make_project, monkeyp
     assert not any(o.name.endswith("-stub.bin") for o in r.outputs)
 
 
+def test_a_board_that_gives_nothing_up_gets_no_overlay(tmp_path):
+    # nothing dropped, no stub, the full TFLM op set: built from the firmware's own board directory
+    assert fw._board_overlay(tmp_path / "fw", "ARDUINO_NANO_RP2040_CONNECT", tmp_path / "t") is None
+    assert not (tmp_path / "t").exists()
+
+
 def test_board_overlay_asks_for_the_small_tflm_op_set_and_takes_a_feature_already_off(tmp_path):
     """Two things the firmware's larger TFLM library (2026-11) brought: boards that fit only
     with MICROPY_PY_ML_TFLM_SMALL, and a board whose stock config already ships a feature
