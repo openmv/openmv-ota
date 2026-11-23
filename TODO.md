@@ -149,6 +149,14 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 14 (host): **a decision**: a project's `keys/` may be a link to a directory (keys
+    kept on another volume), so a project someone else made can point it at another
+    project's keys, which a build then signs with and `keys rotate` rewrites; requiring the
+    link to stay inside the project would close it and end that use. Also: `flash register --token` sends the
+    token it is given to the server the project names (only the saved one is held back);
+    `project setup` reuses a cached checkout without checking its HEAD is the locked commit (the build's
+    drift check catches it); a tracked file name that is not UTF-8, and a lock or manifest
+    field of the wrong type, end in a traceback.
   - Round 12 (device, host), each needs a bench: the STM32 stub reads the four places of
     the flash key in one call, so a word torn in the first (power cut while it was
     programmed) fails the read of all four; the RT1062 fuse key's plausibility is checked

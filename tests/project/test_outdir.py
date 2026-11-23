@@ -66,7 +66,12 @@ def test_a_project_s_own_files_are_not_links(tmp_path):
     (ok / "keys").mkdir(parents=True)
     (ok / "keys" / "private").symlink_to(elsewhere)                # where keys are kept: the user's
     (ok / "firmware").symlink_to(elsewhere)                        # ...and a checkout beside it
+    (ok / ".#openmv-ota.toml").symlink_to("someone@host.1234")     # an editor's lock
     check_project(ok)
+    (ok / "app").symlink_to(elsewhere)                             # packed whole: not a link
+    with pytest.raises(ProjectError, match="app is a link"):
+        check_project(ok)
+    (ok / "app").unlink()
     check_project(tmp_path / "not-there")
     (ok / "factory").mkdir()
     assert output_dir(ok, ok / "factory") == ok / "factory"

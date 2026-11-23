@@ -7,6 +7,10 @@ from pathlib import Path
 
 from .errors import ProjectError
 
+# The project's directories that are read into an image: one of them as a link to another
+# directory packs that directory, whatever it holds.
+_PACKED = ("app", "app-coprocessor", "device", "certs")
+
 _MSG = "%s is a link: a project's files are its own -- remove it"
 
 
@@ -28,12 +32,16 @@ def check_project(root: str | Path, error: type = ProjectError) -> None:
     The project may be one someone else made. A file of it that is a link (the lock, the
     ledger, a key file, anything in ``build/``) sends a write to whatever it names, with
     content the project chose, or packs what it names into an image that is then signed and
-    published. ``app/`` is checked where it is staged."""
+    published. What is in ``app/`` is checked where it is staged; the directories that are
+    packed whole are not links themselves."""
     root = Path(root)
     found = []
     if root.is_dir():
         with os.scandir(root) as entries:
-            found = [Path(e.path) for e in entries if e.is_symlink() and not e.is_dir()]
+            # (an editor's lock beside a file it has open is a link that names no file)
+            found = [Path(e.path) for e in entries if e.is_symlink()
+                     and not e.name.startswith(".#")
+                     and (e.name in _PACKED or not e.is_dir())]
     for name, files_only in ((".openmv-ota", False), ("build", False), ("keys", True)):
         found += _links(root / name, files_only)
     if found:

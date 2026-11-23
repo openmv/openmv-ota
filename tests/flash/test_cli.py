@@ -222,8 +222,10 @@ def test_a_saved_token_is_not_sent_to_the_server_a_project_names(tmp_path, monke
 
     with pytest.raises(FlashError, match="saved token is for https://mine"):
         check()
+    with pytest.raises(FlashError, match="saved token is for https://mine"):
+        check(token="saved")                                               # the same one, typed
     assert check(server="https://theirs").server_url == "https://theirs"   # said on purpose
-    assert check(token="other").token == "other"
+    assert check(token="other").token == "other"                           # given for this run
     named["url"] = "https://mine/"
     assert check().token == "saved"
     named["url"] = ""

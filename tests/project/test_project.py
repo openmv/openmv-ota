@@ -748,6 +748,34 @@ def test_setup_lock_no_remote(tmp_path, make_firmware, make_sdk):
         proj.setup_project(root, cache_override=str(tmp_path / "c"), sdk_home_override=None, install_sdk=False)
 
 
+def test_setup_takes_a_commit_hash_and_a_project_without_links(tmp_path, make_firmware, make_sdk):
+    """`project setup` is the first command run on a project someone else made. The lock's
+    commit names the cache directory, so it is a hash before it is a path; and the file
+    setup writes is not a link to a file of the user's."""
+    root, _ = _create(tmp_path, make_firmware, make_sdk)
+    paths = proj.ProjectPaths(root)
+    locked = lock_mod.read(paths.lock)
+    good = locked.firmware["commit"]
+    cache = tmp_path / "c" / "deep"
+    for bad in ("../../../vic", good[:12], 7):
+        locked.firmware["commit"] = bad
+        lock_mod.write(paths.lock, locked)
+        with pytest.raises(ProjectError, match="not a commit hash"):
+            proj.setup_project(root, cache_override=str(cache), sdk_home_override=None,
+                               install_sdk=False)
+    assert not (tmp_path / "c").exists()
+    locked.firmware["commit"] = good
+    lock_mod.write(paths.lock, locked)
+    mine = tmp_path / "mine"
+    mine.write_text("mine")
+    paths.local.unlink(missing_ok=True)
+    paths.local.symlink_to(mine)
+    with pytest.raises(ProjectError, match="is a link"):
+        proj.setup_project(root, cache_override=str(cache), sdk_home_override=None,
+                           install_sdk=False)
+    assert mine.read_text() == "mine"
+
+
 # --- load API ---------------------------------------------------------------
 
 def test_load_project(tmp_path, make_firmware, make_sdk):

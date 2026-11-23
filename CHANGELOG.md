@@ -236,7 +236,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   git fetches nothing to read a tree (a partial clone's config names the program that
   would). A project with a link where the tools write or read back is refused by every
   command: a file at its top level (the lock), anything in `build/` or `.openmv-ota/`, a
-  file in `keys/`, an output directory named inside it. A history file with a line that is
+  file in `keys/`, an output directory named inside it, and `app/`, `app-coprocessor/`,
+  `device/` or `certs/` itself (each is packed whole). `project setup` takes the lock's
+  commit as a hash before it names the cache directory. A history file with a line that is
   not an event still reads.
 - **`flash register` does not send the saved token to a server the project names.** The
   project's `server_url` came ahead of the saved profile's while the token came from the

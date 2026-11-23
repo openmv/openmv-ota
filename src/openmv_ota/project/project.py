@@ -28,6 +28,7 @@ from . import (
 )
 from .config import LOCAL_NAME, OtaConfig
 from .errors import ProjectError
+from .outdir import check_project
 from .resolve import firmware as fw_res
 from .resolve import micropython as mp_res
 from .resolve import sdk as sdk_res
@@ -1241,11 +1242,16 @@ def setup_project(
     """Reconstruct the pinned checkout + SDK from the committed lock; write the
     local file. Returns the firmware checkout path."""
     paths = ProjectPaths(root)
+    check_project(paths.root)        # the first command run on a project someone else made
     locked = lock_mod.read(paths.lock)
     fw = locked.firmware
     remote, commit = fw.get("remote"), fw.get("commit")
     if not remote or not commit:
         raise ProjectError("lock has no firmware remote/commit to clone from")
+    if not (isinstance(remote, str) and isinstance(commit, str)
+            and re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", commit)):
+        # before it names the cache directory: a path there is a directory of the user's
+        raise ProjectError("the lock's firmware commit is not a commit hash: %r" % (commit,))
 
     dest = cache.firmware_clone_dir(commit, cache_override)
     if not gitrepo.is_git_repo(dest):
