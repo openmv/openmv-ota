@@ -242,11 +242,13 @@ _RECV_POLL_MS = 20
 # STM32H7's internal flash keeps an ECC per 32 bytes, so the head is never part of an
 # earlier program -- the first chunk is written from this offset on.
 _HEAD = 32
-# The slowest link a download is waited on: 1 KB/s. An install's download may take this long,
-# plus a millisecond per byte OF THE IMAGE it has delivered; past that it is dropped like a dead
-# link. By the clock, and for the image's bytes alone: counted in waits and for every byte
-# received, a server kept it open with what is not image -- chunk framing, headers, a
-# reconnect per byte -- for as long as it liked.
+# The slowest install a download is waited on: 1 KB/s. From the moment its download opens an
+# install may take this long, plus a millisecond per byte OF THE IMAGE IT HAS WRITTEN (the write
+# loop adds them); past that the download is dropped like a dead link. By the clock, and for the
+# image alone: counted in waits and for every byte received, a server kept it open with what is
+# not image -- chunk framing, headers, a reconnect per byte, a stream that inflates to nothing --
+# for as long as it liked. And for the image as written, not as sent: a delta is a few KB that
+# become megabytes of flash writes, and those take the camera's time, not the link's.
 _SLOW_MS = 60000
 # [the tick the count began, the ms allowed since]. Shared by every connection of one install
 # (a reconnect does not start a fresh minute), and never more than two minutes ahead of the
@@ -1400,6 +1402,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
             if rb != (chunk if k == n - w else chunk[:k]):
                 raise OSError("write verify failed at %d" % off)
         off += n
+        _slack_add(n)                                # the image's bytes buy the download its time
         feed()
         since_gc += n
         n = 0                                        # the next chunk is read, not primed
@@ -1606,8 +1609,7 @@ class _ResumingBody(io.IOBase):
     after which a resume gets a 404 and fails cleanly.
     """
 
-    def __init__(self, url, ca_pem, socket, ssl, feed, sock, body, limit=None):
-        self._limit = limit      # the most bytes the image's download can be
+    def __init__(self, url, ca_pem, socket, ssl, feed, sock, body):
         self._url, self._ca = url, ca_pem
         self._socket, self._ssl, self._feed = socket, ssl, feed
         self._sock, self._body = sock, body
@@ -1624,18 +1626,13 @@ class _ResumingBody(io.IOBase):
             self._pos += n
             if n:
                 self._stalls = 0                      # forward progress -> the budget resets
-                _slack_add(n)                         # the image's bytes buy the download its time
-                if self._limit is not None and self._pos > self._limit:
-                    # a stream with no end (blocks that inflate to nothing) is still a
-                    # download at any rate, and never returns to the size check
-                    raise ValueError("download larger than any image")
             return n
 
     def _reopen(self, err):
         """Replace the dead connection with a Range request at the current offset."""
         self._stalls += 1
-        if self._stalls > _RESUME_MAX_STALLS:         # no new bytes across N re-opens -> stuck
-            raise err
+        if self._stalls > _RESUME_MAX_STALLS or ticks_diff(ticks_ms(), _SLACK[0]) > _SLACK[1]:
+            raise err                                 # stuck (no new bytes across N re-opens), or out of time
         try:
             self._sock.close()
         except Exception:
@@ -1770,7 +1767,7 @@ def _decrypting(body, enc, payload_keys, aes, content_key=None):
                     binascii.unhexlify(enc["iv"]), size, aes)
 
 
-def _open_body(image_url, ca_pem, socket, ssl, feed, limit=None):
+def _open_body(image_url, ca_pem, socket, ssl, feed):
     """The image byte stream ``DeflateIO`` will decompress: for an on-disk image a plain
     file object (already a C-level stream, and file reads don't drop -- no resume
     wrapper), else the HTTPS body wrapped so a dropped connection resumes at the
@@ -1778,7 +1775,7 @@ def _open_body(image_url, ca_pem, socket, ssl, feed, limit=None):
     if _is_path(image_url):
         return open(image_url, "rb")
     sock, raw_body = _open(image_url, ca_pem, socket, ssl, feed)  # pragma: no cover  # hil-residual: HTTPS body open, relocated verbatim from run(); witnessed by install.download on every bench install leg
-    return _ResumingBody(image_url, ca_pem, socket, ssl, feed, sock, raw_body, limit)  # pragma: no cover  # hil-residual: the resume wrapper, relocated verbatim from run(); its resume path is exercised by the bench drop/resume scenario
+    return _ResumingBody(image_url, ca_pem, socket, ssl, feed, sock, raw_body)  # pragma: no cover  # hil-residual: the resume wrapper, relocated verbatim from run(); its resume path is exercised by the bench drop/resume scenario
 
 
 def _lockbox_key(lockbox, enc, se=None):
@@ -2593,7 +2590,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
         # The retry cleanup closes the BODY: for HTTPS the body owns whichever socket is live
         # after a resume (closing the original would leak the newer one -- see _ResumingBody);
         # for an on-disk image it is simply the open file.
-        body = _open_body(image_url, ca_pem, socket, ssl, feed, 2 * slot_size)
+        body = _open_body(image_url, ca_pem, socket, ssl, feed)
         if enc:
             # Decrypt UNDER the decompressor and OVER the resume: what arrives is
             # ciphertext, what DeflateIO sees is the gzip stream, and a dropped link
@@ -2668,6 +2665,8 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                 body, source, repr_marker = open_chain()  # hil-residual: classic (file) legs only, and those boards have no coverage UART, so no bench print can witness this arm; proven by the M4 bench soak (file_full) and the host tests of _fill/_install_stream(primed=)
                 primed = _fill(source, memoryview(work),  # hil-residual: same arm (classic-only, no coverage UART); the primed first chunk is host-tested in test_install_stream_takes_a_primed_first_chunk
                                _CHUNK if slot_size >= _CHUNK else slot_size, feed)
+                if primed < (_CHUNK if slot_size >= _CHUNK else slot_size):  # hil-residual: same arm
+                    raise ValueError("image file is short")  # hil-residual: same arm; before the erase, where it costs nothing (after it, a single-image board was left with no image)
                 log.debug("install: primed")          # first chunk in RAM, nothing erased yet  # hil-residual: same arm; a print, but not a fleet marker (no classic board can deliver one)
             if not erased and not from_file and not _heap_fits(_window_bytes(wbits)):
                 # Pre-erase, so it raises to the app like any other pre-flight failure (/rom

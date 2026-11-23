@@ -451,23 +451,36 @@ def test_a_reconnect_does_not_buy_another_minute_and_a_fast_start_not_an_hour(cl
     assert fast[1] == 2 * slow                               # ...is two minutes of patience, no more
 
 
-def test_the_images_bytes_keep_a_slow_download_and_no_download_is_endless(clock, monkeypatch):
-    """What the decoder is handed is what counts: 1 KB every 20 ms is 50 KB/s, and the allowance
-    only grows. And a body is at most ``limit`` bytes: a stream of blocks that inflate to
-    nothing never comes back to the size check, at any rate."""
-    class _Slow:
-        def readinto(self, buf):
-            clock[0] += 20
-            return 1024
+def test_what_an_install_writes_buys_its_download_time_not_what_it_was_sent(clock):
+    """A delta is a few KB that become megabytes of writes. Credited for the bytes received,
+    an install that took the camera longer than a minute to write was dropped as a slow link,
+    on every attempt. The allowance grows with the image written, a millisecond a byte."""
+    block = 4096
+    front = 64 * block
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    real = flash.write
 
+    def write(off, data):
+        clock[0] += 1500                                     # 2.7 KB/s of flash: 96 s in all
+        real(off, data)
+    image = bytes(range(256)) * (front // 256 - 2 * 16) + b"\xff" * (2 * block)
     inst("_slack_start")()
-    rb = inst("_ResumingBody")("u", None, None, None, lambda: None, None, _Slow(), 4096 * 1024)
-    for _ in range(4096):                                    # 4 MB over 82 s
-        assert rb.readinto(bytearray(1024)) == 1024
+    inst("_install_stream")(_SourceOf(image), write, flash.readback, front, block, _noop,
+                            None, None, None, None, bytearray(block), None, 0)
     s = inst("_SLACK")
     assert clock[0] - s[0] > inst("_SLOW_MS") and clock[0] - s[0] < s[1]
-    with pytest.raises(ValueError, match="larger than any image"):
-        rb.readinto(bytearray(1024))
+
+
+def test_a_download_that_is_out_of_time_is_not_reconnected(clock, monkeypatch):
+    opened = []
+    monkeypatch.setattr(_mod, "_open", lambda *a, **k: opened.append(1))
+    rb = inst("_ResumingBody")("u", None, None, None, lambda: None, None, None)
+    inst("_slack_start")()
+    clock[0] += inst("_SLOW_MS") + 1
+    with pytest.raises(OSError, match="recv timed out"):
+        rb._reopen(OSError("recv timed out"))
+    assert opened == []
 
 
 # --- _ResumingBody: surviving a link that drops mid-download -------------------------------

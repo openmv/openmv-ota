@@ -78,3 +78,12 @@ def test_history_never_fails_the_operation_it_records(tmp_path):
         f.write(b'["a list"]\n\xff\xfe not utf-8\n')
     events = history.read(tmp_path)
     assert [e["action"] for e in events] == ["x"] and "set" in events[0]["odd"]
+
+
+def test_a_linked_history_file_is_not_read_either(tmp_path):
+    target = tmp_path / "elsewhere.txt"
+    target.write_text('{"action": "theirs", "ts": "t"}\n')
+    path = history.history_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+    assert history.read(tmp_path) == []

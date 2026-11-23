@@ -156,7 +156,11 @@ budget for now; these are the free/cheap passes to run first, in order.
     so building a project someone else made runs their code; taking those two from the
     machine's own config, or asking on first use, would close it. A signed image that ships
     a module named as a firmware one (`openmv_se`, `logging`) is imported ahead of it. The
-    download cap is twice the slot, not the manifest's signed size. The N6 stub's flash
+    connect and the TLS handshake are outside the download's rate floor and block: a peer
+    that drips its handshake holds the installer, and every check-in, until the watchdog
+    (a non-blocking handshake under the same clock, on every port). On boards that do not
+    verify TLS the server's `Date` still sets the clock. `openmv-ota history` prints a
+    file's fields as they are. The N6 stub's flash
     reads and writes have no range checks of their own, a failed re-map leaves the part in
     octal mode, and the prescaler rounds down; the H7 stub retries a dead QSPI part on
     every call. A resumed download's `Content-Range` is not compared with what was asked.
