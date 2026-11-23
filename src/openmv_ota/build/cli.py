@@ -21,8 +21,6 @@ from pathlib import Path
 from openmv_ota.project import history
 
 from . import romfs as build_mod
-from openmv_ota.project.outdir import output_dir
-
 from .errors import BuildError
 
 
@@ -222,12 +220,8 @@ def cmd_sbom(args: argparse.Namespace) -> int:
     if args.output == "-":
         sys.stdout.write(text)
         return 0
-    try:
-        out = Path(args.output) if args.output \
-            else output_dir(args.project, None, BuildError) / SBOM_NAME
-    except BuildError as e:
-        print("error: %s" % e, file=sys.stderr)
-        return e.exit_code
+    # (rendering loaded the project, which refuses one with a link in its build/)
+    out = Path(args.output) if args.output else Path(args.project) / "build" / SBOM_NAME
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     n = text.count('"bom-ref"')
