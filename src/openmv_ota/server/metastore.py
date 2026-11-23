@@ -570,8 +570,9 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE devices ADD COLUMN audit_count INTEGER NOT NULL DEFAULT 0",
     ],
     [   # v42 -- a payload version is 32 bits unsigned (major << 24, major up to 255): Postgres'
-        # INTEGER holds 31. The two registration columns are no longer read: they held the
-        # product a camera had left, from when a check-in naming another product was refused.
+        # INTEGER holds 31. prev_product_id is no longer read (the product a camera had left,
+        # from when a check-in naming another product was refused); product_mismatch_at is
+        # when a camera's change of product was last audited (note_product_mismatch).
         "ALTER TABLE device_registrations ADD COLUMN prev_product_id BIGINT",
         "ALTER TABLE device_registrations ADD COLUMN product_mismatch_at TEXT",
         "-- postgres: ALTER TABLE devices ALTER COLUMN current_payload_version TYPE BIGINT",
@@ -585,7 +586,7 @@ _MIGRATIONS: list[list[str]] = [
 ]
 
 # How long after one refused check-in is audited the next one from the same camera is (see
-# note_refused_checkin).
+# note_refused_checkin); a camera changing product by itself likewise.
 REFUSAL_AUDIT_EVERY_S = 24 * 3600
 # Audit rows one camera's own reports can cause in a UTC day (audit_budget): its fallbacks, its
 # boot stub's journal entries, its failed installs. Generous for a camera having a bad day
@@ -593,8 +594,10 @@ REFUSAL_AUDIT_EVERY_S = 24 * 3600
 DEVICE_AUDIT_PER_DAY = 48
 
 
-def _a_day_since(when: str) -> bool:
-    """Whether ``when`` (an ISO time this store wrote) is a day ago."""
+def _a_day_since(when: str | None) -> bool:
+    """Whether ``when`` (an ISO time this store wrote, or None for never) is a day ago."""
+    if not when:
+        return True
     age = datetime.now(timezone.utc) - datetime.fromisoformat(when)
     return age.total_seconds() >= REFUSAL_AUDIT_EVERY_S
 
@@ -1938,6 +1941,17 @@ class SqlMetadataStore:
             "ELSE 1 END, audit_day = ? WHERE device_id = ? AND "
             "(audit_day IS NULL OR audit_day <> ? OR audit_count < ?)",
             (today, today, device_id, today, DEVICE_AUDIT_PER_DAY)).rowcount == 1
+
+    def note_product_mismatch(self, device_id: str) -> bool:
+        """A registered camera changed product without being sent. True when it is news (the
+        first, or the first in a day), and noted as audited from now."""
+        row = self.query_one("SELECT product_mismatch_at FROM device_registrations "
+                             "WHERE device_id = ?", (device_id,))
+        if row is None or not _a_day_since(_d(row)["product_mismatch_at"]):
+            return False
+        self.execute("UPDATE device_registrations SET product_mismatch_at = ? "
+                     "WHERE device_id = ?", (_now_iso(), device_id))
+        return True
 
     def delete_registration(self, device_id: str) -> dict | None:
         """Release a camera: drop its registration, the account binding registering made, and its

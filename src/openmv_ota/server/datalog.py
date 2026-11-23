@@ -2,8 +2,8 @@
 
 The datalake (openmv-cloud ``services/datalake``) verifies ``ingest`` tokens
 whose subject is ``"{account}/{product}/{device}"`` -- the account and the product
-ride INSIDE the MAC, so a device can neither attribute its data to another account
-nor file it under another product (the product is what lets the datalake answer
+ride INSIDE the MAC, so a grant cannot be used for another account or another product
+than the one the check-in was filed under (the product is what lets the datalake answer
 for a whole product's devices at once). This module is the minting
 side; it shares Live's token FORMAT (:func:`openmv_ota.server.live.mint_token`)
 but signs with the datalake's OWN secret -- the two integrations are deliberately

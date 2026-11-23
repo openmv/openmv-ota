@@ -108,7 +108,7 @@ serves:
 |---|---|
 | `OPENMV_LIVE_RELAY_URL` + `OPENMV_LIVE_TOKEN_SECRET` | when both are set, every registered device's check-in answer carries a `live` grant: ready-made per-stream URLs (WebSocket push + a deep-sleep wake poll) under one expiring device token, renewed each check-in |
 | `OPENMV_OTA_LIVE_TOKEN_TTL` | Live grant lifetime (default 24 h) |
-| `OPENMV_DATALAKE_URL` + `OPENMV_DATALAKE_TOKEN_SECRET` | when both are set, check-ins also carry an `ingest` grant: an ingest URL + token whose subject binds the *account* and the *product*, so a device can neither attribute data to another tenant nor file it under another product (the product is what lets the datalake answer for a whole product's devices at once). Deliberately its **own** secret — the two integrations rotate and fail independently |
+| `OPENMV_DATALAKE_URL` + `OPENMV_DATALAKE_TOKEN_SECRET` | when both are set, check-ins also carry an `ingest` grant: an ingest URL + token whose subject binds the *account* and the *product*, so a grant cannot be used for another tenant, or for a product other than the one the check-in was filed under (the product is what lets the datalake answer for a whole product's devices at once). Deliberately its **own** secret — the two integrations rotate and fail independently |
 | `OPENMV_OTA_DATALAKE_TOKEN_TTL` | ingest grant lifetime (default 24 h) |
 | `OPENMV_OTA_WEBHOOK_INTERVAL_S` | how often the in-process worker sends queued webhook deliveries (default 0: no worker, nothing is sent; OpenMV's deployment uses 15). Deliveries are leased per attempt, so several processes are safe |
 | `OPENMV_OTA_WEBHOOK_TIMEOUT_S` | how long a receiver has to answer 2xx (default 10) |
