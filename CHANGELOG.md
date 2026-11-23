@@ -170,6 +170,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A download slower than 1 KB/s is dropped.** The installer's reader timed out only when a
+  connection went silent for 30 seconds, so a server that dripped a byte at a time held the
+  installer, and stopped the app, for as long as it kept sending. A connection now gets a
+  minute of waiting plus a millisecond for every byte it delivers; past that it fails like a
+  dead link. Time spent writing flash does not count.
+
 - **The product rule lets a legitimate camera through.** Three cases it turned away, found
   in review before a release. A move that fails its trial: the camera reverts to the image
   it had and reports that image's product, so the product it left stays open to it until

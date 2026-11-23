@@ -99,13 +99,8 @@ budget for now; these are the free/cheap passes to run first, in order.
     worker for as long as it keeps sending.
   - `flash register`: a malformed identity line from the USB device is a traceback, and its
     error text is printed with control characters.
-  - No overall deadline on a download: the installer's reader times out per receive and
-    feeds the watchdog on progress, so a manifest or an image dripped a byte at a time
-    keeps the installer (and so stops the app) for as long as the server sends. The check-in
-    answer has a deadline now; a download needs a floor on its rate, and that number
-    depends on the slowest link a camera is expected to update over. Recovery's check-in
-    uses the same reader. The cloud SDK's `poll_watch` and `_ws_connect` read header
-    lines with an unbounded asyncio `readline()`.
+  - The cloud SDK's `poll_watch` and `_ws_connect` read header lines with an unbounded
+    asyncio `readline()`.
   - The check-in's `Date` header sets the clock with no upper bound; a far-future date
     fails TLS until NTP corrects it (up to six hours).
   - A `manage` token can admin-bind a camera id nobody registered; the owner's registration
