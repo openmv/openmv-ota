@@ -173,6 +173,7 @@ def make_firmware(tmp_path):
             firm_addr[b] = "OMV_FIRM_ADDR=0x08040000\n"
         for board, content in (("OPENMV_N6", N6_BOARD), ("OPENMV_AE3", AE3_BOARD),
                                ("OPENMV_RT1060", RT_BOARD),
+                               ("OPENMV2", H7_BOARD),
                                ("OPENMV4", H7_BOARD), ("OPENMV4P", H7P_BOARD),
                                ("OPENMVPT", H7P_BOARD), ("ARDUINO_PORTENTA_H7", ARDUINO_BOARD),
                                ("ARDUINO_GIGA", ARDUINO_BOARD),
@@ -190,6 +191,10 @@ def make_firmware(tmp_path):
                     "#define IMLIB_ENABLE_BARCODES\n#define IMLIB_ENABLE_FIND_DISPLACEMENT\n"
                     "#define IMLIB_ENABLE_FIND_LBP\n#define IMLIB_ENABLE_LINPOLAR\n"
                     "#define IMLIB_ENABLE_LOGPOLAR\n#define IMLIB_ENABLE_GET_SIMILARITY\n#endif\n")
+            if board == "OPENMV2":       # 88 bytes short as an OTA firmware
+                (d / "imlib_config.h").write_text(
+                    "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"
+                    "#define IMLIB_ENABLE_LENS_CORR\n#endif\n")
             if board in ("OPENMV4P", "OPENMVPT"):   # the LAB LUT moves to the second region;
                 (d / "imlib_config.h").write_text(   # the H7 Plus also drops datamatrices
                     "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"

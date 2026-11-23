@@ -1658,6 +1658,23 @@ def test_h7_ota_build_refuses_an_app_that_calls_a_dropped_method(make_project):
     assert "main.py:2" not in msg and "main.py:3" not in msg
 
 
+def test_dropped_method_scan_catches_a_method_taken_without_a_call(tmp_path):
+    """`f = img.lens_corr` raises on the camera at the lookup, so it is refused like a call;
+    the app's own function of that name is not the image method."""
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "main.py").write_text(
+        "def lens_corr(x):\n    return x\n"            # line 1: the app's own function
+        "fix = img.lens_corr\n"                         # line 3: the method, not called here
+        "img.lens_corr(1.8)\n")                         # line 4: the plain call
+    with pytest.raises(BuildError) as ei:
+        build_mod._refuse_dropped_calls(app, "OPENMV2")
+    msg = str(ei.value)
+    assert "OPENMV2's OTA firmware does not carry lens_corr()" in msg
+    assert "main.py:3: lens_corr()" in msg and "main.py:4: lens_corr()" in msg
+    assert "main.py:1" not in msg
+
+
 def test_dropped_method_scan_skips_what_it_cannot_tokenize(tmp_path):
     app = tmp_path / "app"
     app.mkdir()

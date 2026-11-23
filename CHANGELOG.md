@@ -417,6 +417,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The OpenMV Cam M4's OTA firmware drops `lens_corr()`.** Its 832 KB code region was 88
+  bytes short once the boot script reset the import path. With it off the firmware has
+  about 1.7 KB; `build romfs` refuses an M4 app that calls it.
+- **`build romfs` refuses a dropped image method that is taken without being called.**
+  `fix = img.find_barcodes` raises on the camera at the lookup, and the check only looked
+  for calls. The app's own `def` of the same name is no longer mistaken for one.
+
 - **The OpenMV Cam H7's OTA firmware drops `linpolar()`, `logpolar()` and
   `get_similarity()`.** It was 704 bytes from the top of its flash, and the installer and
   boot fixes in this release are more than that. With the three off it has about 5 KB.

@@ -42,10 +42,12 @@ An OTA project's app is also checked against what its board's OTA firmware carri
 the OpenMV Cam H7 the OTA firmware has no `find_barcodes()`, `find_datamatrices()`,
 `find_displacement()`, `find_lbp()`, `linpolar()`, `logpolar()` or `get_similarity()`, and on
 the OpenMV Cam H7 Plus and the OpenMV Cam M7
-it has no `find_datamatrices()`
+it has no `find_datamatrices()`, and on the OpenMV Cam M4 it has no `lens_corr()`
 ([Factory & firmware](07-factory-and-firmware.md#build-firmware)), so an app that calls
 any of them is refused here, with the file and line, instead of raising on the camera the
-first time a frame reaches that call. A mention in a comment or a string is not a call.
+first time a frame reaches that call. Taking the method without calling it
+(`fix = img.lens_corr`) is refused the same way. A mention in a comment or a string is
+not a call.
 
 The pegged firmware checkout must match the lock and be clean. The app is
 compiled with that checkout's own tools — the `.mpy` bytecode must match the

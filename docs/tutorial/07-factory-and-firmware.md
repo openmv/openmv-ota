@@ -140,7 +140,8 @@ The project's OTA flag steers the build automatically:
   on the camera. The **OpenMV Cam H7 Plus** (`OPENMV4P`) is one step behind: its stock
   firmware already fills both code regions, so its OTA firmware turns off
   `find_datamatrices()` alone, the same way, and so does the **OpenMV Cam M7**'s
-  (`OPENMV3`).
+  (`OPENMV3`). The **OpenMV Cam M4**'s (`OPENMV2`) turns off `lens_corr()`: its 832 KB
+  code region was 88 bytes short.
 
   On five boards the OTA firmware is also built with the firmware's small TensorFlow
   Lite Micro op set (`MICROPY_PY_ML_TFLM_SMALL`): the OpenMV Cam M7, the H7 Plus, the
