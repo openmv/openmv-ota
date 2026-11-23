@@ -147,6 +147,9 @@ def test_new_force_warns_key_regeneration(tmp_path, make_firmware, make_sdk, cap
     (root / "openmv-ota.toml").write_text("")
     rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", "--force", repo=repo)
     assert rc == 1 and "pass --new-keys" in capsys.readouterr().err
+    (root / "openmv-ota.toml").unlink()                         # ...or no config at all
+    rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", repo=repo)
+    assert rc == 1 and "pass --new-keys" in capsys.readouterr().err
 
 
 # --- keys backup / restore ---------------------------------------------------
