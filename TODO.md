@@ -151,6 +151,11 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 8 (host): `project new --force --ota` in a project that has keys replaces the
+    roots, the signing keys, the payload keys and the key backup, and says so only in a
+    warning afterwards; a fleet in the field can then no longer be updated. Wants its own
+    flag, and a backup that is never overwritten. `flash factory` takes `SE-NONE` from a
+    board that declares a secure element.
   - Round 7 (server): "is it news" checks are read-then-write, so a burst can audit a few rows
     instead of one; registration's device-limit check is check-then-write; an unsigned
     check-in naming a registered camera with a sealed release pending is one keykeeper

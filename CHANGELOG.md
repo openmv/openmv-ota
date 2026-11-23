@@ -177,15 +177,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   installer programs an image as it arrives, before its hash can refuse it. A stream that
   was not the signed image, left on flash by a failed or interrupted install, was mounted
   on the next boot and its `os.py` ran ahead of every signature check. The installer now
-  holds back the image's first 16 bytes (the ROMFS magic is in them) and writes them only
-  after the whole image is on flash, read back and hashed.
+  holds back the image's first 32 bytes (the ROMFS magic is in them; a whole flash word
+  on the H7's internal flash, where a word is programmed once) and writes them only after
+  the whole image is on flash, read back and hashed.
+- **The rollback floors are back on flash before the download is opened.** On a
+  single-image board the erase destroys the only copy of the anti-rollback floor and the
+  certificate-epoch floor, and they were carried into the slot only once the download was
+  open. Someone on the path who refused that connection three times reset the camera with
+  neither, and recovery then accepted any old signed release, or one under a retired key.
+  They are written straight after the erase.
+- **The boot stub's log ring checks its length.** The ring survives a reset in RAM the app
+  can write; a length past the buffer made the stub write there before any slot was
+  verified.
 - **A manifest is signed by an OTA key.** A factory key's certificate was accepted on a
   manifest; it is refused like any key the camera does not trust.
 - **A download slower than 1 KB/s is dropped.** The installer's reader timed out only when a
   connection went silent for 30 seconds, so a server that dripped a byte at a time held the
   installer, and stopped the app, for as long as it kept sending. A connection now gets a
   minute of waiting plus a millisecond for every byte it delivers, two minutes at most;
-  past that it fails like a dead link. The budget is one for the whole install, however
+  past that it fails like a dead link. The budget is one for an install attempt, however
   many times the download reconnects. Time spent writing flash does not count.
 
 - **A payload version is 32 bits.** A major up to 255, not 31 bits: check-ins accept it and

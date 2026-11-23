@@ -237,9 +237,11 @@ _SOCK_TIMEOUT = 30
 # feeding the watchdog each slice, so it must stay WELL under the watchdog window (~100 ms) -> a few
 # feeds per window. Only matters when a watchdog is armed; a fast recv returns the moment data arrives.
 _RECV_POLL_MS = 20
-# The image's first bytes, held back until the rest is on flash and hashed (_install_stream): one
-# flash write unit, and more than the ROMFS magic.
-_HEAD = 16
+# The image's first bytes, held back until the rest is on flash and hashed (_install_stream).
+# More than the ROMFS magic, and a whole flash word where words are programmed once: the
+# STM32H7's internal flash keeps an ECC per 32 bytes, so the head is never part of an
+# earlier program -- the first chunk is written from this offset on.
+_HEAD = 32
 # The slowest link a download is waited on: 1 KB/s. A connection may spend this long waiting for
 # data, plus a millisecond per byte it has delivered; past that it is dropped like a dead one. Only
 # the waiting counts (not the flash writes between reads), so the number is the link's alone.
@@ -1212,10 +1214,55 @@ def _fill(source, mv, want, feed):
     return n
 
 
+def _prepare_slot(write, readback, slot_size, block, feed, floor=0, epoch=0):
+    """Confirm the caller's erase took, then carry the anti-rollback floor and the
+    certificate-epoch floor into the blank slot. run() calls this straight after the erase,
+    BEFORE it opens the download: the erase may have destroyed the only copy of both (a
+    single-image board), and opening a download is a DNS lookup, a TCP connect and a TLS
+    handshake that someone on the path can simply refuse. Three refusals reset the camera,
+    and recovery then read a floor of zero -- any old signed release, and any retired key,
+    was good again."""
+    off = 0
+    while off < slot_size:                          # confirm the caller's erase took
+        feed()                                       # FEED FIRST: the end-of-body feed leaves the
+        #                                              first iteration (and everything between the
+        #                                              arm and it) running on whatever is left of
+        #                                              the window -- which on the N6 is 100 ms.
+        n = _CHUNK if slot_size - off >= _CHUNK else slot_size - off
+        if not _is_blank(readback(off, n)):
+            raise OSError("erase verify failed at %d" % off)
+        off += n
+        feed()
+
+    if floor:
+        # CARRY THE ANTI-ROLLBACK FLOOR INTO THE NEW SLOT, FIRST -- before a single image byte,
+        # not in the arm sequence at the end. boot.py takes the floor as the max across slots,
+        # which only stays monotonic if every install copies the current floor forward. In
+        # SINGLE mode the erase above just destroyed the only copy, so until this write lands
+        # the floor exists NOWHERE on flash -- a power cut in that window would hand recovery a
+        # floor of zero and re-admit any old signed release. Writing it here keeps that
+        # window to the blank-verify pass plus one verified program.
+        # (It cannot go before the blank verify: the verify would read it as a failed erase.)
+        entry = _rollback_entry(floor)
+        floor_at = slot_size - 2 * block + _FLOOR_OFF
+        write(floor_at, _pad(entry))
+        if readback(floor_at, len(entry)) != entry:
+            raise OSError("carried floor verify failed")
+        log.debug("install: floor carried")           # HIL path witness (every install, pre-download)
+    if epoch:
+        # The certificate-epoch floor, carried for the same reason into its own region.
+        entry = _rollback_entry(epoch)
+        epoch_at = slot_size - 2 * block + _EPOCH_OFF
+        write(epoch_at, _pad(entry))
+        if readback(epoch_at, len(entry)) != entry:
+            raise OSError("carried epoch verify failed")
+        log.debug("install: epoch carried")           # HIL path witness (installs on a certified fleet)
+
+
 def _install_stream(source, write, readback, slot_size, block, feed,
                     progress=None, expect_sha=None, repr_marker=None, gc_collect=None,
                     work=None, counter=None, floor=0, primed=0, epoch=0, crypt=None,
-                    crypt_size=0):
+                    crypt_size=0, prepared=False):
     """Stream the decompressed image into the ALREADY-ERASED TARGET slot 1:1
     (verifying every write by read-back, skipping already-erased 0xFF runs), then
     arm the trial.
@@ -1247,41 +1294,8 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     which representation was applied (REPR_FULL / REPR_DELTA) for status() to report. Raises on any
     size/hash mismatch or read-back miscompare; this runs after the erase, so the caller turns any
     exception into a reboot, after which boot.py picks the newest slot that still verifies."""
-    off = 0
-    while off < slot_size:                          # confirm the caller's erase took
-        feed()                                       # FEED FIRST: the end-of-body feed leaves the
-        #                                              first iteration (and everything between the
-        #                                              arm and it) running on whatever is left of
-        #                                              the window -- which on the N6 is 100 ms.
-        n = _CHUNK if slot_size - off >= _CHUNK else slot_size - off
-        if not _is_blank(readback(off, n)):
-            raise OSError("erase verify failed at %d" % off)
-        off += n
-        feed()
-
-    if floor:
-        # CARRY THE ANTI-ROLLBACK FLOOR INTO THE NEW SLOT, FIRST -- before a single image byte,
-        # not in the arm sequence at the end. boot.py takes the floor as the max across slots,
-        # which only stays monotonic if every install copies the current floor forward. In
-        # SINGLE mode the erase above just destroyed the only copy, so until this write lands
-        # the floor exists NOWHERE on flash -- a power cut in that window would hand recovery a
-        # floor of zero and re-admit any old signed release. Writing it here shrinks that
-        # window from the whole download to the blank-verify pass plus one verified program.
-        # (It cannot go before the blank verify: the verify would read it as a failed erase.)
-        entry = _rollback_entry(floor)
-        floor_at = slot_size - 2 * block + _FLOOR_OFF
-        write(floor_at, _pad(entry))
-        if readback(floor_at, len(entry)) != entry:
-            raise OSError("carried floor verify failed")
-        log.debug("install: floor carried")           # HIL path witness (every install, pre-download)
-    if epoch:
-        # The certificate-epoch floor, carried for the same reason into its own region.
-        entry = _rollback_entry(epoch)
-        epoch_at = slot_size - 2 * block + _EPOCH_OFF
-        write(epoch_at, _pad(entry))
-        if readback(epoch_at, len(entry)) != entry:
-            raise OSError("carried epoch verify failed")
-        log.debug("install: epoch carried")           # HIL path witness (installs on a certified fleet)
+    if not prepared:
+        _prepare_slot(write, readback, slot_size, block, feed, floor, epoch)
 
     # ENTER THE WRITE LOOP ON A FULL WINDOW. The two allocations below -- the sha256 state and the
     # 4 KiB write buffer -- can each trigger an AUTOMATIC collect, and on the N6's multi-MB heap any
@@ -1350,23 +1364,23 @@ def _install_stream(source, write, readback, slot_size, block, feed,
             # test below all see what the flash will hold. The pad after them stays blank.
             k = n if off + n <= crypt_size else crypt_size - off
             crypt(off, mv[:k])
+        w = 0
         if off == 0:  # hil-residual: every install's first chunk; no print of its own (the installer's budget on the M4), witnessed by `boot: mounted` after an install -- a slot whose head never landed is not one
-            k = n if n < _HEAD else _HEAD  # hil-residual: as the line above
-            head[:k] = chunk[:k]  # hil-residual: as above (after the cipher: what the flash will hold)
-            for i in range(k):  # hil-residual: as above
-                chunk[i] = 0xFF  # hil-residual: as above
+            w = n if n < _HEAD else _HEAD  # hil-residual: as the line above
+            head[:w] = chunk[:w]  # hil-residual: as above (after the cipher: what the flash will hold)
+            chunk = mv[w:n]  # hil-residual: as above -- the head's flash word is not touched until the end
         if not _is_blank(chunk):                     # erased regions are already 0xFF
             feed()                                   # the feed at the top of this iteration was
             #                                          spent by the recv + delta reconstruct above,
             #                                          and a page program also runs with interrupts
             #                                          disabled -- so feed again right before it
-            write(off, chunk)
-            rb = readback(off, n)                    # SHORT only at the very end of an XIP
+            write(off + w, chunk)
+            rb = readback(off + w, n - w)            # SHORT only at the very end of an XIP
             k = len(rb)                              # partition (see _XIP_TAIL_GUARD); every
             #                                          other port always returns the full n, so
             #                                          the slice below never runs on them and the
             #                                          common path stays allocation-free.
-            if rb != (chunk if k == n else chunk[:k]):
+            if rb != (chunk if k == n - w else chunk[:k]):
                 raise OSError("write verify failed at %d" % off)
         off += n
         feed()
@@ -2463,6 +2477,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                 return both  # hil-residual: same
         return base_read_at(base_off + off, n)  # hil-residual: bare return of the slot-relative base read
 
+    _SLACK[0] = _SLOW_MS   # this install's own minute (frozen, the module outlives an install)
     # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the
     # app (the target slot is untouched). Log the reason first: run() swallows this exception
     # (transient failures retry next poll), so without a line here a REJECTED update -- bad
@@ -2597,6 +2612,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
 
     for attempt in range(attempts):
         try:
+            _SLACK[0] = _SLOW_MS                      # each attempt starts with its minute
             # COLLECT BEFORE THE ERASE, under relax(). Everything above -- the TLS session, the
             # ~68 KiB installer exec'd into RAM, the manifest parse and verify -- has churned the
             # heap, so the very next allocation can trigger an AUTOMATIC gc.collect(). That is one
@@ -2636,6 +2652,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
             erased = True                             # from here on every failure reboots
             log.info("install: erasing %s (%d bytes) t=%d" % (target, slot_size, ticks_ms()))
             erase(target_off, slot_size)
+            _prepare_slot(write, readback, slot_size, block, feed, floor, epoch)
             if not from_file:
                 # ERASE FIRST, THEN OPEN THE DOWNLOAD -- see the commit-point comment above the loop:
                 # a socket left open across a multi-second erase goes idle and drops.
@@ -2659,7 +2676,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
             _install_stream(source, write, readback, slot_size, block, feed,
                             progress, expect_sha, repr_marker, gc_collect, work,
                             counter=counter, floor=floor, primed=primed, epoch=epoch,
-                            crypt=crypt, crypt_size=crypt_size)
+                            crypt=crypt, crypt_size=crypt_size, prepared=True)
             # Commit the write. On the XIP/ioctl ports this is rom_ioctl(5), the
             # WRITE_COMPLETE flush (mpremote's romfs deploy ends the same way): those
             # ports cache the final sub-page writes -- the trailer + arm markers -- and

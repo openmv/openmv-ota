@@ -18,7 +18,9 @@ typedef struct {
 static log_ring_t ring STUB_BUFFER_SMALL;
 
 static void ring_putc(char c) {
-    if (ring.magic != RING_MAGIC) {
+    // The ring survives a reset in RAM the app could write: a length past the buffer is
+    // not a ring, whatever its magic says.
+    if (ring.magic != RING_MAGIC || ring.len > RING_SIZE) {
         ring.magic = RING_MAGIC;
         ring.len = 0;
     }

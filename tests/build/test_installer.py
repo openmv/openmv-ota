@@ -1096,8 +1096,8 @@ def test_an_image_the_hash_refuses_never_gets_its_first_bytes():
     with pytest.raises(OSError, match="sha256 does not match"):
         inst("_install_stream")(_SourceOf(bytes(image)), flash.write, flash.readback, front,
                                 block, _noop, None, "00" * 32)
-    assert bytes(flash.mem[:16]) == b"\xff" * 16          # no magic: not a filesystem
-    assert bytes(flash.mem[16:64]) == bytes(range(17, 65))  # the rest landed as it arrived
+    assert bytes(flash.mem[:32]) == b"\xff" * 32          # no magic: not a filesystem
+    assert bytes(flash.mem[32:64]) == bytes(range(33, 65))  # the rest landed as it arrived
     assert bytes(flash.mem[100:104]) == b"BODY"
     # ...and one that is cut off mid-stream (a reset) has none either
     writes = []
@@ -1113,11 +1113,64 @@ def test_an_image_the_hash_refuses_never_gets_its_first_bytes():
     with pytest.raises(OSError, match="reset"):
         inst("_install_stream")(_SourceOf(bytes(image)), cut.write, cut.readback, front,
                                 block, _noop, None, hashlib.sha256(bytes(image)).hexdigest())
-    assert bytes(cut.mem[:16]) == b"\xff" * 16 and bytes(cut.mem[16:20]) == bytes(range(17, 21))
+    assert bytes(cut.mem[:32]) == b"\xff" * 32 and bytes(cut.mem[32:36]) == bytes(range(33, 37))
     # the image that IS the signed one is whole
     good = _run_install(bytes(image), front, block,
                         expect_sha=hashlib.sha256(bytes(image)).hexdigest())
     assert bytes(good.mem[:64]) == bytes(range(1, 65))
+
+
+def test_no_flash_word_is_programmed_twice_on_ecc_flash():
+    """The H7's internal flash keeps an ECC per 32-byte word: a word is programmed once. The
+    held-back head is a whole word, and the first chunk is written from past it."""
+    import hashlib
+    block, front = 4096, 4 * 4096
+    seen = set()
+
+    class OneShot(_FakeFlash):
+        def write(self, off, data):
+            assert off % 32 == 0 and len(data) % 32 == 0, (off, len(data))
+            words = set(range(off // 32, (off + len(data)) // 32))
+            assert not words & seen, sorted(words & seen)[:4]
+            seen.update(words)
+            super().write(off, data)
+    image = bytearray(b"\xff" * front)
+    image[:300] = bytes(range(1, 251)) + bytes(50)
+    flash = OneShot(front)
+    flash.erase(front)
+    mod = inst("_install_stream").__globals__
+    setter = mod["_set_stride"]
+    setter(32)
+    try:
+        inst("_install_stream")(_SourceOf(bytes(image)), flash.write, flash.readback, front,
+                                block, _noop, None, hashlib.sha256(bytes(image)).hexdigest(),
+                                inst("REPR_FULL"), None, None, 7, 3, 0, 2)
+    finally:
+        setter(16)
+    assert bytes(flash.mem[:300]) == bytes(image[:300])
+    assert (0, 32) in flash.writes and flash.writes[-1][0] == front - 2 * block   # head, then PENDING last
+
+
+def test_the_floors_are_on_flash_before_the_download_is_opened():
+    """_prepare_slot is what run() calls between the erase and opening the download: on a
+    single-image board the erase destroyed the only copy of both floors, and a download that
+    never opens must not leave the camera with none."""
+    block, front = 4096, 3 * 4096
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    inst("_prepare_slot")(flash.write, flash.readback, front, block, _noop, floor=5, epoch=2)
+    so = front - 2 * block
+    assert bytes(flash.mem[so + inst("_FLOOR_OFF"):so + inst("_FLOOR_OFF") + 16]) != b"\xff" * 16
+    assert bytes(flash.mem[so + inst("_EPOCH_OFF"):so + inst("_EPOCH_OFF") + 16]) != b"\xff" * 16
+    # ...and the stream then takes the slot as prepared: the entries are not a failed erase
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    inst("_install_stream")(_SourceOf(bytes(image)), flash.write, flash.readback, front, block,
+                            _noop, floor=5, epoch=2, prepared=True)
+    assert bytes(flash.mem[:4]) == b"DATA"
+    dirty = _FakeFlash(front)                                # an erase that did not take
+    with pytest.raises(OSError, match="erase verify failed"):
+        inst("_prepare_slot")(dirty.write, dirty.readback, front, block, _noop)
 
 
 def test_install_stream_checks_the_first_bytes_it_writes_last():
@@ -1125,7 +1178,7 @@ def test_install_stream_checks_the_first_bytes_it_writes_last():
 
     class DropHead(_FakeFlash):
         def write(self, off, data):
-            if off == 0 and len(data) == 16:
+            if off == 0:
                 return
             super().write(off, data)
     image = bytearray(b"\xff" * front)
@@ -1769,7 +1822,7 @@ def test_install_stream_write_verify_fails():
             self.mem[off:off + len(data)] = b"\x00" * len(data)  # corrupt the write
 
     image = bytearray(b"\xff" * front)
-    image[:24] = b"DATA" * 6                 # past the held-back first bytes
+    image[:48] = b"DATA" * 12                # past the held-back first bytes
     flash = BadWrite(front)
     flash.erase(front)
     with pytest.raises(OSError, match="write verify failed"):
