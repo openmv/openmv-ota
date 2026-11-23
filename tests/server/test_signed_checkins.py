@@ -153,6 +153,8 @@ def test_a_camera_that_changes_product_by_itself_is_served_and_audited(tmp_path)
         [(BID, {"product_id": BID, "reported": BID + 1})]              # under the one it left
     report(product_id=BID + 1)                                         # there now: not news
     assert len(_audit(store, "device.product_mismatch")) == 1
+    aday = "UPDATE device_registrations SET product_mismatch_at = '2020-01-01T00:00:00+00:00'"
+    store.execute(aday)                                                # a day on
     # SENT there, it is the account's doing and no event. Pinned to a release of the other
     # product, the camera is offered it; the offer on its row says so after the pin is lifted.
     _rel2(store)
@@ -165,6 +167,7 @@ def test_a_camera_that_changes_product_by_itself_is_served_and_audited(tmp_path)
     assert store.get_device(DEV)["product_id"] == BID + 1
     assert len(_audit(store, "device.product_mismatch")) == 2
     # A pin alone says so too (a camera offered while it could not sign leaves no offer on its row).
+    store.execute(aday)
     report(product_id=BID + 2, payload_version=0x03000000)             # away again by itself
     store.set_device_pin(DEV, "rel2", account_id=ACCT)
     store.execute("UPDATE devices SET last_offered_release_id = NULL WHERE device_id = ?", (DEV,))
@@ -172,16 +175,28 @@ def test_a_camera_that_changes_product_by_itself_is_served_and_audited(tmp_path)
     assert len(_audit(store, "device.product_mismatch")) == 3          # only the three it made alone
 
 
-def test_a_camera_that_hops_products_spends_its_audit_budget_and_no_more(tmp_path):
+def test_a_product_change_is_audited_once_a_day_and_not_from_the_cameras_budget(tmp_path):
+    """The camera's audit budget is spent by what the camera chooses to report. Drawn from
+    it, the one event that says a camera changed product was the camera's to switch off."""
     from openmv_ota.server.metastore import DEVICE_AUDIT_PER_DAY
     c, store = _app(tmp_path)
     key = _register(store)
-    ts = int(time.time()) - 100
-    for i in range(DEVICE_AUDIT_PER_DAY + 6):
+    ts = int(time.time()) - 200
+
+    def report(**kw):
+        nonlocal ts
         ts += 1
-        body = json.dumps({**json.loads(_body()), "product_id": BID + 1 + i % 2}).encode()
-        assert "live" in _check(c, body, camera.sign(key, body, ts=ts))
-    assert len(_audit(store, "device.product_mismatch")) == DEVICE_AUDIT_PER_DAY
+        body = json.dumps({**json.loads(_body()), **kw}).encode()
+        return _check(c, body, camera.sign(key, body, ts=ts))
+
+    for i in range(DEVICE_AUDIT_PER_DAY + 2):
+        report(fallback_reason="r%d" % i)                              # the budget, spent
+    assert len(_audit(store, "device.fallback")) == DEVICE_AUDIT_PER_DAY
+    assert "live" in report(product_id=BID + 1)
+    assert len(_audit(store, "device.product_mismatch")) == 1          # audited all the same
+    for i in range(6):
+        report(product_id=BID + 2 + i % 2)                             # hopping: a row a day
+    assert len(_audit(store, "device.product_mismatch")) == 1
 
 
 def test_a_forgotten_camera_that_comes_back_as_another_product_is_audited(tmp_path):

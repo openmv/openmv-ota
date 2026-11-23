@@ -176,15 +176,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   minute of waiting plus a millisecond for every byte it delivers; past that it fails like a
   dead link. Time spent writing flash does not count.
 
-- **The product rule lets a legitimate camera through.** Three cases it turned away, found
-  in review before a release. A move that fails its trial: the camera reverts to the image
-  it had and reports that image's product, so the product it left stays open to it until
-  it confirms the one it moved to, comes back, or a day has passed since the move (the
-  server's clock, not the camera's word). A camera registered again at a desk (reflashed, perhaps
-  as another product of the account) enrols as what it now is. A cohort pinned to another
-  product's release moves its cameras as a device pin does. A mismatch is now audited for
-  a camera with no fleet row as well. And a payload version is 32 bits (a major up to
-  255), not 31: check-ins accept it and Postgres stores it.
+- **A payload version is 32 bits.** A major up to 255, not 31 bits: check-ins accept it and
+  Postgres stores it.
 - **A check-in's product id is 63 bits again.** The bounds added to a check-in's numbers
   held `product_id` to 32 bits, and a derived product id is 63: every camera of a project
   that had not set a small id by hand was answered 422. Caught in review before a release;
@@ -241,7 +234,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   other than the one it is in the fleet under, when the account did not send it there (the
   release it was last offered, or is pinned to, is not one of that product), is served and
   filed under the product it reports, and the change is a `device.product_mismatch` audit
-  event on the camera's daily budget. Pinning a camera to another product's release is how
+  event, at most once a day for a camera. Pinning a camera to another product's release is how
   an account moves one, and raises no event.
 - **A rollout's counters count cameras.** `attempted`, `updated` and `failures` were counted
   per transition in what a camera reported, so one camera alternating a fallback reason

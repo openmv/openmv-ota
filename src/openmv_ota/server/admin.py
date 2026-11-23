@@ -12,7 +12,7 @@ import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import datalog as datalog_mod
 from . import live as live_mod
@@ -87,6 +87,7 @@ _PAGE = 100
 # token can starve every other fleet's update service. Paging past it with `offset`
 # still reads everything; asking for all of it in one breath does not.
 _MAX_PAGE = 1000
+_INT63_MAX = (1 << 63) - 1   # the largest product id (signed 64-bit columns)
 _LIMIT_Q = Query(_PAGE, ge=1, le=_MAX_PAGE, description="rows per page (max %d)" % _MAX_PAGE)
 
 # The list contract every collection endpoint follows (documented on the API page via
@@ -134,8 +135,8 @@ def _owned(entity, principal):
 class RolloutCreate(BaseModel):
     release_id: str
     cohort: str = "__default__"
-    percent: float | None = None           # required UNLESS stages are given (they set the start)
-    failure_threshold: float = 0.05
+    percent: float | None = Field(None, ge=0, le=100)   # required UNLESS stages are given
+    failure_threshold: float = Field(0.05, ge=0, le=1)
     display_name: str = ""                 # a label only; need not be unique
     # Optional declared ramp: an ordered list of stages the rollout raises itself through
     # (see rollout.validate_stages). Given stages, the rollout starts at stage 0's percent and
@@ -154,7 +155,7 @@ class RolloutPatch(BaseModel):
 class CohortAssign(BaseModel):
     cohort: str
     device_ids: list[str] | None = None    # surgical: these exact devices
-    product_id: int | None = None          # bulk: every device of this product
+    product_id: int | None = Field(None, ge=0, le=_INT63_MAX)   # bulk: every device of this product
 
 
 class CohortCreate(BaseModel):
@@ -191,7 +192,7 @@ class RegistrationIn(BaseModel):
 
 
 class CohortPin(BaseModel):
-    product_id: int
+    product_id: int = Field(ge=0, le=_INT63_MAX)
     cohort: str
     release_id: str | None = None          # null unpins (the account comes from the caller's token)
 
@@ -284,7 +285,7 @@ def list_accounts(request: Request,
                   q: str | None = Query(None, description="name, id or client_ref contains"),
                   active: bool | None = Query(None, description="only active (true) or "
                                               "deactivated (false) accounts"),
-                  limit: int = Query(_MAX_PAGE, ge=1, le=_MAX_PAGE), offset: int = 0,
+                  limit: int = Query(_MAX_PAGE, ge=1, le=_MAX_PAGE), offset: int = Query(0, ge=0),
                   principal: Principal = Depends(require_scope("accounts"))):
     """The operator's account directory. Operator scope, not an account credential:
     a normal account token can neither list accounts nor see another one exists.
@@ -322,7 +323,7 @@ def get_account(account_id: str, request: Request,
 
 @admin.get("/devices/lookup", responses={200: {"model": DeviceList}})
 def lookup_devices(request: Request, q: str = Query(..., min_length=2, max_length=128),
-                   limit: int = Query(50, ge=1, le=_MAX_PAGE), offset: int = 0,
+                   limit: int = Query(50, ge=1, le=_MAX_PAGE), offset: int = Query(0, ge=0),
                    principal: Principal = Depends(require_scope(ACCOUNT_ROOT))):
     """Find a camera across EVERY account, by a fragment of its id or its display name.
     The server's root only: "which account is this device in" is the first question a
@@ -777,7 +778,7 @@ def _ramp_brief(r: dict) -> dict | None:
 
 @admin.get("/rollouts", responses={200: {"model": RolloutList}})
 def list_rollouts(request: Request, product_id: int | None = None, limit: int = _LIMIT_Q,
-                  offset: int = 0, state: str | None = None, cohort: str | None = None,
+                  offset: int = Query(0, ge=0), state: str | None = None, cohort: str | None = None,
                   release_id: str | None = Query(None, description="only rollouts of this release"),
                   pause_reason: str | None = Query(
                       None, description="only rollouts paused for this reason: operator, "
@@ -864,7 +865,7 @@ def rollout_devices(rollout_id: str, request: Request,
                                                                 "failed, updated, ahead, offered "
                                                                 "or unoffered"),
                     q: str | None = Query(None, description="name-or-id substring, case-insensitive"),
-                    limit: int = Query(100, ge=1, le=_MAX_PAGE), offset: int = 0,
+                    limit: int = Query(100, ge=1, le=_MAX_PAGE), offset: int = Query(0, ge=0),
                     sort: str | None = _sort_q("seen, device, product, version, cohort, first_seen"),
                     dir: str = _DIR_Q,
                     principal: Principal = Depends(require_scope("observe"))):
@@ -887,7 +888,7 @@ def rollout_devices(rollout_id: str, request: Request,
 @admin.get("/cohorts", responses={200: {"model": CohortList}})
 def list_cohorts(request: Request, product_id: int | None = None,
                  limit: int | None = Query(None, ge=1, le=_MAX_PAGE),
-                 offset: int = 0,
+                 offset: int = Query(0, ge=0),
                  sort: str | None = _sort_q("cohort, devices, products, pins"),
                  dir: str = _DIR_Q,
                  principal: Principal = Depends(require_scope("observe"))):
@@ -1433,9 +1434,10 @@ def forget_device(device_id: str, request: Request,
     it enrols from scratch. To stop one coming back, retire its registration -- this call
     is about the fleet, not about entitlement.
 
-    A registered camera stays of the product it was under when a token limited to a list
-    of products forgets it: it can enrol again under that product only. Forgotten by a
-    token for the whole account, it enrols under whatever product it reports next."""
+    A registered camera is still noted as of the product it was under when a token limited
+    to a list of products forgets it: coming back under another product is audited as a
+    change (`device.product_mismatch`). Forgotten by a token for the whole account, it
+    starts under whatever product it reports next."""
     ms = request.app.state.metastore
     dev = ms.get_device(device_id)
     if dev is None or dev.get("account_id") != principal.account_id \
@@ -1651,7 +1653,7 @@ def release_coverage(release_id: str, request: Request,
 
 @admin.get("/releases", responses={200: {"model": ReleaseList}})
 def releases(request: Request, product_id: int | None = None, limit: int = _LIMIT_Q,
-             offset: int = 0,
+             offset: int = Query(0, ge=0),
              sort: str | None = _sort_q("version, product, size, uploaded, name, release"),
              dir: str = _DIR_Q,
              principal: Principal = Depends(require_scope("observe"))):
@@ -1772,7 +1774,7 @@ def release_image(release_id: str, request: Request,
 def list_advisories(request: Request, release_id: str | None = None,
                     active_only: bool = True,
                     limit: int | None = Query(None, ge=1, le=_MAX_PAGE),
-                    offset: int = 0,
+                    offset: int = Query(0, ge=0),
                     sort: str | None = _sort_q("severity, advisory, component, release, "
                                                "first_seen, last_seen"),
                     dir: str = _DIR_Q,
@@ -1885,7 +1887,7 @@ def release_sbom(release_id: str, request: Request,
 @admin.get("/devices", responses={200: {"model": DeviceList}})
 def devices(request: Request, product_id: int | None = None,
             limit: int = Query(100, ge=1, le=_MAX_PAGE),
-            cohort: str | None = None, offset: int = 0,
+            cohort: str | None = None, offset: int = Query(0, ge=0),
             q: str | None = Query(None, description="name-or-id substring, case-insensitive"),
             cohort_not: str | None = Query(None, description="exclude devices in this cohort"),
             version: str | None = Query(None, description="only devices running this version"),
@@ -1943,7 +1945,7 @@ def devices(request: Request, product_id: int | None = None,
 
 @admin.get("/products", responses={200: {"model": ProductList}})
 def products(request: Request, limit: int | None = Query(None, ge=1, le=_MAX_PAGE),
-             offset: int = 0,
+             offset: int = Query(0, ge=0),
              sort: str | None = _sort_q("product, devices, releases, newest"), dir: str = _DIR_Q,
              principal: Principal = Depends(require_scope("observe"))):
     """The account's product directory: every product id seen on a device or a
@@ -2112,7 +2114,7 @@ def viewer_grants(body: ViewerGrantsRequest, request: Request,
 
 @admin.get("/audit", responses={200: {"model": AuditList}})
 def audit(request: Request, since: int = 0,
-          limit: int = Query(100, ge=1, le=_MAX_PAGE), offset: int = 0,
+          limit: int = Query(100, ge=1, le=_MAX_PAGE), offset: int = Query(0, ge=0),
           entity_id: str | None = None, newest: bool = False,
           action: str | None = Query(None, description="only this action, e.g. device.refused"),
           action_not: str | None = Query(None, description="hide one action, e.g. advisory.scan"),
@@ -2300,7 +2302,7 @@ def ping_webhook(webhook_id: str, request: Request,
 @admin.get("/webhooks/{webhook_id}/deliveries", responses={200: {"model": DeliveryList}})
 def list_deliveries(webhook_id: str, request: Request,
                     status: str | None = Query(None, description="pending, delivered or dead"),
-                    limit: int = Query(50, ge=1, le=_MAX_PAGE), offset: int = 0,
+                    limit: int = Query(50, ge=1, le=_MAX_PAGE), offset: int = Query(0, ge=0),
                     principal: Principal = Depends(require_account_scope("manage"))):
     """What was sent to this endpoint, newest first: the event, the attempt count, the
     last response code or error, and when it landed. Bodies are not kept."""

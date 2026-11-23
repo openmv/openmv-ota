@@ -61,7 +61,7 @@ def parse(header: str) -> tuple[int, bytes]:
         sig = bytes.fromhex(fields["sig"])
     except (KeyError, ValueError):
         raise CheckinSignatureError("malformed") from None
-    if not sig:
+    if not sig or not 0 <= ts < 1 << 40:         # a time, not a number to do arithmetic on
         raise CheckinSignatureError("malformed")
     return ts, sig
 

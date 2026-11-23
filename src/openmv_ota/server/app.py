@@ -1088,8 +1088,10 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     # budget: the trail is one append-only chain for the whole server and every row is a
     # delivery to each of the account's webhooks, while a camera chooses its fallback reason
     # and its journal's numbers -- eight fresh entries a check-in, for as long as it liked.
-    if moved_itself and ms.audit_budget(checkin.device_id):
-        # Filed under the product it left: the one whose fleet no longer has it.
+    if moved_itself and ms.note_product_mismatch(checkin.device_id):
+        # Filed under the product it left: the one whose fleet no longer has it. Once a day,
+        # and NOT from the camera's audit budget: that budget is spent by what the camera
+        # chooses to report, so one that spent it first changed product unseen.
         ms.append_audit(actor="checkin", action="device.product_mismatch", entity_type="device",
                         entity_id=checkin.device_id,
                         data={"product_id": known, "reported": checkin.product_id},
