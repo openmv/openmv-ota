@@ -374,3 +374,25 @@ def test_a_name_that_stops_resolving_between_the_check_and_the_send_is_refused()
             raise OSError("gone") from None
     with pytest.raises(wh.WebhookError, match="does not resolve"):
         wh.pinned("https://x.example/h", resolve=once)
+
+
+def test_finished_deliveries_are_kept_a_month(tmp_path, monkeypatch):
+    """One row per audit event per endpoint, and nothing removed one while its endpoint
+    lived. Pending ones are never dropped: they are still owed."""
+    c, store, _rx, deliverer = _app(tmp_path, monkeypatch)
+    c.post("/api/v1/admin/webhooks", headers=AUTH, json={"url": "https://hooks.example/"})
+    for i in range(3):
+        store.append_audit(actor="ci", action="cohort.create", entity_type="cohort",
+                           entity_id="x%d" % i, account_id="a1")
+    deliverer.run_once(now=time.time() + 1)                            # all three sent
+    store.append_audit(actor="ci", action="cohort.create", entity_type="cohort", entity_id="y",
+                       account_id="a1")
+    n = "SELECT COUNT(*) AS n FROM webhook_deliveries"
+    before = store.query_one(n)["n"]
+    store.execute("UPDATE webhook_deliveries SET created_at = '2020-01-01T00:00:00+00:00'")
+    deliverer.run_once(now=time.time() - 10)                           # within the hour: no prune
+    assert store.query_one(n)["n"] == before
+    deliverer._pruned_at = 0.0
+    deliverer.run_once(now=time.time() - 10)                           # nothing due, one pending
+    left = store.query_all("SELECT status FROM webhook_deliveries")
+    assert [r["status"] for r in left] == ["pending"] and before > 1

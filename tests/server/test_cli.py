@@ -132,8 +132,17 @@ def test_token_issue_list_revoke(tmp_path, monkeypatch, capsys):
     # a live name can't be reused
     assert main(["server", "token", "issue", "--name", "ci"]) == 2
     assert "already in use" in capsys.readouterr().err
-    assert main(["server", "token", "revoke", thash]) == 0
-    assert "revoked" in capsys.readouterr().out
+    # by the start of the hash, which is what `token list` prints: given that, it used to
+    # match no token, revoke nothing, and say "revoked"
+    assert main(["server", "token", "revoke", "0" * 16 + "zz"]) == 1
+    assert "no token's hash starts with" in capsys.readouterr().err
+    assert main(["server", "token", "revoke", ""]) == 1
+    capsys.readouterr()
+    assert main(["server", "token", "revoke", thash[:16]]) == 0
+    assert "revoked %s" % thash in capsys.readouterr().out
+    s = _store(tmp_path)
+    assert s.get_token(thash)["revoked"]
+    s.close()
     assert main(["server", "token", "issue", "--name", "ci"]) == 0   # freed by the revoke
     capsys.readouterr()
     s2 = _store(tmp_path)
@@ -473,3 +482,34 @@ def test_token_rotate_keeps_a_product_limit_and_refuses_a_revoked_token(tmp_path
     s.close()
     assert main(["server", "token", "rotate", hash_token("dead")]) == 1
     assert "revoked" in capsys.readouterr().err
+
+
+def test_a_token_is_named_by_the_start_of_its_hash(tmp_path, monkeypatch, capsys):
+    """`token list` prints the first 16 characters of each hash. Rotate takes that too, and
+    a start two tokens share names neither."""
+    from openmv_ota.server.auth import hash_token
+    monkeypatch.setenv("OPENMV_OTA_DATABASE_URL", _db(tmp_path))
+    assert main(["server", "migrate"]) == 0
+    s = _store(tmp_path)
+    s.add_token(hash_token("one"), "one", ["manage"])
+    s.add_token(hash_token("two"), "two", ["manage"])
+    s.execute("UPDATE admin_tokens SET token_hash = 'aaaa1111' WHERE name = 'one'")
+    s.execute("UPDATE admin_tokens SET token_hash = 'aaaa2222' WHERE name = 'two'")
+    s.close()
+    capsys.readouterr()
+    assert main(["server", "token", "revoke", "aaaa"]) == 1
+    assert "2 tokens' hashes start with aaaa: give more of it" in capsys.readouterr().err
+    assert main(["server", "token", "rotate", "aaaa"]) == 1
+    assert main(["server", "token", "rotate", "aaaa1"]) == 0
+    s = _store(tmp_path)
+    assert s.get_token("aaaa1111")["revoked"] and not s.get_token("aaaa2222")["revoked"]
+    s.close()
+
+
+def test_the_scheduled_scan_covers_the_unnamed_account(tmp_path):
+    """A self-hosted server works in the account with no name, which has no row to list."""
+    s = _store(tmp_path)
+    s.migrate()
+    s.add_account("acct_b", "B")
+    assert server_cli._scan_accounts(s) == ["", "acct_b"]
+    s.close()

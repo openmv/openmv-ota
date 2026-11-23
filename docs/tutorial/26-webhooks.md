@@ -59,7 +59,7 @@ the URL, the subscription or the description, or switches the endpoint off and o
 | `device.register_refused` | a registration is refused; the event says why |
 | `device.released` | a camera is released: its registration, binding and fleet row go |
 | `device.checkin_refused` | a camera's check-in signature doesn't verify, at most once a day per camera rather than every poll |
-| `device.product_mismatch` | a camera's check-in names a product other than the one it is in the fleet under, and the account did not send it there (no pin to, or offer of, a release of that product); the camera is served and filed under the product it reports |
+| `device.product_mismatch` | a camera's check-in names a product other than the one it is in the fleet under, and the account did not send it there (no pin to, or offer of, a release of that product); the camera is served and filed under the product it reports; at most one a day for a camera, and a move made after the day's event is reported the next day |
 | `desk_key.put` | a desk key is added, renewed or revoked |
 | `release.publish`, `release.rename` | a release is published, or relabelled |
 | `rollout.create`, `rollout.update`, `rollout.stop`, `rollout.superseded`, `rollout.rename` | a rollout's lifecycle |

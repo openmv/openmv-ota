@@ -147,9 +147,9 @@ class RolloutCreate(BaseModel):
 
 
 class RolloutPatch(BaseModel):
-    percent: float | None = None
+    percent: float | None = Field(None, ge=0, le=100)
     state: str | None = None
-    failure_threshold: float | None = None   # 0..1; changing it never resumes a paused rollout
+    failure_threshold: float | None = Field(None, ge=0, le=1)  # 0..1; changing it never resumes a paused rollout
 
 
 class CohortAssign(BaseModel):
@@ -1972,7 +1972,7 @@ def get_product(product_id: int, request: Request,
 
 
 class ProductDeclare(BaseModel):
-    product_id: int
+    product_id: int = Field(ge=0, le=_INT63_MAX)
     """The id from the project's own config (`ota.toml`), which is where it is computed:
     the low 63 bits of sha256("<product>:<board>"). The server does not derive it, so the
     project stays the one place a product is named."""

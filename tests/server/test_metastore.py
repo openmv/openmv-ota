@@ -209,7 +209,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         M._MIGRATIONS = full
 
     store = M.SqliteMetadataStore(db)
-    assert store.migrate() == 43                           # the deploy applies 21 onward
+    assert store.migrate() == 44                           # the deploy applies 21 onward
     assert sorted(d["device_id"] for d in store.list_devices()) == [
         "OPENMV_N6:3c0021000c51", "noboard"]               # board-less rows are left alone
     assert store.device_account("OPENMV_N6:3c0021000c51")["account_id"] == "acct"
@@ -217,7 +217,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         "OPENMV_N6:3c0021000c51"
     store.add_token("h", "t", ["observe"], account_id="acct", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert M.SqliteMetadataStore(db).migrate() == 43        # idempotent
+    assert M.SqliteMetadataStore(db).migrate() == 44        # idempotent
 
 
 def test_parameterless_sql_is_executed_without_a_parameter_sequence():
@@ -470,10 +470,10 @@ def test_migrations_survive_postgres_transaction_semantics(tmp_path):
         M._MIGRATIONS = full
 
     store = _PostgresManners(db)
-    assert store.migrate() == 43             # walks past the orphaned column
+    assert store.migrate() == 44             # walks past the orphaned column
     store.add_token("h", "t", ["observe"], account_id="a", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert _PostgresManners(db).migrate() == 43        # and is idempotent
+    assert _PostgresManners(db).migrate() == 44        # and is idempotent
 
 
 def test_two_first_checkins_of_one_new_device_do_not_collide(tmp_path):
@@ -629,3 +629,39 @@ def test_a_sqlite_only_migration_step_is_skipped_on_postgres():
     assert pg._dialect("-- sqlite: UPDATE x") == "SELECT 1"
     assert lite._dialect("-- sqlite: UPDATE x") == "UPDATE x"
     assert pg._dialect("-- postgres: UPDATE y") == "UPDATE y"
+
+
+def test_an_offset_without_a_limit_is_a_page_both_databases_read():
+    """SQLite reads LIMIT -1 as no cap; Postgres refuses a negative limit."""
+    assert ms._limit("q", (1,), None, 5) == ("q LIMIT ? OFFSET ?", (1, (1 << 63) - 1, 5))
+    assert ms._limit("q", (1,), None, 0) == ("q", (1,))
+
+
+def test_a_failed_operation_leaves_nothing_pending_for_the_next_commit(tmp_path):
+    """SQLite's one connection opens a transaction on the first write. An operation that
+    raised part-way left its statements in it, and the next unrelated statement's commit
+    wrote them."""
+    store = ms.SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    with pytest.raises(RuntimeError):
+        with store._session() as conn:
+            conn.execute("INSERT INTO meta (key, value) VALUES ('half', 'done')")
+            raise RuntimeError("part-way")
+    store.set_meta("other", "1")
+    assert store.get_meta("half") is None and store.get_meta("other") == "1"
+
+
+def test_deleting_an_account_takes_its_roots_and_its_unclaimed_boards(tmp_path):
+    store = ms.SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    for acct in ("gone", "kept"):
+        store.add_account(acct, acct)
+        store.execute("INSERT INTO account_roots (account_id, root_id, pubkey, set_at) "
+                      "VALUES (?, 0, '04aa', 'now')", (acct,))
+        store.execute("INSERT INTO unclaimed_devices (device_id, account_id, board, first_seen, "
+                      "last_seen) VALUES ('d', ?, 'B', 'now', 'now')", (acct,))
+    store.set_account_active("gone", False)
+    store.delete_account("gone")
+    for table in ("account_roots", "unclaimed_devices"):
+        assert [r["account_id"] for r in store.query_all(
+            "SELECT account_id FROM %s" % table)] == ["kept"]

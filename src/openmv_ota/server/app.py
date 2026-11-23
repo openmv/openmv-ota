@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
@@ -1065,6 +1066,12 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     _account(ms, ro, rel, checkin, existing, offered)
     release_id = rel["release_id"] if offered else None
     journal = _journal_entries(checkin.stub)
+    if moved_itself:
+        # THE OFFER IT HELD IS FORGOTTEN. A rollout's offer is for the product a camera
+        # reports, so one made after it moved itself says nothing about where the account
+        # sent it -- and the row keeps an offer until the next one, so that offer stood as
+        # "sent there" for every later move to the same product.
+        ms.forget_offer(checkin.device_id)
     ms.upsert_device(
         device_id=checkin.device_id, product_id=checkin.product_id, board=checkin.board, cohort=cohort,
         current_version=checkin.app_version, current_payload_version=checkin.payload_version,
@@ -1080,7 +1087,11 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     # The product this camera is in the fleet under, kept on its registration: the fleet row
     # can be forgotten, and a change is measured against this. Written whenever it differs
     # from what this check-in stored (a camera with a row and no note gets one).
-    if known != checkin.product_id:
+    # A camera that moved itself keeps the product it was known under UNTIL the move is
+    # audited: the event is once a day, and a note that followed every move let a camera
+    # spend the day's event on one product and settle unseen in another.
+    noted = moved_itself and ms.note_product_mismatch(checkin.device_id)
+    if known != checkin.product_id and (noted or not moved_itself):
         ms.set_registration_product(checkin.device_id, checkin.product_id)
     # WHAT A CAMERA REPORTS REACHES THE AUDIT TRAIL AFTER ITS ROW IS WRITTEN, AND ON A DAILY
     # BUDGET. After: a report the store refused used to leave its audit rows behind and its
@@ -1088,7 +1099,7 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     # budget: the trail is one append-only chain for the whole server and every row is a
     # delivery to each of the account's webhooks, while a camera chooses its fallback reason
     # and its journal's numbers -- eight fresh entries a check-in, for as long as it liked.
-    if moved_itself and ms.note_product_mismatch(checkin.device_id):
+    if noted:
         # Filed under the product it left: the one whose fleet no longer has it. Once a day,
         # and NOT from the camera's audit budget: that budget is spent by what the camera
         # chooses to report, so one that spent it first changed product unseen.
@@ -1382,6 +1393,15 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
         return JSONResponse(status_code=422, content={"detail": [
             {"loc": ["request"], "msg": "a number in the request is out of range",
              "type": "value_error"}]})
+
+    @app.exception_handler(RequestValidationError)
+    async def _invalid_request(request: Request, exc: RequestValidationError):
+        # WHERE, WHAT AND WHY, AND NOT THE VALUE. The stock answer echoes what was sent, and
+        # a number JSON cannot carry (an infinity, a NaN: Python's parser takes both) then
+        # failed to be written back: the refusal itself was a 500.
+        return JSONResponse(status_code=422, content={"detail": [
+            {"loc": list(e.get("loc", ())), "msg": e.get("msg", ""), "type": e.get("type", "")}
+            for e in exc.errors()]})
     app.state.storage = storage
     app.state.metastore = metastore
     app.state.verifier = verifier

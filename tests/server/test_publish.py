@@ -572,6 +572,7 @@ def test_publish_a_manifest_body_that_is_not_an_object_is_400_not_500(tmp_path):
     ({"product_id": -1}, "product_id must be an integer"),
     ({"product_id": 1 << 63}, "product_id must be an integer"),    # past a bigint column
     ({"payload_version": 1.5}, "payload_version must be an integer"),
+    ({"min_stub": 1 << 31}, "min_stub must be under 2**31"),       # past its 32-bit column
     ({"publish_seq": "9"}, "publish_seq must be an integer"),
     ({"min_platform_version": None}, "min_platform_version must be an integer"),
     ({"size": 1 << 40}, "over the"),

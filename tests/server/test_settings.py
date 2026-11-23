@@ -62,3 +62,17 @@ def test_summary_keeps_the_database_password_to_itself():
     out = "\n".join(ServerSettings(database_url="postgresql://ota:hunter2@db.internal:5432/ota",
                                    swd_ids_verify_url="u").summary())
     assert "hunter2" not in out and "postgresql://ota:***@db.internal:5432/ota" in out
+
+
+def test_summary_keeps_every_url_s_credentials_to_itself():
+    """A credential rides in a URL before the host or in its query, and in any setting that
+    is one. A password may hold an @ of its own."""
+    out = "\n".join(ServerSettings(
+        database_url="postgresql://ota:p@ss@db.internal/ota?sslmode=require&password=hunter2",
+        s3_endpoint_url="https://tok3n@s3.internal/", swd_ids_verify_url="https://r.example/v?token=abc"
+    ).summary())
+    assert "database_url = postgresql://ota:***@db.internal/ota?***" in out
+    assert "s3_endpoint_url = https://***@s3.internal/" in out
+    assert "swd_ids_verify_url = https://r.example/v?***" in out
+    for secret in ("ss@", "hunter2", "tok3n", "abc"):
+        assert secret not in out
