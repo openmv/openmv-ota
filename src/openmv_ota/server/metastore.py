@@ -605,10 +605,8 @@ REFUSAL_AUDIT_EVERY_S = 24 * 3600
 DEVICE_AUDIT_PER_DAY = 48
 
 
-def _a_day_since(when: str | None) -> bool:
-    """Whether ``when`` (an ISO time this store wrote, or None for never) is a day ago."""
-    if not when:
-        return True
+def _a_day_since(when: str) -> bool:
+    """Whether ``when`` (an ISO time this store wrote) is a day ago."""
     age = datetime.now(timezone.utc) - datetime.fromisoformat(when)
     return age.total_seconds() >= REFUSAL_AUDIT_EVERY_S
 

@@ -709,8 +709,6 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
         # the auto-pause limit as a fraction of offered devices; an operator raises it
         # after diagnosing spurious fallbacks, or tightens it for a risky build. It is
         # only the limit: a rollout paused by the old limit stays paused until resumed.
-        if not 0 <= body.failure_threshold <= 1:
-            raise HTTPException(status_code=400, detail="failure_threshold must be 0..1")
         changes["failure_threshold"] = body.failure_threshold
     if body.state is not None:
         if body.state not in ("active", "paused"):
