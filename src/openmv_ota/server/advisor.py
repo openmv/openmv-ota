@@ -178,7 +178,8 @@ class OsvClient:
         return findings
 
     def _detail(self, vuln_id: str) -> dict:
-        if vuln_id not in self._details:
+        got = self._details.get(vuln_id)     # (read once: another account's scan may clear it)
+        if got is None:
             r = self._http.get(f"{self._url}/v1/vulns/{vuln_id}")
             if r.status_code != 200:
                 # not remembered: one bad answer stood for this advisory until the server
@@ -186,8 +187,8 @@ class OsvClient:
                 return {"id": vuln_id}
             if len(self._details) >= MAX_DETAILS:
                 self._details.clear()
-            self._details[vuln_id] = r.json()
-        return self._details[vuln_id]
+            got = self._details[vuln_id] = r.json()
+        return got
 
 
 class ScanBusy(Exception):

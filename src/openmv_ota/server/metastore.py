@@ -2393,10 +2393,10 @@ class SqlMetadataStore:
                             (token_hash,)).rowcount == 1
 
     def token_hashes(self, prefix: str) -> list[str]:
-        """The hashes of the tokens whose hash starts with ``prefix`` (what `token list`
-        prints is the start of one)."""
+        """The hashes of the tokens whose hash starts with ``prefix``, eight characters of
+        it or more (what `token list` prints is the first sixteen)."""
         return [t["token_hash"] for t in self.list_tokens()
-                if prefix and t["token_hash"].startswith(prefix)]
+                if len(prefix) >= 8 and t["token_hash"].startswith(prefix)]
 
     def list_tokens(self, account_id=None) -> list[dict]:
         where, params = ("WHERE account_id = ?", (account_id,)) if account_id is not None else ("", ())

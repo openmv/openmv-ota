@@ -273,11 +273,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   event, at most once a day for a camera. Pinning a camera to another product's release is how
   an account moves one, and raises no event. The product a camera is known under moves when
   the account sent it or the change was audited, so a move made after the day's event is
-  still a change the next day; and an offer made to a camera that moved itself no longer
-  counts as the account having sent it.
+  still a change the next day; an offer made to a camera that moved itself no longer
+  counts as the account having sent it; and a cohort's pin sends the cameras known under
+  its product, not one that reported its way into it.
 - **`server token revoke` and `rotate` take the hash `token list` prints.** The list shows
   the first 16 characters of each hash and revoke matched the whole hash, so given what the
-  list printed it revoked nothing and said `revoked`. Both now take the start of a hash,
+  list printed it revoked nothing and said `revoked`. Both now take the start of a hash (eight characters or more),
   refuse one that names no token or several, and print the whole hash they acted on.
 - **A number JSON cannot carry is a 422.** An infinite or NaN number in a request body failed
   while the refusal was being written, a 500; a rollout raised to an infinite percent by

@@ -76,3 +76,8 @@ def test_summary_keeps_every_url_s_credentials_to_itself():
     assert "swd_ids_verify_url = https://r.example/v?***" in out
     for secret in ("ss@", "hunter2", "tok3n", "abc"):
         assert secret not in out
+    for url in ("postgresql://u:pa#ss@h:5432/db", "postgresql://u:pa?ss@h/db",
+                "postgresql://u:pa/ss@h/db#frag"):
+        line = ServerSettings(database_url=url, swd_ids_verify_url="u").summary()
+        text = [x for x in line if x.startswith("database_url")][0]
+        assert "ss" not in text and "frag" not in text and "u:***@h" in text

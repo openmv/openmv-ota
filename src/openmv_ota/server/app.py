@@ -902,14 +902,15 @@ def _offer_answer(st, rel, manifest_url, device_id: str):
     return answer
 
 
-def _sent_to_product(ms, existing, checkin, account_id) -> bool:
+def _sent_to_product(ms, existing, checkin, account_id, known) -> bool:
     """Whether this account sent this camera to the product it now reports: the release it
     was last offered, or the one it is pinned to, is a release of that product. Both are what
     the server did, so a camera cannot report its way into either."""
     for release_id in (existing.get("last_offered_release_id"),
                        ms.get_device_pin(checkin.device_id, account_id),
                        # a cohort pinned across products, under the product it is known as
-                       ms.get_cohort_pin(existing["product_id"], existing["cohort"],
+                       # (``known``, not the row: the row is under whatever it last reported)
+                       ms.get_cohort_pin(known, existing["cohort"],
                                          account_id=account_id) if existing else None):
         rel = ms.get_release(release_id) if release_id else None
         if rel is not None and (rel.get("account_id") or "") == account_id \
@@ -1043,7 +1044,7 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     # see. It was refused once; every legitimate way to change product then had to be told
     # apart from that, and a camera refused by mistake is a camera that stops updating.
     moved_itself = known is not None and known != checkin.product_id and \
-        not _sent_to_product(ms, existing or {}, checkin, account_id)
+        not _sent_to_product(ms, existing or {}, checkin, account_id, known)
     if existing is None and ms.over_device_limit(account_id) and \
             (ms.get_registration(checkin.device_id) or {}).get("account_id") != account_id:
         # A NEW device past the account's entitlement: not registered (zero footprint,
@@ -1070,7 +1071,8 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         # THE OFFER IT HELD IS FORGOTTEN. A rollout's offer is for the product a camera
         # reports, so one made after it moved itself says nothing about where the account
         # sent it -- and the row keeps an offer until the next one, so that offer stood as
-        # "sent there" for every later move to the same product.
+        # "sent there" for every later move to the same product. This check-in's own offer
+        # is answered and not kept either: it is that same offer.
         ms.forget_offer(checkin.device_id)
     ms.upsert_device(
         device_id=checkin.device_id, product_id=checkin.product_id, board=checkin.board, cohort=cohort,
@@ -1082,7 +1084,8 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         fallback_reason=checkin.fallback_reason, confirmed=1 if checkin.confirmed else 0,
         publish_seq=checkin.publish_seq, orders_by_seq=checkin.orders_by_seq,
         stub=_stub_fields(checkin.stub), journal_seq=journal[-1].seq if journal else None,
-        last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
+        last_offered_release_id=None if moved_itself else release_id,
+        registrar_ref=reg.registrar_ref or None,
         account_id=account_id)
     # The product this camera is in the fleet under, kept on its registration: the fleet row
     # can be forgotten, and a change is measured against this. Written whenever it differs

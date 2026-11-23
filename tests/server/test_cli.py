@@ -493,16 +493,17 @@ def test_a_token_is_named_by_the_start_of_its_hash(tmp_path, monkeypatch, capsys
     s = _store(tmp_path)
     s.add_token(hash_token("one"), "one", ["manage"])
     s.add_token(hash_token("two"), "two", ["manage"])
-    s.execute("UPDATE admin_tokens SET token_hash = 'aaaa1111' WHERE name = 'one'")
-    s.execute("UPDATE admin_tokens SET token_hash = 'aaaa2222' WHERE name = 'two'")
+    s.execute("UPDATE admin_tokens SET token_hash = 'aaaaaaaa1111' WHERE name = 'one'")
+    s.execute("UPDATE admin_tokens SET token_hash = 'aaaaaaaa2222' WHERE name = 'two'")
     s.close()
     capsys.readouterr()
-    assert main(["server", "token", "revoke", "aaaa"]) == 1
-    assert "2 tokens' hashes start with aaaa: give more of it" in capsys.readouterr().err
-    assert main(["server", "token", "rotate", "aaaa"]) == 1
-    assert main(["server", "token", "rotate", "aaaa1"]) == 0
+    assert main(["server", "token", "revoke", "aaaaaaaa"]) == 1
+    assert "2 tokens' hashes start with aaaaaaaa: give more of it" in capsys.readouterr().err
+    assert main(["server", "token", "rotate", "aaaaaaaa"]) == 1
+    assert main(["server", "token", "revoke", "aaaaaaa"]) == 1       # too little of it to name one
+    assert main(["server", "token", "rotate", "aaaaaaaa1"]) == 0
     s = _store(tmp_path)
-    assert s.get_token("aaaa1111")["revoked"] and not s.get_token("aaaa2222")["revoked"]
+    assert s.get_token("aaaaaaaa1111")["revoked"] and not s.get_token("aaaaaaaa2222")["revoked"]
     s.close()
 
 
