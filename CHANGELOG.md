@@ -236,13 +236,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its webhooks. Every refusal is still counted on the registration with its reason. The
   audit row is filed under the product the camera is in the fleet under, not the one the
   refused request named.
-- **A camera does not move itself to another product.** A signed check-in proves which
-  camera sent it, and the product was whatever its body said: naming another product of the
-  account got the camera an ingest grant for that product's data, a place in its fleet and
-  a vote in its rollouts. A check-in naming a product other than the fleet row's now gets
-  update offers only and a `device.product_mismatch` audit event (once a day), unless the
-  account sent the camera there: the release it was last offered, or is pinned to, is one
-  of that product. A camera can also be forgotten, and enrols under what it reports next.
+- **A camera that changes product by itself is audited.** A signed check-in proves which
+  camera sent it; the product is whatever its body says. A camera that names a product
+  other than the one it is in the fleet under, when the account did not send it there (the
+  release it was last offered, or is pinned to, is not one of that product), is served and
+  filed under the product it reports, and the change is a `device.product_mismatch` audit
+  event on the camera's daily budget. Pinning a camera to another product's release is how
+  an account moves one, and raises no event.
 - **A rollout's counters count cameras.** `attempted`, `updated` and `failures` were counted
   per transition in what a camera reported, so one camera alternating a fallback reason
   with none could fail a rollout into its auto-pause, and one alternating its version could

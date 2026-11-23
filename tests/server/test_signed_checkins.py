@@ -133,64 +133,81 @@ def test_a_refused_check_in_is_filed_under_the_cameras_product_not_the_one_it_na
     assert [e["product_id"] for e in _audit(store, "device.checkin_refused")] == [BID]
 
 
-def test_a_camera_does_not_move_itself_to_another_product(tmp_path):
+def test_a_camera_that_changes_product_by_itself_is_served_and_audited(tmp_path):
+    c, store = _app(tmp_path)
+    key = _register(store)
+    ts = int(time.time()) - 100
+
+    def report(**kw):
+        nonlocal ts
+        ts += 1
+        body = json.dumps({**json.loads(_body()), **kw}).encode()
+        return _check(c, body, camera.sign(key, body, ts=ts))
+
+    report()
+    assert "live" in report(product_id=BID + 1)                        # served like any other
+    assert store.get_device(DEV)["product_id"] == BID + 1              # filed under what it says
+    assert store.get_registration(DEV)["product_id"] == BID + 1
+    seen = _audit(store, "device.product_mismatch")
+    assert [(e["product_id"], e["data"]) for e in seen] == \
+        [(BID, {"product_id": BID, "reported": BID + 1})]              # under the one it left
+    report(product_id=BID + 1)                                         # there now: not news
+    assert len(_audit(store, "device.product_mismatch")) == 1
+    # SENT there, it is the account's doing and no event. Pinned to a release of the other
+    # product, the camera is offered it; the offer on its row says so after the pin is lifted.
+    _rel2(store)
+    report(product_id=BID + 2)                                         # somewhere else by itself
+    assert len(_audit(store, "device.product_mismatch")) == 2
+    store.set_device_pin(DEV, "rel2", account_id=ACCT)
+    assert report(product_id=BID + 2)["release_id"] == "rel2"
+    store.set_device_pin(DEV, None, account_id=ACCT)
+    assert "live" in report(product_id=BID + 1, payload_version=0x03000000)
+    assert store.get_device(DEV)["product_id"] == BID + 1
+    assert len(_audit(store, "device.product_mismatch")) == 2
+    # A pin alone says so too (a camera offered while it could not sign leaves no offer on its row).
+    report(product_id=BID + 2, payload_version=0x03000000)             # away again by itself
+    store.set_device_pin(DEV, "rel2", account_id=ACCT)
+    store.execute("UPDATE devices SET last_offered_release_id = NULL WHERE device_id = ?", (DEV,))
+    report(product_id=BID + 1, payload_version=0x03000000)
+    assert len(_audit(store, "device.product_mismatch")) == 3          # only the three it made alone
+
+
+def test_a_camera_that_hops_products_spends_its_audit_budget_and_no_more(tmp_path):
+    from openmv_ota.server.metastore import DEVICE_AUDIT_PER_DAY
+    c, store = _app(tmp_path)
+    key = _register(store)
+    ts = int(time.time()) - 100
+    for i in range(DEVICE_AUDIT_PER_DAY + 6):
+        ts += 1
+        body = json.dumps({**json.loads(_body()), "product_id": BID + 1 + i % 2}).encode()
+        assert "live" in _check(c, body, camera.sign(key, body, ts=ts))
+    assert len(_audit(store, "device.product_mismatch")) == DEVICE_AUDIT_PER_DAY
+
+
+def test_a_forgotten_camera_that_comes_back_as_another_product_is_audited(tmp_path):
+    """A token limited to one product forgets the fleet row and no more: the registration
+    still says what the camera was, so coming back under another product is a change. A
+    token for the whole account clears that too (the admin route does), and so does
+    registering the camera again at a desk: it starts under what it reports, with no event."""
     c, store = _app(tmp_path)
     key = _register(store)
     body = _body()
-    _check(c, body, camera.sign(key, body, ts=int(time.time()) - 2))
-    other = json.loads(body)
-    other["product_id"] = BID + 1
-    other = json.dumps(other).encode()
-    r = _check(c, other, camera.sign(key, other, ts=int(time.time()) - 1))
-    assert "live" not in r and "ingest" not in r                       # what an unsigned one gets
-    assert store.get_device(DEV)["product_id"] == BID                  # the fleet row stands
-    seen = _audit(store, "device.product_mismatch")
-    assert [(e["product_id"], e["data"]) for e in seen] == \
-        [(BID, {"product_id": BID, "reported": BID + 1})]
-    _check(c, other, camera.sign(key, other))                          # again: counted once a day
-    assert len(_audit(store, "device.product_mismatch")) == 1
-    store.execute("UPDATE device_registrations SET product_mismatch_at = ? WHERE device_id = ?",
-                  ("2020-01-01T00:00:00+00:00", DEV))
-    assert store.note_product_mismatch(DEV) is True                    # a day on, news again
-    assert store.note_product_mismatch("OPENMV_N6:nobody") is False    # no fleet row to note it on
-    # The move is the account's. Pinned to a release of the other product, the camera is
-    # offered it, and reporting that product afterwards is the server's own doing.
-    store.add_release(release_id="rel2", product_id=BID + 1, product="Q", version="3.0.0",
-                      payload_version=0x03000000, min_platform_version=0, image_sha256="ab" * 32,
-                      image_size=3, representations=[{"format": "full", "url": "x.img.gz",
-                                                      "size": 3}],
-                      manifest_key="m/rel1", image_key="i/rel1", account_id=ACCT)
-    store.set_device_pin(DEV, "rel2", account_id=ACCT)
-    time.sleep(1.1)
-    assert _check(c, body, camera.sign(key, body))["release_id"] == "rel2"
-    store.set_device_pin(DEV, None, account_id=ACCT)                   # unpinned: it was OFFERED
-    moved = json.dumps({**json.loads(other), "payload_version": 0x03000000}).encode()
-    time.sleep(1.1)
-    assert "live" in _check(c, moved, camera.sign(key, moved))
-    assert store.get_device(DEV)["product_id"] == BID + 1
-    assert store.get_registration(DEV)["product_id"] == BID + 1        # remembered off the row
-    settled = json.dumps({**json.loads(moved), "confirmed": True}).encode()
-    time.sleep(1.1)
-    _check(c, settled, camera.sign(key, settled))                      # the move is confirmed
-    # FORGOTTEN, IT IS STILL OF THAT PRODUCT. A token limited to one product can forget its
-    # camera's fleet row, and the camera then named any product of the account as it enrolled.
+    other = json.dumps({**json.loads(body), "product_id": BID + 1}).encode()
+    _check(c, body, camera.sign(key, body, ts=int(time.time()) - 9))
+    store.forget_device(DEV)                                           # as a limited token does
+    assert "live" in _check(c, other, camera.sign(key, other, ts=int(time.time()) - 8))
+    assert [e["data"] for e in _audit(store, "device.product_mismatch")] == \
+        [{"product_id": BID, "reported": BID + 1}]
     store.forget_device(DEV)
-    time.sleep(1.1)
-    r = _check(c, body, camera.sign(key, body))
-    assert "live" not in r and store.get_device(DEV) is None
-    # A token for the whole account lets it go from the product too (the admin route does
-    # this when the one forgetting is not limited): it enrols under what it reports.
-    store.set_registration_product(DEV, None)
-    time.sleep(1.1)
-    _check(c, body, camera.sign(key, body))
-    assert store.get_device(DEV)["product_id"] == BID
+    store.set_registration_product(DEV, None)                          # the whole account's
+    _check(c, body, camera.sign(key, body, ts=int(time.time()) - 7))
     assert store.get_registration(DEV)["product_id"] == BID
-    # A pin alone says so too (a camera offered while it could not sign leaves no offer on its row).
-    store.set_device_pin(DEV, "rel2", account_id=ACCT)
-    store.execute("UPDATE devices SET last_offered_release_id = NULL WHERE device_id = ?", (DEV,))
-    time.sleep(1.1)
-    _check(c, moved, camera.sign(key, moved))
+    _register(store)                                                   # registered again
+    assert store.get_registration(DEV)["product_id"] is None
+    assert "live" in _check(c, other, camera.sign(key, other, ts=int(time.time()) - 6))
     assert store.get_device(DEV)["product_id"] == BID + 1
+    assert len(_audit(store, "device.product_mismatch")) == 1
+    assert store.registration_product("OPENMV_N6:nobody") is None
 
 
 def test_a_cameras_words_are_cut_short_not_refused(tmp_path):
@@ -564,75 +581,6 @@ def _rel2(store):
                       manifest_key="m/rel1", image_key="i/rel1", account_id=ACCT)
 
 
-def test_a_move_that_fails_its_trial_comes_back(tmp_path):
-    """Pinned to another product's release, a camera installs it, checks in from the trial as
-    that product, fails the trial and reverts to the image it had -- which reports the product
-    it had. Held to the new product, that check-in was a mismatch: no fleet row update, no
-    fallback in the audit trail, and the same release offered again for ever."""
-    c, store = _app(tmp_path)
-    key = _register(store)
-    _rel2(store)
-    ts = int(time.time()) - 100
-
-    def report(**kw):
-        nonlocal ts
-        ts += 1
-        body = json.dumps({**json.loads(_body()), **kw}).encode()
-        return _check(c, body, camera.sign(key, body, ts=ts))
-
-    report(payload_version=0x02000000, confirmed=True)                 # at home in BID
-    store.set_device_pin(DEV, "rel2", account_id=ACCT)
-    assert report(payload_version=0x02000000, confirmed=True)["release_id"] == "rel2"
-    report(product_id=BID + 1, payload_version=0x03000000)             # the trial, as BID + 1
-    reg = store.get_registration(DEV)
-    assert (reg["product_id"], reg["prev_product_id"]) == (BID + 1, BID)
-    r = report(payload_version=0x02000000, confirmed=True, fallback_reason="trial-failed")
-    assert "live" in r                                                 # back, and believed
-    assert store.get_device(DEV)["product_id"] == BID
-    assert [e["data"]["reason"] for e in _audit(store, "device.fallback")] == ["trial-failed"]
-    assert _audit(store, "device.product_mismatch") == []
-    reg = store.get_registration(DEV)                                  # back: nowhere further back
-    assert (reg["product_id"], reg["prev_product_id"]) == (BID, None)
-    # Once it CONFIRMS where it moved to, the product it left is closed to it.
-    report(product_id=BID + 1, payload_version=0x03000000)
-    report(product_id=BID + 1, payload_version=0x03000000, confirmed=True)
-    assert store.get_registration(DEV)["prev_product_id"] is None
-    store.set_device_pin(DEV, None, account_id=ACCT)
-    store.execute("UPDATE devices SET last_offered_release_id = NULL WHERE device_id = ?", (DEV,))
-    assert "live" not in report(payload_version=0x02000000, confirmed=True)
-    assert len(_audit(store, "device.product_mismatch")) == 1
-
-
-def test_a_camera_registered_again_enrols_as_what_it_now_is(tmp_path):
-    """Reflashed at a desk as another product of the account and registered again: an act of
-    the account, so the product it was is no longer held against it. Without that it was
-    offers-only for good, with nothing a token limited to either product could do."""
-    c, store = _app(tmp_path)
-    key = _register(store)
-    body = _body()
-    _check(c, body, camera.sign(key, body))
-    assert store.get_registration(DEV)["product_id"] == BID
-    other = json.dumps({**json.loads(body), "product_id": BID + 1}).encode()
-    assert "live" not in _check(c, other, camera.sign(key, other))     # on its own: no
-    _register(store)                                                   # registered again
-    assert store.get_registration(DEV)["product_id"] is None
-    assert "live" in _check(c, other, camera.sign(key, other))
-    assert store.get_device(DEV)["product_id"] == BID + 1
-
-
-def test_a_mismatch_is_audited_for_a_camera_with_no_fleet_row(tmp_path):
-    c, store = _app(tmp_path)
-    key = _register(store)
-    body = _body()
-    _check(c, body, camera.sign(key, body))
-    store.forget_device(DEV)                                           # as a limited token does
-    other = json.dumps({**json.loads(body), "product_id": BID + 1}).encode()
-    _check(c, other, camera.sign(key, other))
-    _check(c, other, camera.sign(key, other))
-    assert [e["data"] for e in _audit(store, "device.product_mismatch")] == \
-        [{"product_id": BID, "reported": BID + 1}]
-
-
 def test_a_cohort_pinned_across_products_moves_its_cameras(tmp_path):
     c, store = _app(tmp_path)
     key = _register(store)
@@ -645,6 +593,7 @@ def test_a_cohort_pinned_across_products_moves_its_cameras(tmp_path):
                         "payload_version": 0x03000000}).encode()
     assert "live" in _check(c, moved, camera.sign(key, moved))
     assert store.get_device(DEV)["product_id"] == BID + 1
+    assert _audit(store, "device.product_mismatch") == []              # sent, not hopped
 
 
 def test_a_version_with_a_major_past_127_checks_in(tmp_path):
@@ -658,33 +607,3 @@ def test_a_version_with_a_major_past_127_checks_in(tmp_path):
     row = store.get_device(DEV)
     assert (row["current_payload_version"], row["fallback_payload_version"]) == \
         (0xC8000000, 0xC7000000)
-
-
-def test_the_product_a_camera_left_is_open_for_a_day_not_for_good(tmp_path):
-    """Open "until it confirms the move" was open for as long as the camera chose not to say
-    so: it kept full standing in the product it had been moved out of, hopping back and
-    forth with no mismatch. The window is the server's: a day from the move."""
-    c, store = _app(tmp_path)
-    key = _register(store)
-    _rel2(store)
-    ts = int(time.time()) - 100
-
-    def report(**kw):
-        nonlocal ts
-        ts += 1
-        body = json.dumps({**json.loads(_body()), **kw}).encode()
-        return _check(c, body, camera.sign(key, body, ts=ts))
-
-    report(payload_version=0x02000000, confirmed=True)
-    store.set_device_pin(DEV, "rel2", account_id=ACCT)
-    report(payload_version=0x02000000, confirmed=True)                 # offered rel2
-    report(product_id=BID + 1, payload_version=0x03000000)             # moved, never confirms
-    assert store.registration_products(DEV) == (BID + 1, BID)
-    store.execute("UPDATE device_registrations SET product_moved_at = ? WHERE device_id = ?",
-                  ("2020-01-01T00:00:00+00:00", DEV))
-    assert store.registration_products(DEV) == (BID + 1, None)         # a day on: closed
-    store.set_device_pin(DEV, None, account_id=ACCT)
-    store.execute("UPDATE devices SET last_offered_release_id = NULL WHERE device_id = ?", (DEV,))
-    assert "live" not in report(payload_version=0x02000000, confirmed=True)
-    assert len(_audit(store, "device.product_mismatch")) == 1
-    assert store.registration_products("OPENMV_N6:nobody") == (None, None)

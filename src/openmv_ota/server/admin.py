@@ -1458,9 +1458,9 @@ def forget_device(device_id: str, request: Request,
         data["data_bytes"] = purged["bytes"]
     ms.forget_device(device_id)
     if not principal.products:
-        # A token for the whole account lets the camera go from its product too: it enrols
-        # under whatever it reports next. One limited to a product does not get to decide
-        # that -- its camera would otherwise walk into any other product of the account.
+        # A token for the whole account lets the camera go from its product too: whatever it
+        # reports next is where it starts. After a token limited to a product, a camera that
+        # comes back under another product is audited as having changed.
         ms.set_registration_product(device_id, None)
     ms.append_audit(actor=principal.name, action="device.forget", entity_type="device",
                     entity_id=device_id, data=data,
