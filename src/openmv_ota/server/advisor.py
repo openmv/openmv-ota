@@ -49,6 +49,7 @@ _scan_locks: dict[str, threading.Lock] = {}
 _scan_locks_guard = threading.Lock()
 
 
+MAX_DETAILS = 4096              # advisories remembered between scans, then read afresh
 MAX_COMPONENTS = 5000           # a firmware's SBOM has tens; each one is queries to OSV
 
 
@@ -177,10 +178,17 @@ class OsvClient:
         return findings
 
     def _detail(self, vuln_id: str) -> dict:
-        if vuln_id not in self._details:
+        got = self._details.get(vuln_id)     # (read once: another account's scan may clear it)
+        if got is None:
             r = self._http.get(f"{self._url}/v1/vulns/{vuln_id}")
-            self._details[vuln_id] = r.json() if r.status_code == 200 else {"id": vuln_id}
-        return self._details[vuln_id]
+            if r.status_code != 200:
+                # not remembered: one bad answer stood for this advisory until the server
+                # restarted, as an advisory of unknown severity with no summary
+                return {"id": vuln_id}
+            if len(self._details) >= MAX_DETAILS:
+                self._details.clear()
+            got = self._details[vuln_id] = r.json()
+        return got
 
 
 class ScanBusy(Exception):
@@ -234,7 +242,12 @@ def _scan_release(state, rel: dict, actor: str) -> dict:
             # (each is a round trip to the advisory service), is one this scan cannot read.
             if (not isinstance(components, list) or len(components) > MAX_COMPONENTS
                     or not all(isinstance(c, dict) and isinstance(c.get("properties") or [], list)
-                               and all(isinstance(p, dict) for p in c.get("properties") or [])
+                               and all(isinstance(c.get(k) or "", str)
+                                       for k in ("name", "version", "purl"))
+                               and all(isinstance(p, dict)
+                                       and isinstance(p.get("name") or "", str)
+                                       and isinstance(p.get("value") or "", str)
+                                       for p in c.get("properties") or [])
                                for c in components)):
                 raise ValueError("not a component list this scan reads")
         except (ServerError, ValueError):

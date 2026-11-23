@@ -189,7 +189,15 @@ class ServerSettings(BaseSettings):
                 continue
             if name in _SECRET_FIELDS and val:
                 val = "***"
-            if name == "database_url" and val:
-                val = re.sub(r"(://[^:/@]*:)[^@]*@", r"\1***@", str(val))     # its password
+            if isinstance(val, str) and "://" in val:
+                # A URL can carry a credential in two places, and any of these can be one:
+                # before the host (to the LAST @ -- a password may hold one, or a / or a ?)
+                # and in the query.
+                m = re.match(r"(.*?://)(.*)@([^@/?#]*)(.*)$", val, re.S)
+                if m:
+                    user = m.group(2).split(":", 1)
+                    val = "%s%s***@%s%s" % (m.group(1), user[0] + ":" if len(user) > 1 else "",
+                                            m.group(3), m.group(4))
+                val = re.sub(r"[?#].*$", "?***", val, flags=re.S)
             out.append("%s = %s" % (name, val))
         return out

@@ -147,9 +147,9 @@ class RolloutCreate(BaseModel):
 
 
 class RolloutPatch(BaseModel):
-    percent: float | None = None
+    percent: float | None = Field(None, ge=0, le=100)
     state: str | None = None
-    failure_threshold: float | None = None   # 0..1; changing it never resumes a paused rollout
+    failure_threshold: float | None = Field(None, ge=0, le=1)  # 0..1; changing it never resumes a paused rollout
 
 
 class CohortAssign(BaseModel):
@@ -709,8 +709,6 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
         # the auto-pause limit as a fraction of offered devices; an operator raises it
         # after diagnosing spurious fallbacks, or tightens it for a risky build. It is
         # only the limit: a rollout paused by the old limit stays paused until resumed.
-        if not 0 <= body.failure_threshold <= 1:
-            raise HTTPException(status_code=400, detail="failure_threshold must be 0..1")
         changes["failure_threshold"] = body.failure_threshold
     if body.state is not None:
         if body.state not in ("active", "paused"):
@@ -1972,7 +1970,7 @@ def get_product(product_id: int, request: Request,
 
 
 class ProductDeclare(BaseModel):
-    product_id: int
+    product_id: int = Field(ge=0, le=_INT63_MAX)
     """The id from the project's own config (`ota.toml`), which is where it is computed:
     the low 63 bits of sha256("<product>:<board>"). The server does not derive it, so the
     project stays the one place a product is named."""

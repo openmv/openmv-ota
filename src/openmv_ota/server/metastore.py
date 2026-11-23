@@ -72,13 +72,17 @@ def _iso_at(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
 
 
+_NO_LIMIT = (1 << 63) - 1
+
+
 def _limit(sql: str, params: tuple, limit, offset: int) -> tuple[str, tuple]:
     """Append the page clause. A limit pages; an offset alone still skips rows
-    (SQLite reads ``LIMIT -1`` as no cap); neither leaves the query whole."""
+    (under a limit no table reaches: Postgres refuses the ``LIMIT -1`` SQLite reads as no
+    cap); neither leaves the query whole."""
     if limit is not None:
         return sql + " LIMIT ? OFFSET ?", (*params, limit, offset)
     if offset:
-        return sql + " LIMIT -1 OFFSET ?", (*params, offset)
+        return sql + " LIMIT ? OFFSET ?", (*params, _NO_LIMIT, offset)
     return sql, params
 
 
@@ -583,6 +587,13 @@ _MIGRATIONS: list[list[str]] = [
     [   # v43 -- no longer read (when a camera last moved product, for the same refusal).
         "ALTER TABLE device_registrations ADD COLUMN product_moved_at TEXT",
     ],
+    [   # v44 -- the audit log read by account. It had its sequence number's index and no
+        # other, while every account's page of it, its recent activity and the "was this
+        # refusal seen" check on the check-in path filter by account: each read the whole
+        # server's log, so one account's page cost grew with every other account's history.
+        "CREATE INDEX IF NOT EXISTS idx_audit_account ON audit (account_id, seq)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit (account_id, action, entity_id)",
+    ],
 ]
 
 # How long after one refused check-in is audited the next one from the same camera is (see
@@ -594,10 +605,8 @@ REFUSAL_AUDIT_EVERY_S = 24 * 3600
 DEVICE_AUDIT_PER_DAY = 48
 
 
-def _a_day_since(when: str | None) -> bool:
-    """Whether ``when`` (an ISO time this store wrote, or None for never) is a day ago."""
-    if not when:
-        return True
+def _a_day_since(when: str) -> bool:
+    """Whether ``when`` (an ISO time this store wrote) is a day ago."""
     age = datetime.now(timezone.utc) - datetime.fromisoformat(when)
     return age.total_seconds() >= REFUSAL_AUDIT_EVERY_S
 
@@ -660,6 +669,11 @@ class SqlMetadataStore:
                 self._tls.conn = self._conn
                 try:
                     yield self._conn
+                except BaseException:
+                    # what a failed operation had pending is dropped here: left open, the
+                    # next statement's commit would have written half of it
+                    self._conn.rollback()
+                    raise
                 finally:
                     self._tls.conn = None
 
@@ -1720,11 +1734,16 @@ class SqlMetadataStore:
             if key in seen:                       # one row per (component, vuln) per scan
                 continue
             seen.add(key)
+            sev, text = f.get("severity", "unknown"), f.get("summary", "")
             if self.execute(
-                    "UPDATE advisories SET last_seen = ?, severity = ?, summary = ? "
+                    # a scan that could not read the advisory's detail (severity unknown,
+                    # no summary) keeps what an earlier one read
+                    "UPDATE advisories SET last_seen = ?, "
+                    "severity = CASE WHEN ? = 'unknown' THEN severity ELSE ? END, "
+                    "summary = CASE WHEN ? = '' THEN summary ELSE ? END "
                     "WHERE release_id = ? AND vuln_id = ? AND component = ? "
                     "AND cleared_at IS NULL",
-                    (now, f.get("severity", "unknown"), f.get("summary", ""),
+                    (now, sev, sev, text, text,
                      release_id, f["vuln_id"], f["component"])).rowcount:
                 continue                          # a repeat: still active, refreshed
             # Absent or cleared: insert or revive it -- unless another scan made it active
@@ -1842,20 +1861,21 @@ class SqlMetadataStore:
         recorded -- a different key under the same id is a ValueError -- and revoking is one-way:
         a key revoked here stays revoked whatever a later upload says. The certificates are the
         chain the caller verified (the API does, against :meth:`account_roots`)."""
-        cur = self.query_one("SELECT pubkey, revoked FROM desk_keys "
-                             "WHERE account_id = ? AND key_id = ?", (account_id, key_id))
-        if cur is not None and cur["pubkey"] != pubkey:
-            raise ValueError("desk key %d already has a different public key" % key_id)
-        revoked = bool(revoked) or bool(cur and cur["revoked"])
-        self.execute(
+        # Both rules are in the one statement that writes: checked by a read first, a renewal
+        # that read "not revoked" could land after a revoke and undo it, and two first uploads
+        # of one id could both pass.
+        done = self.execute(
             "INSERT INTO desk_keys (account_id, key_id, label, pubkey, expires, revoked, "
             "updated_at, cert, issuer_cert) VALUES (?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (account_id, key_id) DO UPDATE SET "
-            "label = excluded.label, expires = excluded.expires, revoked = excluded.revoked, "
+            "label = excluded.label, expires = excluded.expires, "
+            "revoked = CASE WHEN desk_keys.revoked = 1 THEN 1 ELSE excluded.revoked END, "
             "updated_at = excluded.updated_at, cert = excluded.cert, "
-            "issuer_cert = excluded.issuer_cert",
-            (account_id, key_id, label, pubkey, expires, int(revoked), _now_iso(), cert,
-             issuer_cert))
+            "issuer_cert = excluded.issuer_cert WHERE desk_keys.pubkey = excluded.pubkey",
+            (account_id, key_id, label, pubkey, expires, int(bool(revoked)), _now_iso(), cert,
+             issuer_cert)).rowcount
+        if not done:
+            raise ValueError("desk key %d already has a different public key" % key_id)
 
     def desk_keys(self, account_id: str) -> list[dict]:
         """An account's desk keys, by id."""
@@ -1945,13 +1965,18 @@ class SqlMetadataStore:
     def note_product_mismatch(self, device_id: str) -> bool:
         """A registered camera changed product without being sent. True when it is news (the
         first, or the first in a day), and noted as audited from now."""
-        row = self.query_one("SELECT product_mismatch_at FROM device_registrations "
-                             "WHERE device_id = ?", (device_id,))
-        if row is None or not _a_day_since(_d(row)["product_mismatch_at"]):
-            return False
-        self.execute("UPDATE device_registrations SET product_mismatch_at = ? "
-                     "WHERE device_id = ?", (_now_iso(), device_id))
-        return True
+        now = datetime.now(timezone.utc)
+        before = (now - timedelta(seconds=REFUSAL_AUDIT_EVERY_S)).isoformat()
+        # one statement: two check-ins at once take the day's event between them, not each
+        return self.execute(
+            "UPDATE device_registrations SET product_mismatch_at = ? WHERE device_id = ? "
+            "AND (product_mismatch_at IS NULL OR product_mismatch_at <= ?)",
+            (now.isoformat(), device_id, before)).rowcount == 1
+
+    def forget_offer(self, device_id: str) -> None:
+        """Drop the release a camera was last offered (its row keeps one until the next)."""
+        self.execute("UPDATE devices SET last_offered_release_id = NULL WHERE device_id = ?",
+                     (device_id,))
 
     def delete_registration(self, device_id: str) -> dict | None:
         """Release a camera: drop its registration, the account binding registering made, and its
@@ -2192,6 +2217,8 @@ class SqlMetadataStore:
             ("webhook_deliveries", "DELETE FROM webhook_deliveries WHERE webhook_id IN "
                                    "(SELECT webhook_id FROM webhooks WHERE account_id = ?)"),
             ("webhooks", "DELETE FROM webhooks WHERE account_id = ?"),
+            ("account_roots", "DELETE FROM account_roots WHERE account_id = ?"),
+            ("unclaimed_devices", "DELETE FROM unclaimed_devices WHERE account_id = ?"),
             ("advisories", "DELETE FROM advisories WHERE account_id = ?"),
             ("device_pins", "DELETE FROM device_pins WHERE account_id = ?"),
             ("device_registrations", "DELETE FROM device_registrations WHERE account_id = ?"),
@@ -2360,8 +2387,16 @@ class SqlMetadataStore:
         return self.query_one("SELECT 1 FROM admin_tokens WHERE account_id = ? AND name = ? "
                               "AND revoked = 0", (account_id, name)) is not None
 
-    def revoke_token(self, token_hash: str) -> None:
-        self.execute("UPDATE admin_tokens SET revoked = 1 WHERE token_hash = ?", (token_hash,))
+    def revoke_token(self, token_hash: str) -> bool:
+        """Revoke a token by its whole hash. False when there is no such token."""
+        return self.execute("UPDATE admin_tokens SET revoked = 1 WHERE token_hash = ?",
+                            (token_hash,)).rowcount == 1
+
+    def token_hashes(self, prefix: str) -> list[str]:
+        """The hashes of the tokens whose hash starts with ``prefix``, eight characters of
+        it or more (what `token list` prints is the first sixteen)."""
+        return [t["token_hash"] for t in self.list_tokens()
+                if len(prefix) >= 8 and t["token_hash"].startswith(prefix)]
 
     def list_tokens(self, account_id=None) -> list[dict]:
         where, params = ("WHERE account_id = ?", (account_id,)) if account_id is not None else ("", ())
@@ -2527,6 +2562,13 @@ class SqlMetadataStore:
             if won == 1:                 # another worker claimed it between our read and here
                 out.append(r)
         return out
+
+    def prune_deliveries(self, before: str) -> int:
+        """Drop the finished deliveries (sent, or given up on) recorded before ``before``.
+        One row is written per audit event per endpoint, and nothing else removed them while
+        the endpoint lived."""
+        return self.execute("DELETE FROM webhook_deliveries WHERE status <> 'pending' "
+                            "AND created_at < ?", (before,)).rowcount
 
     def finish_delivery(self, delivery_id: str, *, status: str, attempt: int, code, error: str,
                         next_at: float) -> None:

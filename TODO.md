@@ -173,4 +173,15 @@ budget for now; these are the free/cheap passes to run first, in order.
     call; a token in account `''` reads every account's `/fleet/bases`.
   - Rounds 8-10 (server): journal entries the audit budget dropped are not audited later; a
     `stale` refusal uses the day's refusal-audit slot.
+  - Round 13 (server): **a decision**: a camera that moves itself to another product of its
+    account is offered that product's rollout and counts in it, and a rollout pauses at one
+    failure in one attempt, so one camera can pause any product's rollout in its account
+    (the pause is visible, and the move is audited). Either a camera that moved itself does
+    not count until the account places it, or auto-pause needs a minimum number of attempts.
+    Also: the CLI's token and account commands write no audit row; the stored capability
+    secret wins over a changed environment value; a scan has no cap on findings and reads
+    one page of OSV results; path and query `product_id`s are unbounded; the audit hash
+    joins fields with `|` unescaped and leaves the account out; `list_products` aggregates
+    the whole account to answer one product; a datalake answer that is not a JSON object is
+    a 500; migrations are not serialised across instances starting together.
 - **When there is budget** — a targeted pentest of the update + signing chain only.

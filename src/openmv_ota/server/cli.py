@@ -292,9 +292,18 @@ def cmd_token_revoke(args: argparse.Namespace) -> int:
     except ServerError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
-    store.revoke_token(args.token_hash)
+    # `token list` prints the start of each hash, so the start is what this is given; it
+    # used to match the whole hash only, revoke nothing and say "revoked".
+    found = store.token_hashes(args.token_hash)
+    if len(found) == 1:
+        store.revoke_token(found[0])
     store.close()
-    print("revoked %s" % args.token_hash)
+    if len(found) != 1:
+        print("error: %s" % ("no token's hash starts with %s" % args.token_hash if not found
+                             else "%d tokens' hashes start with %s: give more of it"
+                             % (len(found), args.token_hash)), file=sys.stderr)
+        return 1
+    print("revoked %s" % found[0])
     return 0
 
 
@@ -319,7 +328,8 @@ def cmd_token_rotate(args: argparse.Namespace) -> int:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
     from .auth import hash_token
-    old = store.get_token(args.token_hash)
+    found = store.token_hashes(args.token_hash)
+    old = store.get_token(found[0]) if len(found) == 1 else None
     if old is None:
         store.close()
         print("error: no such token", file=sys.stderr)
@@ -331,7 +341,7 @@ def cmd_token_rotate(args: argparse.Namespace) -> int:
     token = secrets.token_urlsafe(32)
     store.add_token(hash_token(token), old["name"], old["scopes"], account_id=old["account_id"],
                     products=list(old.get("products") or ()))   # a limited token stays limited
-    store.revoke_token(args.token_hash)
+    store.revoke_token(old["token_hash"])
     store.close()
     print("rotated (old revoked); store the new token now -- not recoverable:", file=sys.stderr)
     print(token)
@@ -369,15 +379,26 @@ def _schedule_advisory_scans(app, settings) -> None:
         async def loop():
             while True:
                 await asyncio.sleep(settings.advisory_scan_interval_s)
-                for acct in app.state.metastore.list_accounts():
+                try:
+                    accounts = await asyncio.to_thread(_scan_accounts, app.state.metastore)
+                except Exception as e:           # noqa: BLE001 - keep the loop alive
+                    print("advisory scan: no account list: %s" % e, file=sys.stderr)
+                    continue
+                for account_id in accounts:
                     try:
                         await asyncio.to_thread(advisor.scan_account, app.state,
-                                                acct["account_id"], actor=advisor.SCHEDULER)
+                                                account_id, actor=advisor.SCHEDULER)
                     except Exception as e:       # noqa: BLE001 - keep the loop alive
                         print("advisory scan failed for %s: %s"
-                              % (acct["account_id"], e), file=sys.stderr)
+                              % (account_id, e), file=sys.stderr)
 
         app.state.advisory_task = asyncio.create_task(loop())
+
+
+def _scan_accounts(store) -> list[str]:
+    """The accounts the scheduled advisory scan covers: each one created, and the unnamed
+    account a self-hosted server's bootstrap token works in, which has no row of its own."""
+    return sorted({""} | {a["account_id"] for a in store.list_accounts()})
 
 
 def _bootstrap(store, settings) -> int:

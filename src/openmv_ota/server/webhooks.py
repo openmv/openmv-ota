@@ -21,6 +21,7 @@ import ipaddress
 import json
 import socket
 import time
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 # The event catalogue: every audit action a subscriber may name, and what it means.
@@ -83,6 +84,7 @@ EVENTS = {
 BACKOFF_S = (60, 300, 1800, 7200, 43200, 86400)
 MAX_ATTEMPTS = len(BACKOFF_S) + 1
 DISABLE_AFTER = 50                 # consecutive failed attempts before the endpoint is switched off
+DELIVERY_KEEP_S = 30 * 86400      # a finished delivery's record is kept this long
 MAX_ENDPOINTS = 20                 # per account
 
 
@@ -188,6 +190,7 @@ class Deliverer:
         self._ms = metastore
         self._settings = settings
         self._http = http
+        self._pruned_at = 0.0
 
     def _client(self):
         if self._http is None:                     # pragma: no cover - wired in prod only
@@ -204,6 +207,10 @@ class Deliverer:
     def run_once(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now
         sent = failed = dead = 0
+        if now - self._pruned_at >= 3600:
+            self._pruned_at = now
+            self._ms.prune_deliveries(datetime.fromtimestamp(
+                now - DELIVERY_KEEP_S, timezone.utc).isoformat())
         for d in self._ms.claim_due_deliveries(now):
             hook = self._ms.get_webhook(d["webhook_id"])
             if hook is None or not hook["active"]:

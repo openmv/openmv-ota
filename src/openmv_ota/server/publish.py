@@ -83,6 +83,8 @@ def _check_body(body, max_size: int) -> None:
         v = body.get(name, None if required else 0)
         if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= _I64_MAX:
             _refuse("manifest %s must be an integer in 0..2**63-1" % name)
+    if body.get("min_stub", 0) > 0x7FFFFFFF:
+        _refuse("manifest min_stub must be under 2**31")
     if body["size"] > max_size:
         _refuse("manifest size %d is over the %d byte image limit" % (body["size"], max_size))
     if not isinstance(body.get("sha256"), str):

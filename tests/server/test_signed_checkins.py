@@ -622,3 +622,110 @@ def test_a_version_with_a_major_past_127_checks_in(tmp_path):
     row = store.get_device(DEV)
     assert (row["current_payload_version"], row["fallback_payload_version"]) == \
         (0xC8000000, 0xC7000000)
+
+
+def test_a_camera_cannot_spend_the_days_event_and_settle_somewhere_else_unseen(tmp_path):
+    """The event is once a day. The product a camera is known under moves when the account
+    sent it or the move was audited, so one made while the day's event is spent is still a
+    change the next day: the trail ends up saying where the camera is."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    ts = int(time.time()) - 100
+
+    def report(**kw):
+        nonlocal ts
+        ts += 1
+        body = json.dumps({**json.loads(_body()), **kw}).encode()
+        return _check(c, body, camera.sign(key, body, ts=ts))
+
+    report()
+    report(product_id=BID + 5)                                         # the day's event
+    report()                                                           # back, as if a blip
+    report(product_id=BID + 9)                                         # and somewhere else
+    assert [e["data"]["reported"] for e in _audit(store, "device.product_mismatch")] == [BID + 5]
+    assert store.get_device(DEV)["product_id"] == BID + 9              # served there all the same
+    assert store.registration_product(DEV) == BID + 5                  # known as last audited
+    store.execute("UPDATE device_registrations SET product_mismatch_at = "
+                  "'2020-01-01T00:00:00+00:00'")                       # a day on
+    report(product_id=BID + 9)
+    assert [e["data"] for e in _audit(store, "device.product_mismatch")][-1] == \
+        {"product_id": BID + 5, "reported": BID + 9}
+    assert store.registration_product(DEV) == BID + 9
+    report(product_id=BID + 9)
+    assert len(_audit(store, "device.product_mismatch")) == 2
+
+
+def test_an_offer_made_after_a_camera_moved_itself_does_not_vouch_for_the_move(tmp_path):
+    """A rollout offers the release of the product a camera reports. The row kept that offer
+    until the next one, and "the release it was last offered is one of that product" then
+    read every later move there as the account's own."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    _rel2(store)
+    store.add_rollout(rollout_id="ro2", release_id="rel2", product_id=BID + 1,
+                      cohort="__default__", percent=100, state="active", account_id=ACCT)
+    ts = int(time.time()) - 100
+
+    def report(**kw):
+        nonlocal ts
+        ts += 1
+        body = json.dumps({**json.loads(_body()), **kw}).encode()
+        return _check(c, body, camera.sign(key, body, ts=ts))
+
+    aday = "UPDATE device_registrations SET product_mismatch_at = '2020-01-01T00:00:00+00:00'"
+    report()
+    assert report(product_id=BID + 1)["release_id"] == "rel2"          # offered where it went
+    store.execute(aday)
+    report()                                                           # back: nothing offered
+    assert store.get_device(DEV)["last_offered_release_id"] != "rel2"
+    store.execute(aday)
+    report(product_id=BID + 1)
+    assert len(_audit(store, "device.product_mismatch")) == 3          # each move, by itself
+    # ...and the offer made at the very check-in that moved it: with the day's event spent
+    # on another product, a second report from there used to read as sent, and be believed
+    store.execute(aday)
+    report(product_id=BID + 7)                                         # the day's event
+    assert report(product_id=BID + 1)["release_id"] == "rel2"          # offered, as anyone is
+    report(product_id=BID + 1)
+    assert store.registration_product(DEV) == BID + 7                  # not known there unseen
+    store.execute(aday)
+    report(product_id=BID + 1)
+    assert [e["data"] for e in _audit(store, "device.product_mismatch")][-1] == \
+        {"product_id": BID + 7, "reported": BID + 1}
+
+
+def test_a_cohort_pin_vouches_only_for_the_product_a_camera_is_known_under(tmp_path):
+    """A cohort of one product pinned to another's release sends that product's cameras.
+    Looked up under the fleet row, which is whatever the camera last said, a camera made
+    itself one of them with one report and was then "sent"."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    _rel2(store)                                                       # a release of BID + 1
+    store.set_cohort_pin(BID + 12, "__default__", "rel2", account_id=ACCT)
+    ts = int(time.time()) - 100
+
+    def report(**kw):
+        nonlocal ts
+        ts += 1
+        body = json.dumps({**json.loads(_body()), **kw}).encode()
+        return _check(c, body, camera.sign(key, body, ts=ts))
+
+    report()
+    report(product_id=BID + 16)                                        # the day's event
+    report(product_id=BID + 12)                                        # into the pinned cohort
+    report(product_id=BID + 1)                                         # and along its pin
+    report(product_id=BID + 1)
+    assert store.registration_product(DEV) == BID + 16
+    store.execute("UPDATE device_registrations SET product_mismatch_at = "
+                  "'2020-01-01T00:00:00+00:00'")
+    report(product_id=BID + 1)
+    assert [e["data"]["reported"] for e in _audit(store, "device.product_mismatch")] == \
+        [BID + 16, BID + 1]
+
+
+def test_two_check_ins_at_once_take_one_product_change_event_between_them(tmp_path):
+    _c, store = _app(tmp_path)
+    _register(store)
+    assert store.note_product_mismatch(DEV) is True
+    assert store.note_product_mismatch(DEV) is False
+    assert store.note_product_mismatch("OPENMV_N6:nobody") is False

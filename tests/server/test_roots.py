@@ -161,3 +161,14 @@ def test_the_store_keeps_a_recorded_key_s_public_half_fixed(tmp_path):
         store.put_desk_key("acctA", 5, label="b", pubkey="04bb", expires="2099-01-01T00:00:00Z",
                            revoked=False)
     assert store.desk_keys("acctA")[0]["cert"] == "aa"
+
+
+def test_a_renewal_cannot_undo_a_revoke_it_did_not_see(tmp_path):
+    """Revoking is one-way in the statement that writes, not in a read before it: a renewal
+    that read "not revoked" used to land after the revoke and clear it."""
+    _c, store = _server(tmp_path)
+    kw = dict(label="b", pubkey="04aa", expires="2099-01-01T00:00:00Z")
+    store.put_desk_key("acctA", 5, revoked=False, **kw)
+    store.put_desk_key("acctA", 5, revoked=True, **kw)
+    store.put_desk_key("acctA", 5, revoked=False, **kw)
+    assert store.desk_keys("acctA")[0]["revoked"] is True

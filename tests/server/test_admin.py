@@ -338,7 +338,16 @@ def test_rollout_patch_failure_threshold(tmp_path):
     assert r.status_code == 200 and r.json()["failure_threshold"] == 0.2
     assert r.json()["state"] == "paused"                                   # still paused
     assert c.patch("/api/v1/admin/rollouts/ro_a", headers=AUTH,
-                   json={"failure_threshold": 1.5}).status_code == 400
+                   json={"failure_threshold": 1.5}).status_code == 422
+    # A percent no rollout has is refused as a new one's is: stored, an infinite one could
+    # not be written as JSON, so the account's whole rollout list stopped answering.
+    for bad in ("Infinity", "1e9", "-1", "NaN"):
+        r = c.patch("/api/v1/admin/rollouts/ro_a", content='{"percent": %s}' % bad,
+                    headers={**AUTH, "Content-Type": "application/json"})
+        assert r.status_code == 422, bad
+    assert c.get("/api/v1/admin/rollouts", headers=AUTH).status_code == 200
+    assert c.post("/api/v1/admin/products", headers=AUTH,
+                  json={"product_id": -5, "name": "n"}).status_code == 422
     ev = [e for e in c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
           if e["action"] == "rollout.update"][-1]
     assert ev["data"] == {"failure_threshold": 0.2}

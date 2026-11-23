@@ -271,7 +271,31 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   release it was last offered, or is pinned to, is not one of that product), is served and
   filed under the product it reports, and the change is a `device.product_mismatch` audit
   event, at most once a day for a camera. Pinning a camera to another product's release is how
-  an account moves one, and raises no event.
+  an account moves one, and raises no event. The product a camera is known under moves when
+  the account sent it or the change was audited, so a move made after the day's event is
+  still a change the next day; an offer made to a camera that moved itself no longer
+  counts as the account having sent it; and a cohort's pin sends the cameras known under
+  its product, not one that reported its way into it.
+- **`server token revoke` and `rotate` take the hash `token list` prints.** The list shows
+  the first 16 characters of each hash and revoke matched the whole hash, so given what the
+  list printed it revoked nothing and said `revoked`. Both now take the start of a hash (eight characters or more),
+  refuse one that names no token or several, and print the whole hash they acted on.
+- **A number JSON cannot carry is a 422.** An infinite or NaN number in a request body failed
+  while the refusal was being written, a 500; a rollout raised to an infinite percent by
+  `PATCH` was stored and the account's rollout list stopped answering. `PATCH /rollouts`
+  bounds `percent` and `failure_threshold` as creating one does (a threshold out of range is
+  now a 422, not a 400), a declared `product_id` is 0..2**63-1, a manifest's `min_stub` is
+  under 2**31, and a validation error names the field and not the value sent.
+- **Server housekeeping.** The audit log is indexed by account (migration v44: an account's
+  page of it read every account's rows). A finished webhook delivery's record is dropped
+  after 30 days. Deleting an account takes its pinned roots and its list of unclaimed
+  boards. The scheduled advisory scan covers the unnamed account of a self-hosted server,
+  survives a database error, keeps an advisory's severity when its detail could not be read,
+  and treats an SBOM whose component fields are not text as unreadable. `server check`
+  redacts a credential in any URL setting, before the host or in the query. A desk key's
+  revoke cannot be undone by a renewal racing it. An operation that fails part-way on SQLite
+  leaves nothing for the next statement to commit. A page offset without a limit is SQL
+  Postgres accepts.
 - **A rollout's counters count cameras.** `attempted`, `updated` and `failures` were counted
   per transition in what a camera reported, so one camera alternating a fallback reason
   with none could fail a rollout into its auto-pause, and one alternating its version could

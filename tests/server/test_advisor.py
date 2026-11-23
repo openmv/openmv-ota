@@ -155,6 +155,18 @@ def test_scan_release_without_or_with_bad_sbom(tmp_path):
     assert out["findings"] == 0
     assert len([e for e in st.metastore.read_audit()
                 if e["action"] == "advisory.scan"]) == 3
+    # ...and a component whose fields are not text is one the scan cannot read: each of
+    # these was a TypeError, which ended the scheduled scan of the whole account
+    for i, comp in enumerate(({"name": ["x"]}, {"name": "micropython", "version": 1},
+                              {"name": "x", "purl": {}},
+                              {"name": "x", "properties": [{"name": "openmv-ota:commit",
+                                                            "value": 5}]},
+                              {"name": "x", "properties": [{"name": 5, "value": "v"}]})):
+        st.storage.put("sbom/t%d.json" % i, json.dumps({"components": [comp]}).encode(),
+                       "application/json")
+        out = advisor.scan_release(st, {"release_id": "t%d" % i, "account_id": "a",
+                                        "sbom_key": "sbom/t%d.json" % i})
+        assert out["findings"] == 0
 
 
 def test_an_unreadable_sbom_keeps_the_standing_advisories(tmp_path):
@@ -414,3 +426,27 @@ def test_an_sbom_the_scan_cannot_use_is_unreadable_not_a_crash_or_a_day_of_queri
     out = advisor.scan_release(st, {"release_id": "r1", "account_id": "a", "sbom_key": "sbom/x.json"})
     assert out == {"release_id": "r1", "findings": 0, "new": [], "cleared": 0} and asked == []
     assert [r["vuln_id"] for r in st.metastore.list_advisories(account_id="a")] == ["CVE-9"]
+
+
+def test_a_detail_that_could_not_be_read_is_asked_for_again_and_degrades_nothing(tmp_path):
+    """One bad answer from the advisory service was remembered until the server restarted,
+    and the next scan wrote it over the finding: a critical advisory became one of unknown
+    severity with no summary."""
+    hits = {("commit", "c" * 40): ["CVE-7"]}
+    comps = [{"name": "x", "version": "1", "properties": _commit("c" * 40)}]
+    http = _StubHttp(hits=hits, vulns={})
+    client = OsvClient(http=http, url="u")
+    assert advisor.REAL_OSV_SCAN(client, comps)[0]["severity"] == "unknown"
+    http.vulns["CVE-7"] = {"id": "CVE-7", "summary": "overflow",
+                           "database_specific": {"severity": "CRITICAL"}}
+    good = advisor.REAL_OSV_SCAN(client, comps)
+    assert good[0]["severity"] == "critical" and good[0]["summary"] == "overflow"
+    ms = _state(tmp_path).metastore
+    ms.upsert_advisories("r1", good, account_id="a")
+    ms.upsert_advisories("r1", [dict(good[0], severity="unknown", summary="")], account_id="a")
+    row = ms.query_one("SELECT severity, summary FROM advisories WHERE vuln_id = 'CVE-7'")
+    assert (row["severity"], row["summary"]) == ("critical", "overflow")
+    client._details.update(("V%d" % i, {}) for i in range(advisor.MAX_DETAILS))
+    del client._details["CVE-7"]
+    advisor.REAL_OSV_SCAN(client, comps)                               # full: read afresh
+    assert list(client._details) == ["CVE-7"]
