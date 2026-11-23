@@ -2393,6 +2393,10 @@ class SqlMetadataStore:
         return self.execute("UPDATE admin_tokens SET revoked = 1 WHERE token_hash = ? "
                             "AND revoked = 0", (token_hash,)).rowcount == 1
 
+    def restore_token(self, token_hash: str) -> None:
+        """Undo a revoke made on the way to a replacement that was never handed over."""
+        self.execute("UPDATE admin_tokens SET revoked = 0 WHERE token_hash = ?", (token_hash,))
+
     def token_hashes(self, prefix: str) -> list[str]:
         """The hashes of the tokens whose hash starts with ``prefix``, eight characters of
         it or more (what `token list` prints is the first sixteen)."""

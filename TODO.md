@@ -178,6 +178,13 @@ budget for now; these are the free/cheap passes to run first, in order.
     failure in one attempt, so one camera can pause any product's rollout in its account
     (the pause is visible, and the move is audited). Either a camera that moved itself does
     not count until the account places it, or auto-pause needs a minimum number of attempts.
+    Round 16: **a decision**: resuming a rollout that a newer one superseded leaves two
+    active for one product and cohort, and the older release is offered again if the newer
+    pauses (refuse the resume, or let it supersede the newer). A webhook test ping has no
+    rate limit and its audit row lands in the unnamed account. An account can pin a device
+    id it has never seen, and the id's later owner cannot pin or unpin until the camera
+    checks in. Two accounts registering one id at once, or one account registering past
+    its device limit at once, are read-then-write.
     Also: the CLI's token and account commands write no audit row; the stored capability
     secret wins over a changed environment value; a scan has no cap on findings and reads
     one page of OSV results; path and query `product_id`s are unbounded; the audit hash

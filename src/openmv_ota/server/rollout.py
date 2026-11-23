@@ -153,6 +153,8 @@ def validate_stages(stages):
             pct = float(s["percent"])
             soak = float(s.get("min_soak", 0))
             att = int(s.get("min_attempted", 0))
+            mfr = s.get("max_failure_rate")
+            mfr = None if mfr is None else float(mfr)
         except (KeyError, TypeError, ValueError):
             raise ValueError("stage %d needs a numeric percent (min_soak/min_attempted optional)"
                              % i) from None
@@ -163,8 +165,7 @@ def validate_stages(stages):
         if not 0 <= soak < float("inf") or att < 0:              # (a NaN is not >= 0)
             raise ValueError("stage %d min_soak/min_attempted must be >= 0" % i)
         clean = {"percent": pct, "min_soak": soak, "min_attempted": att}
-        if s.get("max_failure_rate") is not None:
-            mfr = float(s["max_failure_rate"])
+        if mfr is not None:
             if not 0 <= mfr <= 1:
                 raise ValueError("stage %d max_failure_rate must be 0..1" % i)
             clean["max_failure_rate"] = mfr

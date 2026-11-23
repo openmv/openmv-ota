@@ -148,6 +148,7 @@ def test_validate_stages_cleans_and_defaults():
     ([{"percent": 1, "min_soak": float("nan")}], ">= 0"),      # stored, it never ramps and
     ([{"percent": 1, "min_soak": float("inf")}], ">= 0"),      # is not JSON to answer with
     ([{"percent": float("nan")}], "0..100"),
+    ([{"percent": 1, "max_failure_rate": [1]}], "numeric percent"),
     ([{"percent": 1, "max_failure_rate": 2}], "0..1"),
     ([5], "must be an object"),
 ])
