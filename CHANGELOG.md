@@ -231,9 +231,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that named the old headers, follow.
 - **Host tools read a project's files and a firmware tree without running or following
   them.** `git` is run with the tree's own monitor, hooks and content filters off, wherever
-  its config keeps a filter (an included file, a worktree's config, a submodule's); a
-  history file that is a link, or sits in a linked directory, is neither read nor appended
-  to, and one with a line that is not an event still reads.
+  its config keeps a filter (an included file, a worktree's config, a submodule's); a tree
+  whose config has git work on another tree, or whose submodule is a link, is refused. A
+  project's `build/` that is a link, or has one in it, is refused by the commands that
+  write there, pack from there, flash or publish. A history file that is a link, or sits in
+  a linked directory, is neither read nor appended to, and one with a line that is not an
+  event still reads.
 
 - **A payload version is 32 bits.** A major up to 255, not 31 bits: check-ins accept it and
   Postgres stores it.

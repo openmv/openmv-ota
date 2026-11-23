@@ -27,6 +27,8 @@ from pathlib import Path
 
 from openmv_ota.server.scopes import ALL_SCOPES, SCOPES
 
+from openmv_ota.project.outdir import output_dir
+
 from . import config
 from .errors import ClientError
 
@@ -1008,7 +1010,7 @@ def _fleet_bases(args: argparse.Namespace, api, out: Path, plain) -> int:
 def cmd_publish(args: argparse.Namespace) -> int:
     try:
         cfg = config.resolve(args.server, args.token)
-        out = Path(args.output) if args.output else Path(args.project) / "build"
+        out = output_dir(args.project, args.output, ClientError)
         manifest = out / ("%s-manifest.bin" % args.board)
         if not manifest.exists():
             raise ClientError("no built release for %s in %s -- run `build ota-romfs` first"

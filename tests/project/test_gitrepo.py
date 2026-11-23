@@ -285,3 +285,43 @@ def test_a_submodule_s_filter_does_not_run(make_firmware, tmp_path):
     # ...and the filter is live: git runs it when nothing stands in the way
     subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True)
     assert ran.exists()
+
+
+def test_a_tree_git_would_read_somewhere_else_is_refused(make_firmware, tmp_path):
+    """The filters are collected from the tree this walks. A submodule path that is a link
+    to another repository, or a config that moves the worktree, has git read another."""
+    ran, prog = _clean_prog(tmp_path)
+    other = make_firmware("other")
+    gitrepo.run_git(other, "config", "filter.x.clean", str(prog))
+    _change_a_file(other, "* filter=x\n")
+    repo = make_firmware()
+    inner = make_firmware("inner")
+    gitrepo.run_git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                    str(inner), "lib/inner")
+    gitrepo.run_git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "sub")
+    assert not gitrepo.is_dirty(repo / "lib")                   # from a directory inside it
+    import shutil
+    shutil.rmtree(repo / "lib" / "inner")
+    (repo / "lib" / "inner").symlink_to(other)
+    with pytest.raises(ProjectError, match="is a link"):
+        gitrepo.is_dirty(repo)
+    moved = make_firmware("moved")
+    gitrepo.run_git(moved, "config", "core.worktree", str(other))
+    with pytest.raises(ProjectError, match="another tree"):
+        gitrepo.describe(moved)
+    assert not ran.exists()
+    assert gitrepo.dirty_paths(tmp_path) == []                  # no tree at all: nothing to read
+
+
+def test_config_the_caller_s_environment_carries_is_kept(make_firmware, tmp_path, monkeypatch):
+    """A CI passes `safe.directory` this way; the filter overrides go after it."""
+    repo = make_firmware()
+    gitrepo.run_git(repo, "config", "filter.x.clean", "false")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "someone")
+    assert gitrepo.run_git(repo, "config", "user.name") == "someone"
+    env = gitrepo._no_filters(repo)
+    assert env["GIT_CONFIG_COUNT"] == "5" and env["GIT_CONFIG_KEY_1"] == "filter.x.clean"
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "many")
+    assert gitrepo._no_filters(repo)["GIT_CONFIG_COUNT"] == "4"

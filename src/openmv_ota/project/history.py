@@ -60,7 +60,7 @@ def read(root: str | Path) -> list[dict]:
             continue
         try:
             entry = json.loads(line)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):               # (a line of brackets is the second)
             continue
         if isinstance(entry, dict):
             out.append(entry)

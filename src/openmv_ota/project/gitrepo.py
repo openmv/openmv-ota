@@ -23,33 +23,60 @@ GIT = "git"
 _QUIET = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null")
 
 
+def _env_count() -> int:
+    """How many config settings the caller's environment carries for git (0 when the
+    count is not a number: git itself stops on that, and this replaces it)."""
+    try:
+        return max(0, int(os.environ.get("GIT_CONFIG_COUNT", "0")))
+    except ValueError:
+        return 0
+
+
 def _filter_names(repo: Path, nested: bool, seen: set[str]) -> None:
     """Collect the content filters a tree's own config defines -- the files it includes and
     a worktree's config too -- and, with ``nested``, those of each submodule checked out
-    under it (`git status` looks into them with their own config). Reading runs nothing."""
+    under it (`git status` looks into them with their own config). Reading runs nothing.
+
+    The tree git works on is the one this walks: a config that moves the worktree somewhere
+    else, or a submodule's path that is a link to another repository, would have git read
+    files this never looked at, and such a tree is refused."""
     def git(*args: str) -> list[str]:
-        proc = subprocess.run([GIT, *_QUIET, "-C", str(repo), *args],
-                              capture_output=True, text=True)
+        proc = subprocess.run([GIT, *_QUIET, "-C", str(repo), *args], capture_output=True,
+                              text=True, env=env)
         return proc.stdout.split("\0") if proc.returncode == 0 else []
+    env = {**os.environ, "GIT_CONFIG_COUNT": str(_env_count())}
     fields = git("config", "--includes", "--show-scope", "--name-only", "-z",
                  "--get-regexp", r"^filter\.")
     for scope, name in zip(fields[0::2], fields[1::2], strict=False):
         # the user's own filters (git-lfs) stay: without one a tree that uses it reads dirty
         if scope in ("local", "worktree") and name.count(".") >= 2:
             seen.add(name.rsplit(".", 1)[0])
-    if nested:
-        for entry in git("ls-files", "-s", "-z"):
-            mode, _, path = entry.partition("\t")
-            sub = repo / path
-            if mode.startswith("160000") and (sub / ".git").exists() and not sub.is_symlink():
-                _filter_names(sub, True, seen)
+    if not nested:
+        return
+    top = (git("rev-parse", "--show-toplevel") or [""])[0].rstrip("\n")
+    if not top:
+        return                  # not a work tree: git has no files to read here either
+    here = Path(os.path.realpath(repo))
+    if Path(top) != here and Path(top) not in here.parents:
+        raise ProjectError("%s: its git config works on another tree (%s)" % (repo, top))
+    for entry in subprocess.run([GIT, *_QUIET, "-C", top, "ls-files", "-s", "-z"],
+                                capture_output=True, text=True, env=env).stdout.split("\0"):
+        mode, _, path = entry.partition("\t")
+        if not mode.startswith("160000"):
+            continue
+        sub = Path(top) / path
+        if sub.is_symlink():
+            raise ProjectError("%s: the submodule %s is a link" % (repo, path))
+        if (sub / ".git").exists():
+            _filter_names(sub, True, seen)
 
 
 def _no_filters(repo: Path, nested: bool = False) -> dict[str, str]:
     """Environment that empties every content filter the tree's own config defines (`git
     status` runs a filter's `clean` program on a changed file). It is the environment and
     not `-c`: a filter's name may hold an `=`, which `-c` would read as the end of the key,
-    and git hands it down to the git it runs in a submodule."""
+    and git hands it down to the git it runs in a submodule. It adds to any config the
+    caller's own environment already carries this way."""
     names: set[str] = set()
     try:
         _filter_names(repo, nested, names)
@@ -57,8 +84,9 @@ def _no_filters(repo: Path, nested: bool = False) -> dict[str, str]:
         return {}           # run_git reports the missing binary
     pairs = [(name + key, value) for name in sorted(names) for key, value in
              ((".clean", ""), (".smudge", ""), (".process", ""), (".required", "false"))]
-    env = {"GIT_CONFIG_COUNT": str(len(pairs))}
-    for i, (key, value) in enumerate(pairs):
+    base = _env_count()
+    env = {"GIT_CONFIG_COUNT": str(base + len(pairs))}
+    for i, (key, value) in enumerate(pairs, base):
         env["GIT_CONFIG_KEY_%d" % i] = key
         env["GIT_CONFIG_VALUE_%d" % i] = value
     return env

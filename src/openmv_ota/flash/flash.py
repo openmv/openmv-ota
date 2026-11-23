@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from openmv_ota.project import history
+from openmv_ota.project.outdir import output_dir
 from openmv_ota.romfs import boards as _boards
 
 from . import alif, arduino, device, dfu, imx, inventory, runner, tools
@@ -80,7 +81,7 @@ class FlashStep:                 # a dfu step (an imx step is flash.imx.ImxStep)
 
 
 def _output_dir(project: str, output: str | None) -> Path:
-    return Path(output) if output else Path(project) / "build"
+    return output_dir(project, output, FlashError)
 
 
 _DFU_WAIT_S = 60          # a DFU device to appear (covers a bootloader entered by hand, or an nRST catch)

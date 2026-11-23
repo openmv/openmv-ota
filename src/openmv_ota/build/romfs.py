@@ -15,6 +15,7 @@ from openmv_ota.ota import geometry
 from openmv_ota.project import load_project
 from openmv_ota.project.config import derive_product_id
 from openmv_ota.project.errors import ProjectError
+from openmv_ota.project.outdir import output_dir
 from openmv_ota.project.project import COPROCESSOR_APP, ProjectPaths
 from openmv_ota.romfs import boards as boards_mod
 from openmv_ota.romfs.builder import build_image
@@ -401,7 +402,7 @@ def build_romfs(
 
     app_dir = Path(app) if app else project / "app"
     copro_dir = project / COPROCESSOR_APP
-    out_dir = Path(output) if output else project / "build"
+    out_dir = output_dir(project, output, BuildError)
     if p.config.ota:
         _warn_stale_device_lib(p)
     _warn_product_id_collisions(p.config)
@@ -784,7 +785,7 @@ def build_factory_romfs(
 
     app_dir = Path(app) if app else project / "app"
     copro_dir = project / COPROCESSOR_APP
-    out_dir = Path(output) if output else project / "build"
+    out_dir = output_dir(project, output, BuildError)
     _warn_product_id_collisions(p.config)
 
     targets = _select_targets(p.targets, boards)
@@ -1022,7 +1023,7 @@ def build_ota_image(
         raise BuildError("ota-image needs an OTA project (create with "
                          "`openmv-ota project new --ota`)", exit_code=1)
 
-    out_dir = Path(output) if output else project / "build"
+    out_dir = output_dir(project, output, BuildError)
     targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
     if not targets:
         raise BuildError("no matching main targets in this project")
@@ -1293,7 +1294,7 @@ def build_manifest(
     signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota",
                           key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
 
-    out_dir = Path(output) if output else project / "build"
+    out_dir = output_dir(project, output, BuildError)
     targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
     if not targets:
         raise BuildError("no matching main targets in this project")
@@ -1433,7 +1434,7 @@ def build_ota_romfs(
             "counter from the server -- log in (`openmv-ota client login`) and build again. "
             "Cameras built with product_id 0 order their images by that counter, so a build "
             "without one cannot be installed over anything.", exit_code=1)
-    out_dir = Path(output) if output else project / "build"
+    out_dir = output_dir(project, output, BuildError)
     targets = [t for t in _select_targets(p.targets, boards) if t.role == "main"]
     if not targets:
         raise BuildError("no matching main targets in this project")

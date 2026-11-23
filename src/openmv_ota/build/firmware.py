@@ -38,6 +38,7 @@ from pathlib import Path
 
 from openmv_ota.project import load_project
 from openmv_ota.project.errors import ProjectError
+from openmv_ota.project.outdir import output_dir
 from openmv_ota.project.project import CLOUD_ROOTS, ProjectPaths
 from openmv_ota.romfs.boards import get_board
 
@@ -120,7 +121,7 @@ def build_firmware(
     except ProjectError as e:
         raise BuildError(str(e), exit_code=e.exit_code) from None
 
-    out_dir = Path(output) if output else project / "build"
+    out_dir = output_dir(project, output, BuildError)
     names = _select_boards(p.targets, boards)
     if not names:
         raise BuildError("no matching boards in this project")

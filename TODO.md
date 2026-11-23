@@ -149,6 +149,13 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 12 (device, host), each needs a bench: the STM32 stub reads the four places of
+    the flash key in one call, so a word torn in the first (power cut while it was
+    programmed) fails the read of all four; the RT1062 fuse key's plausibility is checked
+    on the words drawn, not on the fuses, before the lock; the N6 and RT1062 stubs leave the
+    derived key in RAM when they lock the engine (the H7 and AE3 ports clear it). Host:
+    `gzip.decompress` of an image or a component has no size cap; a ledger entry's `path`
+    is joined without containment.
   - Round 9 (device, host): **a decision**: `keys/backends.json` is committed with the
     project and names what signs (a PKCS#11 module to load, a `module:callable` to import),
     so building a project someone else made runs their code; taking those two from the
