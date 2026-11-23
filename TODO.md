@@ -70,9 +70,9 @@ budget for now; these are the free/cheap passes to run first, in order.
   - A camera names its own `product_id` on every check-in, and the fleet row follows it. On
     an account that models each customer as a product, a customer's camera can report a
     sibling product: it is offered that product's release, shows in its fleet, and a
-    fallback from it counts against that rollout. Make the product sticky per device for a
-    nonzero id (with an admin move), which changes what a USB reflash to another product
-    does.
+    fallback from it counts against that rollout. Refusing it was tried and withdrawn (it
+    stranded cameras making legitimate moves); a change the account did not send the camera
+    to is the `device.product_mismatch` audit event, and that is where this stands.
   - A product-limited token lists every cohort label in the account, and assigning by
     product declares a label account-wide.
   - Whoever answers the check-in can reboot a camera once a poll: an offer after the boot
@@ -131,9 +131,6 @@ budget for now; these are the free/cheap passes to run first, in order.
     registers; a learned binding from an unsigned check-in takes any account string; publish
     and local-storage downloads read a whole artifact into memory per request with no
     concurrency bound; a product-limited token can list every cohort label of its account.
-  - A camera offered a release of another product while it could not sign (cold clock), and
-    unpinned before its next signed check-in, reads as `device.product_mismatch` until it
-    is pinned again or forgotten.
   - Round 6 (host): `keys retire` re-certifies every entry of `trusted_keys.json` without
     checking that its existing certificate verifies under the root; the keykeeper checks a
     registration's signature but not its freshness, and seals for expired desks; USB serial
@@ -146,18 +143,10 @@ budget for now; these are the free/cheap passes to run first, in order.
     anything is fetched (a hostile server can loop it); the factory window signs any 32
     bytes with the identity key (console access); a `.hilcov_uart` file on a volume turns
     on debug logging; the installer's header reader keeps up to 64 headers of 4 KiB.
-  - Round 7 (server): a camera that has never enrolled names its own product on its first
-    signed check-in (the server has nothing to compare it to; a pin's product is not
-    consulted); "is it news" checks are read-then-write, so a burst can audit a few rows
+  - Round 7 (server): "is it news" checks are read-then-write, so a burst can audit a few rows
     instead of one; registration's device-limit check is check-then-write; an unsigned
     check-in naming a registered camera with a sealed release pending is one keykeeper
     call; a token in account `''` reads every account's `/fleet/bases`.
-  - Rounds 8-10 (server), the product a camera is held to: registering a camera again in
-    the middle of a cross-product trial forgets the product it left, so a failed trial
-    then reads as a mismatch; so does a fallback to the other slot long after a move was
-    confirmed, a desk reflash to another product without registering, a limited-token
-    forget in the middle of a move (it drops the pin), and an unpin before the first signed
-    check-in in the new product. Each has a one-step exit (pin to a release of the
-    product, or register again). Journal entries the audit budget dropped are not audited
-    later; a `stale` refusal uses the day's refusal-audit slot.
+  - Rounds 8-10 (server): journal entries the audit budget dropped are not audited later; a
+    `stale` refusal uses the day's refusal-audit slot.
 - **When there is budget** — a targeted pentest of the update + signing chain only.

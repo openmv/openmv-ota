@@ -1030,31 +1030,19 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
                            existing, account_id, nothing)
     # The product this camera is KNOWN under is the one on its registration: written by every
     # check-in that stores its row, and kept when the row is forgotten. None is "not yet":
-    # never enrolled, forgotten by a token for the whole account, or registered again at a
-    # desk (reflashed, perhaps as another product) -- it enrols under what it reports.
-    # ``prev`` is where it was before its last move: a move that fails its trial reverts to
-    # the old image, which reports the old product. Open until the camera confirms the image
-    # it moved to, comes back, or a day has passed since the move -- the last two by the
-    # server's own record, since "confirmed" is a word the camera writes.
-    known, prev = ms.registration_products(checkin.device_id)
-    if known is not None and checkin.product_id not in (known, prev) and \
-            not _sent_to_product(ms, existing or {}, checkin, account_id):
-        # A CAMERA DOES NOT MOVE ITSELF BETWEEN PRODUCTS. Its signature says which camera, not
-        # which product: the product is a number in a body the camera wrote. Taken at its word
-        # it got an ingest grant for the other product's data, a place in that product's fleet
-        # (and in the view of a token limited to it), and a vote in its rollouts. A camera
-        # changes product because the account SENT it there (a pin to another product's
-        # release: the claim primitive), and that is the server's own record, not the
-        # camera's word. Without it the known product stands and this check-in gets what an
-        # unsigned one gets. Forgetting the device with a token for the WHOLE account lets it
-        # enrol under what it reports; one limited to a product forgets the row and no more.
-        if ms.note_product_mismatch(checkin.device_id):
-            ms.append_audit(actor="checkin", action="device.product_mismatch",
-                            entity_type="device", entity_id=checkin.device_id,
-                            data={"product_id": known, "reported": checkin.product_id},
-                            account_id=account_id, product_id=known)
-        return _offer_only(st, checkin, existing["cohort"] if existing else "__default__",
-                           existing, account_id, nothing)
+    # never enrolled, forgotten by a token for the whole account, or registered again at a desk.
+    known = ms.registration_product(checkin.device_id)
+    # A CAMERA THAT CHANGES PRODUCT BY ITSELF IS SERVED, AND AUDITED. Its signature says which
+    # camera, not which product: the product is a number in a body the camera wrote. An
+    # account moves a camera by pinning it to another product's release (claim, transfer and
+    # reset are all that), and a camera reporting a product it was sent to is the server's
+    # own doing. One reporting a product it was NOT sent to -- reflashed by hand, back from a
+    # trial that failed after it was noted, a pin lifted before it arrived -- is filed under
+    # what it reports like any other, and the change is one audit event for the account to
+    # see. It was refused once; every legitimate way to change product then had to be told
+    # apart from that, and a camera refused by mistake is a camera that stops updating.
+    moved_itself = known is not None and known != checkin.product_id and \
+        not _sent_to_product(ms, existing or {}, checkin, account_id)
     if existing is None and ms.over_device_limit(account_id) and \
             (ms.get_registration(checkin.device_id) or {}).get("account_id") != account_id:
         # A NEW device past the account's entitlement: not registered (zero footprint,
@@ -1090,20 +1078,22 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         last_offered_release_id=release_id, registrar_ref=reg.registrar_ref or None,
         account_id=account_id)
     # The product this camera is in the fleet under, kept on its registration: the fleet row
-    # can be forgotten (by a token limited to one product, too), and what it enrols under
-    # next is then checked against this, not taken from what it reports. Written whenever
-    # it differs from what this check-in stored (a camera with a row and no note gets one);
-    # the product it left stays as ``prev`` until the camera confirms where it went.
+    # can be forgotten, and a change is measured against this. Written whenever it differs
+    # from what this check-in stored (a camera with a row and no note gets one).
     if known != checkin.product_id:
         ms.set_registration_product(checkin.device_id, checkin.product_id)
-    elif prev is not None and checkin.confirmed:
-        ms.settle_registration_product(checkin.device_id)
     # WHAT A CAMERA REPORTS REACHES THE AUDIT TRAIL AFTER ITS ROW IS WRITTEN, AND ON A DAILY
     # BUDGET. After: a report the store refused used to leave its audit rows behind and its
     # journal mark where it was, so the same rows were written again by the next one. On a
     # budget: the trail is one append-only chain for the whole server and every row is a
     # delivery to each of the account's webhooks, while a camera chooses its fallback reason
     # and its journal's numbers -- eight fresh entries a check-in, for as long as it liked.
+    if moved_itself and ms.audit_budget(checkin.device_id):
+        # Filed under the product it left: the one whose fleet no longer has it.
+        ms.append_audit(actor="checkin", action="device.product_mismatch", entity_type="device",
+                        entity_id=checkin.device_id,
+                        data={"product_id": known, "reported": checkin.product_id},
+                        account_id=account_id, product_id=known)
     if existing is None:
         ms.append_audit(actor="checkin", action="device.enrolled", entity_type="device",
                         entity_id=checkin.device_id,

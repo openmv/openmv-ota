@@ -556,8 +556,7 @@ _MIGRATIONS: list[list[str]] = [
         "rollout_id TEXT NOT NULL, device_id TEXT NOT NULL, "
         "attempted INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, "
         "failures INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (rollout_id, device_id))",
-        # When a camera last reported a product other than its fleet row's and it was audited
-        # (note_product_mismatch): what keeps a camera that keeps saying so to a row a day.
+        # No longer read: a product change is audited on the camera's daily budget.
         "ALTER TABLE devices ADD COLUMN product_mismatch_at TEXT",
     ],
     [   # v41 -- the product a registered camera is in the fleet under, on its registration, so
@@ -570,11 +569,9 @@ _MIGRATIONS: list[list[str]] = [
         "ALTER TABLE devices ADD COLUMN audit_day TEXT",
         "ALTER TABLE devices ADD COLUMN audit_count INTEGER NOT NULL DEFAULT 0",
     ],
-    [   # v42 -- the product a camera was under BEFORE its last move, and when a mismatch was
-        # last audited, both on the registration. The first so a move that fails its trial can
-        # come back (the camera reverts to the image it had, and reports that image's product);
-        # the second so a camera with no fleet row is audited too. And a payload version is 32
-        # bits unsigned (major << 24, major up to 255): Postgres' INTEGER holds 31.
+    [   # v42 -- a payload version is 32 bits unsigned (major << 24, major up to 255): Postgres'
+        # INTEGER holds 31. The two registration columns are no longer read: they held the
+        # product a camera had left, from when a check-in naming another product was refused.
         "ALTER TABLE device_registrations ADD COLUMN prev_product_id BIGINT",
         "ALTER TABLE device_registrations ADD COLUMN product_mismatch_at TEXT",
         "-- postgres: ALTER TABLE devices ALTER COLUMN current_payload_version TYPE BIGINT",
@@ -582,15 +579,13 @@ _MIGRATIONS: list[list[str]] = [
         "-- postgres: ALTER TABLE releases ALTER COLUMN payload_version TYPE BIGINT",
         "-- postgres: ALTER TABLE releases ALTER COLUMN min_platform_version TYPE BIGINT",
     ],
-    [   # v43 -- when a camera last moved product, written by the server. The product it left
-        # stays open to it for a failed trial to come back to; "until it confirms" alone left
-        # that to a word the camera writes, so one that never said it kept both for good.
+    [   # v43 -- no longer read (when a camera last moved product, for the same refusal).
         "ALTER TABLE device_registrations ADD COLUMN product_moved_at TEXT",
     ],
 ]
 
 # How long after one refused check-in is audited the next one from the same camera is (see
-# note_refused_checkin); a check-in naming another product than the camera's likewise.
+# note_refused_checkin).
 REFUSAL_AUDIT_EVERY_S = 24 * 3600
 # Audit rows one camera's own reports can cause in a UTC day (audit_budget): its fallbacks, its
 # boot stub's journal entries, its failed installs. Generous for a camera having a bad day
@@ -598,10 +593,8 @@ REFUSAL_AUDIT_EVERY_S = 24 * 3600
 DEVICE_AUDIT_PER_DAY = 48
 
 
-def _a_day_since(when: str | None) -> bool:
-    """Whether ``when`` (an ISO time this store wrote, or None for never) is a day ago."""
-    if not when:
-        return True
+def _a_day_since(when: str) -> bool:
+    """Whether ``when`` (an ISO time this store wrote) is a day ago."""
     age = datetime.now(timezone.utc) - datetime.fromisoformat(when)
     return age.total_seconds() >= REFUSAL_AUDIT_EVERY_S
 
@@ -1884,7 +1877,7 @@ class SqlMetadataStore:
             "registered_by = excluded.registered_by, "
             # Registered again at a desk (reflashed, perhaps as another product of the
             # account): what it enrols under next is what it now is.
-            "product_id = NULL, prev_product_id = NULL",
+            "product_id = NULL",
             (device_id, account_id, record.decode("utf-8"), signature, identity, exchange,
              desk_key_id, issued, _now_iso(), registered_by))
         return prev
@@ -1925,41 +1918,16 @@ class SqlMetadataStore:
 
     def set_registration_product(self, device_id: str, product_id) -> None:
         """Remember (or, with None, forget) the product a registered camera is in the fleet
-        under. A change keeps the product it had as the one it may come back to (a move that
-        fails its trial); None forgets that too. Nothing to do for a camera with no
-        registration."""
-        if product_id is None:
-            self.execute("UPDATE device_registrations SET product_id = NULL, "
-                         "prev_product_id = NULL WHERE device_id = ?", (device_id,))
-            return
-        # Back to the product it left (a failed trial): that one is where it is again, and
-        # there is nowhere further back. Anywhere else: where it was is kept, and from when.
-        self.execute("UPDATE device_registrations SET "
-                     "prev_product_id = CASE WHEN prev_product_id = ? THEN NULL "
-                     "ELSE product_id END, product_moved_at = ?, product_id = ? "
-                     "WHERE device_id = ? AND (product_id IS NULL OR product_id <> ?)",
-                     (product_id, _now_iso(), product_id, device_id, product_id))
+        under. Nothing to do for a camera with no registration."""
+        self.execute("UPDATE device_registrations SET product_id = ? WHERE device_id = ?",
+                     (product_id, device_id))
 
-    def registration_products(self, device_id: str) -> tuple:
-        """``(known, prev)``: the product a registered camera is in the fleet under, and the
-        one it left on its last move while that is still open to it -- until it confirms the
-        move, comes back, or a day passes (a trial is over in a few boots). ``(None, None)``
-        for a camera with no registration, or none noted."""
-        row = self.query_one("SELECT product_id, prev_product_id, product_moved_at "
-                             "FROM device_registrations WHERE device_id = ?", (device_id,))
-        if row is None:
-            return None, None
-        row = _d(row)
-        prev = row["prev_product_id"]
-        if prev is not None and _a_day_since(row["product_moved_at"]):
-            prev = None
-        return row["product_id"], prev
-
-    def settle_registration_product(self, device_id: str) -> None:
-        """The camera confirmed the image it runs: the product it was under before is no
-        longer one it may report its way back to."""
-        self.execute("UPDATE device_registrations SET prev_product_id = NULL "
-                     "WHERE device_id = ? AND prev_product_id IS NOT NULL", (device_id,))
+    def registration_product(self, device_id: str):
+        """The product a registered camera is in the fleet under; None for a camera with no
+        registration, or none noted."""
+        row = self.query_one("SELECT product_id FROM device_registrations WHERE device_id = ?",
+                             (device_id,))
+        return None if row is None else _d(row)["product_id"]
 
     def audit_budget(self, device_id: str) -> bool:
         """Take one of this camera's audit rows for today (``DEVICE_AUDIT_PER_DAY``). False
@@ -1970,18 +1938,6 @@ class SqlMetadataStore:
             "ELSE 1 END, audit_day = ? WHERE device_id = ? AND "
             "(audit_day IS NULL OR audit_day <> ? OR audit_count < ?)",
             (today, today, device_id, today, DEVICE_AUDIT_PER_DAY)).rowcount == 1
-
-    def note_product_mismatch(self, device_id: str) -> bool:
-        """A camera's signed check-in named a product other than the one it is known under.
-        True when it is news (the first, or the first in a day), and noted as audited from
-        now -- on its registration, so a camera with no fleet row is audited too."""
-        row = self.query_one("SELECT product_mismatch_at FROM device_registrations "
-                             "WHERE device_id = ?", (device_id,))
-        if row is None or not _a_day_since(_d(row)["product_mismatch_at"]):
-            return False
-        self.execute("UPDATE device_registrations SET product_mismatch_at = ? "
-                     "WHERE device_id = ?", (_now_iso(), device_id))
-        return True
 
     def delete_registration(self, device_id: str) -> dict | None:
         """Release a camera: drop its registration, the account binding registering made, and its

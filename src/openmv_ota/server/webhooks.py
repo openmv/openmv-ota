@@ -45,7 +45,7 @@ EVENTS = {
     "device.register_refused": "a registration was refused: why is in the event",
     "device.released": "a camera was released: its registration, binding and fleet row went",
     "device.checkin_refused": "a camera's check-in signature didn't verify (at most once a day)",
-    "device.product_mismatch": "a camera reported a product other than its own: it stays where it is",
+    "device.product_mismatch": "a camera reported a product the account had not sent it to: it is filed under that product",
     "desk_key.put": "a desk key was added, renewed or revoked",
     "install.failed": "a camera reported an install that failed",
     "release.publish": "a release was published",
