@@ -39,8 +39,10 @@ def record(root: str | Path, action: str, when: str | None = None, **fields) -> 
     try:
         path = history_path(root)
         path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink() or path.parent.is_symlink():
+            return          # a project's own file: a link here appends to wherever it points
         with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, sort_keys=True) + "\n")
+            f.write(json.dumps(entry, sort_keys=True, default=str) + "\n")
     except OSError:
         pass
 
@@ -52,12 +54,14 @@ def read(root: str | Path) -> list[dict]:
     if not path.exists():
         return []
     out: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            out.append(json.loads(line))
+            entry = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if isinstance(entry, dict):
+            out.append(entry)
     return out

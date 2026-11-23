@@ -160,8 +160,10 @@ static int omv_key_store_copy(uint8_t *dst, uintptr_t addr, size_t len) {
 #elif defined(CORE_M55_HP)
 
 #include "irq.h"
-#include "mpu.h"
 #include "mram.h"
+
+// The port's own (its mpu.h shares a name with one in the Alif DFP, which is found first).
+void mpu_config_mram(bool read_only);
 
 // The AE3 keeps its keys in MRAM, programmed 16 bytes at a time by Alif's mram_write_128bit,
 // each with interrupts OFF: an interrupt taken while MRAM programs wedges its controller until a

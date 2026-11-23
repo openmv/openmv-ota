@@ -935,10 +935,10 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     cfg.last_stub = ob.stub                        # (stub_version, reason), or None
 
     os.chdir("/rom")
-    sys.path += ["/rom", "/rom/lib"]
+    sys.path[:] = ["/rom", "/rom/lib", ".frozen"]
     if trailer.kind == _KIND_FACTORY:              # a factory image: the camera's keys
         try:
-            import openmv_se as se                 # frozen: the keys don't depend on the romfs
+            import openmv_se as se                 # the firmware's, unless the image carries its own
         except ImportError:  # hil-residual: a firmware without openmv_se (a board with no keys, e.g. the Nano RP2040 Connect); boot.keys after it reads "None"
             se = None  # hil-residual: same branch as the line above
         import select

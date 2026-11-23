@@ -143,6 +143,30 @@ budget for now; these are the free/cheap passes to run first, in order.
     anything is fetched (a hostile server can loop it); the factory window signs any 32
     bytes with the identity key (console access); a `.hilcov_uart` file on a volume turns
     on debug logging; the installer's header reader keeps up to 64 headers of 4 KiB.
+  - Round 7 (device, host): the firmware's frozen `_boot.py` runs before `boot.py` with the
+    partition's first ROMFS mounted and on the import path. The installer no longer leaves
+    an unverified one there, but a signed image that is retired or below the rollback floor
+    and ships its own `os.py` still runs that file early; closing it needs an OTA-owned
+    `_boot` prelude. On the WINC the download's receive blocks, so neither the 30-second
+    timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
+    bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
+    directory is a bare error.
+  - Round 9 (device, host): **a decision**: `keys/backends.json` is committed with the
+    project and names what signs (a PKCS#11 module to load, a `module:callable` to import),
+    so building a project someone else made runs their code; taking those two from the
+    machine's own config, or asking on first use, would close it. A signed image that ships
+    a module named as a firmware one (`openmv_se`, `logging`) is imported ahead of it. The
+    download cap is twice the slot, not the manifest's signed size. The N6 stub's flash
+    reads and writes have no range checks of their own, a failed re-map leaves the part in
+    octal mode, and the prescaler rounds down; the H7 stub retries a dead QSPI part on
+    every call. A resumed download's `Content-Range` is not compared with what was asked.
+    The recovery check-in's body is read an object a read. A firmware tree's version
+    numbers are not range-checked.
+  - Round 8 (host): `project new --force --ota` in a project that has keys replaces the
+    roots, the signing keys, the payload keys and the key backup, and says so only in a
+    warning afterwards; a fleet in the field can then no longer be updated. Wants its own
+    flag, and a backup that is never overwritten. `flash factory` takes `SE-NONE` from a
+    board that declares a secure element.
   - Round 7 (server): "is it news" checks are read-then-write, so a burst can audit a few rows
     instead of one; registration's device-limit check is check-then-write; an unsigned
     check-in naming a registered camera with a sealed release pending is one keykeeper

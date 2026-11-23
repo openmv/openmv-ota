@@ -170,11 +170,45 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **An image the hash refuses never becomes a filesystem.** The firmware mounts whatever
+  ROMFS starts the partition before any of this project's code runs, with `/rom` on the
+  import path, and its own frozen `_boot.py` then imports `os`, a module a file can stand
+  in for. Slot A (and the one slot of a single-image board) starts the partition, and the
+  installer programs an image as it arrives, before its hash can refuse it. A stream that
+  was not the signed image, left on flash by a failed or interrupted install, was mounted
+  on the next boot and its `os.py` ran ahead of every signature check. The installer now
+  holds back the image's first 32 bytes (the ROMFS magic is in them; a whole flash word
+  on the H7's internal flash, where a word is programmed once) and writes them only after
+  the whole image is on flash, read back and hashed.
+- **The rollback floors are back on flash before the download is opened.** On a
+  single-image board the erase destroys the only copy of the anti-rollback floor and the
+  certificate-epoch floor, and they were carried into the slot only once the download was
+  open. Someone on the path who refused that connection three times reset the camera with
+  neither, and recovery then accepted any old signed release, or one under a retired key.
+  They are written straight after the erase.
+- **The boot stub's log ring checks its length.** The ring survives a reset in RAM the app
+  can write; a length past the buffer made the stub write there before any slot was
+  verified.
 - **A download slower than 1 KB/s is dropped.** The installer's reader timed out only when a
   connection went silent for 30 seconds, so a server that dripped a byte at a time held the
-  installer, and stopped the app, for as long as it kept sending. A connection now gets a
-  minute of waiting plus a millisecond for every byte it delivers; past that it fails like a
-  dead link. Time spent writing flash does not count.
+  installer, and stopped the app, for as long as it kept sending. An install attempt's
+  download now gets a minute, plus a millisecond for every byte of the image it delivers,
+  never more than two minutes ahead of the clock; past that it fails like a dead link. It is
+  one allowance however many times the download reconnects, and bytes that are not the
+  image (headers, chunk framing) buy none of it. A download is also refused once it is
+  larger than any image for the slot could be.
+- **A stream that ends short is refused before its last bytes are written.** They were
+  programmed first, an odd count that is not a whole flash write unit.
+- **The manifest is read into whole buffers.** A server sending it a byte a read made the
+  installer hold an object per byte.
+- **The N6 boot stub tries a failed flash init again.** One bad reset poll or id read was
+  remembered as a working driver, after the bootloader's memory map had been dropped.
+- **The AE3 builds against the Alif DFP v2.** The firmware moved to it (`lib/alif-dfp`,
+  v2.2.1): the boot stub's include paths and device header, and the two firmware modules
+  that named the old headers, follow.
+- **Host tools read a project's files and a firmware tree without running or following
+  them.** `git` is run with the tree's own monitor and hooks off; a history file that is a
+  link is not appended to, and one with a line that is not an event still reads.
 
 - **A payload version is 32 bits.** A major up to 255, not 31 bits: check-ins accept it and
   Postgres stores it.
@@ -215,7 +249,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   imports were resolved along that path: a file named `openmv_log.py`, `struct.py`,
   `hashlib.py` or `_ota_config.py` on a card ran as the firmware's own code on every boot,
   before any slot was verified. `boot.py` now sets the path to the frozen modules before
-  its first import and adds only the verified slot (`/rom`, `/rom/lib`). **An app that
+  its first import; once a slot is verified the path is that slot and then the frozen
+  modules (`/rom`, `/rom/lib`, `.frozen`), so an app's own copy of a frozen library is
+  still the one it imports. **An app that
   imported modules from `/flash` or the SD card must now add that path itself**
   (`sys.path.append("/sdcard")`) once it is running.
 - **A check-in answer's body is under the same 30 seconds as its lines.** The body was read

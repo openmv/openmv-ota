@@ -57,3 +57,24 @@ def test_history_cli_lists_events_with_limit(tmp_path, capsys):
     out = capsys.readouterr().out
     assert out.count("build-romfs") == 2                    # only the last 2
     assert "board=OPENMV_N6" in out and "t2" in out and "t0" not in out
+
+
+def test_a_linked_history_file_is_not_appended_to(tmp_path):
+    """The file is the project's own. A link there (a project someone else made) had each
+    command append its line to whatever the link named."""
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("mine\n")
+    path = history.history_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+    history.record(tmp_path, "build-romfs")
+    assert target.read_text() == "mine\n"
+
+
+def test_history_never_fails_the_operation_it_records(tmp_path):
+    history.record(tmp_path, "x", when="t", odd={1, 2}.__class__)        # not JSON: kept as text
+    path = history.history_path(tmp_path)
+    with path.open("ab") as f:
+        f.write(b'["a list"]\n\xff\xfe not utf-8\n')
+    events = history.read(tmp_path)
+    assert [e["action"] for e in events] == ["x"] and "set" in events[0]["odd"]

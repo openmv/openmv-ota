@@ -1666,13 +1666,18 @@ def test_dropped_method_scan_catches_a_method_taken_without_a_call(tmp_path):
     (app / "main.py").write_text(
         "def lens_corr(x):\n    return x\n"            # line 1: the app's own function
         "fix = img.lens_corr\n"                         # line 3: the method, not called here
-        "img.lens_corr(1.8)\n")                         # line 4: the plain call
+        "img.lens_corr(1.8)\n"                          # line 4: the plain call
+        "y = lens_corr(2)\n"                            # line 5: the app's own function, called
+        "cfg.lens_corr = 1.8\n"                         # line 6: an attribute the app sets
+        "if hasattr(img, 'lens_corr'):\n"
+        "    img.lens_corr(1.8)  # openmv-ota: allow\n")   # line 8: guarded, and says so
     with pytest.raises(BuildError) as ei:
         build_mod._refuse_dropped_calls(app, "OPENMV2")
     msg = str(ei.value)
     assert "OPENMV2's OTA firmware does not carry lens_corr()" in msg
     assert "main.py:3: lens_corr()" in msg and "main.py:4: lens_corr()" in msg
-    assert "main.py:1" not in msg
+    assert not any("main.py:%d" % n in msg for n in (1, 5, 6, 8))
+    assert "# openmv-ota: allow" in msg
 
 
 def test_dropped_method_scan_skips_what_it_cannot_tokenize(tmp_path):
