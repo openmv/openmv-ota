@@ -282,8 +282,9 @@ def test_a_submodule_s_filter_does_not_run(make_firmware, tmp_path):
     _change_a_file(sub, "* filter=x\n")
     assert gitrepo.is_dirty(repo) and gitrepo.dirty_paths(repo)
     assert not ran.exists()
-    # ...and the filter is live: git runs it when nothing stands in the way
-    subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True)
+    # ...and the filter is live: git runs it when nothing stands in the way (a diff always
+    # reads the file; a status does only when the file's times leave it in doubt)
+    subprocess.run(["git", "-C", str(sub), "diff", "--quiet"], capture_output=True)
     assert ran.exists()
 
 
