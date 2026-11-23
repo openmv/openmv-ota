@@ -29,8 +29,47 @@ def test_a_link_in_a_project_s_build_is_refused(tmp_path):
         output_dir(tmp_path / "p", None)
     with pytest.raises(BuildError, match="is a link"):               # read from it either way
         output_dir(tmp_path / "p", tmp_path / "out", BuildError)
+    (build / "OPENMV_N6-bootloader.bin").unlink()
+    assert output_dir(tmp_path / "p", tmp_path / "out") == tmp_path / "out"
     linked = tmp_path / "q"
     linked.mkdir()
     (linked / "build").symlink_to(tmp_path)
     with pytest.raises(ProjectError, match="build is a link"):
         output_dir(linked, None)
+
+
+def test_a_project_s_own_files_are_not_links(tmp_path):
+    """The lock, the ledger and the key files are written with what the project says; the
+    build output is read back, packed and published. Deep in `build/` counts, and so does
+    an output directory named inside the project."""
+    from openmv_ota.project import config as config_mod
+    from openmv_ota.project.outdir import check_project
+    mine = tmp_path / "mine"
+    mine.write_text("mine")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    n = 0
+    for place in ("openmv-ota.lock", ".openmv-ota/ledger.json", ".openmv-ota",
+                  "build/releases/OPENMV_N6-ota-1.0.0.img.gz", "keys/desk_keys.json",
+                  "keys/private/dangling"):
+        n += 1
+        root = tmp_path / ("p%d" % n)
+        (root / place).parent.mkdir(parents=True)
+        (root / place).symlink_to(elsewhere if place == ".openmv-ota" else
+                                  tmp_path / "nothing" if "dangling" in place else mine)
+        with pytest.raises(ProjectError, match="is a link"):
+            check_project(root)
+        (root / config_mod.CONFIG_NAME).write_text("")
+        with pytest.raises(ProjectError, match="is a link"):       # where every command starts
+            config_mod.load_config(root / config_mod.CONFIG_NAME)
+    ok = tmp_path / "ok"
+    (ok / "keys").mkdir(parents=True)
+    (ok / "keys" / "private").symlink_to(elsewhere)                # where keys are kept: the user's
+    (ok / "firmware").symlink_to(elsewhere)                        # ...and a checkout beside it
+    check_project(ok)
+    check_project(tmp_path / "not-there")
+    (ok / "factory").mkdir()
+    assert output_dir(ok, ok / "factory") == ok / "factory"
+    (ok / "factory" / "OPENMV_N6-manifest.bin").symlink_to(mine)
+    with pytest.raises(BuildError, match="is a link"):
+        output_dir(ok, ok / "factory", BuildError)

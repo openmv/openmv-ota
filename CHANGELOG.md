@@ -232,11 +232,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Host tools read a project's files and a firmware tree without running or following
   them.** `git` is run with the tree's own monitor, hooks and content filters off, wherever
   its config keeps a filter (an included file, a worktree's config, a submodule's); a tree
-  whose config has git work on another tree, or whose submodule is a link, is refused. A
-  project's `build/` that is a link, or has one in it, is refused by the commands that
-  write there, pack from there, flash or publish. A history file that is a link, or sits in
-  a linked directory, is neither read nor appended to, and one with a line that is not an
-  event still reads.
+  whose config has git work on another tree, or whose submodule is a link, is refused, and
+  git fetches nothing to read a tree (a partial clone's config names the program that
+  would). A project with a link where the tools write or read back is refused by every
+  command: a file at its top level (the lock), anything in `build/` or `.openmv-ota/`, a
+  file in `keys/`, an output directory named inside it. A history file with a line that is
+  not an event still reads.
+- **`flash register` does not send the saved token to a server the project names.** The
+  project's `server_url` came ahead of the saved profile's while the token came from the
+  profile; when they differ, `--server` or `--token` says which is meant.
 
 - **A payload version is 32 bits.** A major up to 255, not 31 bits: check-ins accept it and
   Postgres stores it.

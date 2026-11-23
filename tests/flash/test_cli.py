@@ -193,3 +193,38 @@ def test_flash_register_needs_a_desk(proj, capsys):
     root, ran, _artifact = proj
     assert main(["flash", "register", str(root), "-b", "OPENMV4"]) != 0   # no project here
     assert "can't register cameras from this desk" in capsys.readouterr().err and ran == []
+
+
+def test_a_saved_token_is_not_sent_to_the_server_a_project_names(tmp_path, monkeypatch):
+    """The project may be one someone else made, and its config names a server. The token
+    is the user's, saved for theirs."""
+    from types import SimpleNamespace
+
+    from openmv_ota.client import config as client_config
+    from openmv_ota.flash import cli as flash_cli
+    from openmv_ota.flash.errors import FlashError
+    from openmv_ota.project import config as project_config
+    from openmv_ota.project import desk_keys
+    named = {"url": "https://theirs"}
+    monkeypatch.setattr(project_config, "load_config",
+                        lambda path: SimpleNamespace(account_id="a", server_url=named["url"]))
+    monkeypatch.setattr(desk_keys, "current", lambda root, desk: object())
+    monkeypatch.setattr(client_config, "load", lambda path=None: client_config.ClientConfig(
+        server_url="https://mine", token="saved"))
+    monkeypatch.delenv("OPENMV_OTA_SERVER", raising=False)
+    monkeypatch.delenv("OPENMV_OTA_TOKEN", raising=False)
+
+    def check(**flags):
+        desk = flash_cli._Registrar(SimpleNamespace(**{
+            "project": str(tmp_path), "desk": None, "server": None, "token": None, **flags}))
+        desk.check()
+        return desk.client_cfg
+
+    with pytest.raises(FlashError, match="saved token is for https://mine"):
+        check()
+    assert check(server="https://theirs").server_url == "https://theirs"   # said on purpose
+    assert check(token="other").token == "other"
+    named["url"] = "https://mine/"
+    assert check().token == "saved"
+    named["url"] = ""
+    assert check().server_url == "https://mine"

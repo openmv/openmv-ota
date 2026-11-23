@@ -21,6 +21,9 @@ GIT = "git"
 # The tree is one the project was pointed at, and its own config can name a program for git
 # to run (a filesystem monitor on any read of the index, hooks): read, never run.
 _QUIET = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null")
+# ...and none of these commands fetches. A tree set up as a partial clone has git fetch a
+# missing object on any read, with the transport program its config names for the remote.
+_NO_FETCH = {"GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""}
 
 
 def _env_count() -> int:
@@ -44,7 +47,7 @@ def _filter_names(repo: Path, nested: bool, seen: set[str]) -> None:
         proc = subprocess.run([GIT, *_QUIET, "-C", str(repo), *args], capture_output=True,
                               text=True, env=env)
         return proc.stdout.split("\0") if proc.returncode == 0 else []
-    env = {**os.environ, "GIT_CONFIG_COUNT": str(_env_count())}
+    env = {**os.environ, **_NO_FETCH, "GIT_CONFIG_COUNT": str(_env_count())}
     fields = git("config", "--includes", "--show-scope", "--name-only", "-z",
                  "--get-regexp", r"^filter\.")
     for scope, name in zip(fields[0::2], fields[1::2], strict=False):
@@ -57,7 +60,12 @@ def _filter_names(repo: Path, nested: bool, seen: set[str]) -> None:
     if not top:
         return                  # not a work tree: git has no files to read here either
     here = Path(os.path.realpath(repo))
-    if Path(top) != here and Path(top) not in here.parents:
+    # ...and the same repository from there: a worktree moved to a directory above has
+    # git list another index (or none) from it, while it reads this one's submodules
+    gitdir = [(subprocess.run([GIT, *_QUIET, "-C", str(d), "rev-parse", "--absolute-git-dir"],
+                              capture_output=True, text=True, env=env).stdout.strip())
+              for d in (repo, top)]
+    if (Path(top) != here and Path(top) not in here.parents) or gitdir[0] != gitdir[1]:
         raise ProjectError("%s: its git config works on another tree (%s)" % (repo, top))
     for entry in subprocess.run([GIT, *_QUIET, "-C", top, "ls-files", "-s", "-z"],
                                 capture_output=True, text=True, env=env).stdout.split("\0"):
@@ -85,7 +93,7 @@ def _no_filters(repo: Path, nested: bool = False) -> dict[str, str]:
     pairs = [(name + key, value) for name in sorted(names) for key, value in
              ((".clean", ""), (".smudge", ""), (".process", ""), (".required", "false"))]
     base = _env_count()
-    env = {"GIT_CONFIG_COUNT": str(base + len(pairs))}
+    env = {**_NO_FETCH, "GIT_CONFIG_COUNT": str(base + len(pairs))}
     for i, (key, value) in enumerate(pairs, base):
         env["GIT_CONFIG_KEY_%d" % i] = key
         env["GIT_CONFIG_VALUE_%d" % i] = value

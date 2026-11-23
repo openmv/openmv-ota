@@ -17,6 +17,7 @@ from pathlib import Path
 from openmv_ota.romfs import boards as boards_mod
 
 from .errors import ProjectError
+from .outdir import check_project
 
 CONFIG_NAME = "openmv-ota.toml"
 LOCAL_NAME = "openmv-ota.local.toml"
@@ -89,6 +90,7 @@ def load_config(path: Path) -> OtaConfig:
         text = path.read_text(encoding="utf-8")
     except OSError:
         raise ProjectError("no %s found (is this a project directory?)" % CONFIG_NAME) from None
+    check_project(path.parent)           # every command starts here: see what it refuses
     return parse_config(text, path.parent.name)
 
 

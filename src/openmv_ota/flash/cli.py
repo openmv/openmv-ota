@@ -209,6 +209,13 @@ class _Registrar:
             self.entry = desk_keys.current(self.root, self.args.desk)
             self.client_cfg = client_config.resolve(self.args.server or cfg.server_url or None,
                                                     self.args.token)
+            mine = client_config.resolve(None, self.client_cfg.token).server_url
+            if not (self.args.server or self.args.token) and self.client_cfg.server_url != mine:
+                # the project may be one someone else made: the token saved for one server
+                # is not sent to another because a project's config names it
+                raise ClientError("this project's server is %s and the saved token is for %s: "
+                                  "pass --server or --token to say which is meant"
+                                  % (self.client_cfg.server_url, mine))
         except (ProjectError, ClientError) as e:
             self._fail(e)
 
