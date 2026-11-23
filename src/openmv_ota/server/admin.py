@@ -724,6 +724,11 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
             # stop is TERMINAL -- the docs promise it, and a resume here would silently
             # re-offer a release the operator decided nobody else should get
             raise HTTPException(status_code=409, detail="rollout is stopped -- create a new one")
+        if body.state == "active" and ro.get("pause_reason") == "superseded":
+            # a newer rollout took its cohort: resumed, there were two active for one product
+            # and cohort, and this one's release was offered again whenever the newer paused
+            raise HTTPException(status_code=409, detail="rollout was superseded by a newer one "
+                                "-- create a new rollout for this release to go back to it")
         changes["state"] = body.state
     if not changes:
         raise HTTPException(status_code=400, detail="nothing to change")
@@ -1035,6 +1040,14 @@ def _check_pin_release(ms, release_id, principal):
             _owned(rel, principal)       # the account's, and a product this token may touch
 
 
+def _note_sent(ms, principal, release_id, **which):
+    """A pin to a release that exists sends its cameras to that release's product: noted on
+    each one's registration, where it outlasts the pin (see ``note_sent``)."""
+    rel = ms.get_release(release_id) if release_id else None
+    if rel is not None:
+        ms.note_sent(principal.account_id, rel["product_id"], **which)
+
+
 def _label(name: str) -> str:
     """Validate a display label: stripped, max 64 chars, '' allowed (= cleared)."""
     name = name.strip()
@@ -1145,6 +1158,7 @@ def pin_device(device_id: str, body: DevicePin, request: Request,
     _check_pin_release(ms, body.release_id, principal)
     ms.set_device_pin(device_id, body.release_id,            # release_id=None unpins
                       account_id=principal.account_id)
+    _note_sent(ms, principal, body.release_id, device_id=device_id)
     ms.append_audit(actor=principal.name, action="device.pin", entity_type="device",
                     entity_id=device_id, data={"release_id": body.release_id},
                     account_id=principal.account_id, product_id=(dev or {}).get("product_id"))
@@ -1489,6 +1503,7 @@ def pin_cohort(body: CohortPin, request: Request,
     _check_pin_release(ms, body.release_id, principal)
     ms.set_cohort_pin(body.product_id, body.cohort, body.release_id,
                       account_id=principal.account_id)       # account from the token, not the body
+    _note_sent(ms, principal, body.release_id, cohort=(body.product_id, body.cohort))
     ms.append_audit(actor=principal.name, action="cohort.pin", entity_type="cohort",
                     entity_id=body.cohort, data={"product_id": body.product_id,
                                                  "release_id": body.release_id},

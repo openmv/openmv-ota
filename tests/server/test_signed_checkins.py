@@ -758,3 +758,48 @@ def test_a_camera_that_moved_itself_is_not_an_attempt_and_logs_where_it_is_known
     assert store.get_rollout("ro2")["attempted"] == 0 and filed == [BID, BID]
     assert report(product_id=BID + 1)["release_id"] == "rel2"          # the move is known now
     assert store.get_rollout("ro2")["attempted"] == 1 and filed[-1] == BID + 1
+
+
+def test_a_pin_lifted_before_the_camera_arrives_still_sent_it(tmp_path):
+    """A claim flow pins a camera to another product's release and unpins it before the
+    camera's next signed check-in. The camera then arrives with no pin and no offer to show
+    for it, and read as having moved itself. What the account did is kept past the pin."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    _rel2(store)                                                       # a release of BID + 1
+    store.add_token(hash_token("mgr"), "manager", ["manage", "observe"], account_id=ACCT)
+    admin = {"Authorization": "Bearer mgr"}
+    ts = int(time.time()) - 100
+
+    def report(**kw):
+        nonlocal ts
+        ts += 1
+        body = json.dumps({**json.loads(_body()), **kw}).encode()
+        return _check(c, body, camera.sign(key, body, ts=ts))
+
+    def pin(release_id, device=True):
+        r = c.patch("/api/v1/admin/devices/%s/pin" % DEV, headers=admin,
+                    json={"release_id": release_id}) if device \
+            else c.post("/api/v1/admin/cohorts/pin", headers=admin,
+                        json={"product_id": BID + 1, "cohort": "__default__",
+                              "release_id": release_id})
+        assert r.status_code == 200, r.text
+
+    report()
+    pin("rel2")
+    pin(None)                                                          # before it arrives
+    report(product_id=BID + 1)
+    assert store.registration_product(DEV) == BID + 1                  # sent, not a mismatch
+    assert _audit(store, "device.product_mismatch") == []
+    assert store.sent_product(DEV) is None                             # spent on arriving
+    # a cohort's pin sends each camera of the cohort the same way
+    pin("rel1", device=False)                                          # BID + 1's cameras: to BID
+    pin(None, device=False)
+    assert store.sent_product(DEV) == BID and store.sent_product("OPENMV_N6:nobody") is None
+    pin("not-published-yet")                                           # no release: no product
+    assert store.sent_product(DEV) == BID
+    report()
+    assert store.registration_product(DEV) == BID and store.sent_product(DEV) is None
+    # ...once, and there: anywhere else by itself is its own move
+    report(product_id=BID + 7)
+    assert [e["data"]["reported"] for e in _audit(store, "device.product_mismatch")] == [BID + 7]

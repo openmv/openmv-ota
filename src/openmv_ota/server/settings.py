@@ -162,6 +162,12 @@ class ServerSettings(BaseSettings):
     # takes its FIRST address: sound only where the proxy is the one way in and REPLACES a
     # client's own header (a proxy that appends hands every client its choice of rate-limit key).
     trusted_proxy_ips: str = "127.0.0.1"
+    # How many proxies stand in front of the server, each of which appends the address it
+    # heard from to X-Forwarded-For. Set, the client is the entry that many from the RIGHT:
+    # the one the outermost proxy wrote, whatever a client put to the left of it. This is the
+    # setting for a platform whose proxy addresses cannot be named (use it with
+    # trusted_proxy_ips="*"). 0 leaves the choice to trusted_proxy_ips.
+    trusted_proxy_hops: int = Field(0, ge=0, le=16)
 
     def missing(self) -> list[str]:
         """Settings required before the server can serve devices (used by ``server check``)."""
