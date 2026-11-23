@@ -1064,7 +1064,9 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
         ok, box = _lockbox(st, rel, checkin.device_id)
         if not ok:                       # encrypted for each camera, and no lockbox for this one
             offered, manifest_url = False, None
-    _account(ms, ro, rel, checkin, existing, offered)
+    # (An offer to a camera that moved itself is not kept, so its outcome is never counted:
+    # counting the attempt alone would thin a rollout's failure rate and pad a stage's gate.)
+    _account(ms, ro, rel, checkin, existing, offered and not moved_itself)
     release_id = rel["release_id"] if offered else None
     journal = _journal_entries(checkin.stub)
     if moved_itself:
@@ -1148,8 +1150,10 @@ def check(checkin: CheckIn, request: Request, raw: bytes = Depends(_raw_body)):
     if grant is not None:
         resp["live"] = grant
     # Datalake: registered devices get a fresh ingest grant each check-in too.
+    # ...under the product the account knows it by: one it moved itself to is not where
+    # its data is filed until the move is known.
     ingest = datalog_mod.ingest_grant(st.settings, account_id, checkin.device_id,
-                                      checkin.product_id)
+                                      known if moved_itself else checkin.product_id)
     if ingest is not None:
         resp["ingest"] = ingest
     return resp

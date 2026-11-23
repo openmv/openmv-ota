@@ -385,8 +385,8 @@ def deactivate_account(account_id: str, request: Request, body: TokenActor | Non
     token revoke and rotate already do; the operator is kept as `via`."""
     ms = request.app.state.metastore
     _owned_account(ms, account_id, principal)
+    ms.set_account_active(account_id, False)     # first: a token minted meanwhile is refused
     n = ms.revoke_account_tokens(account_id)
-    ms.set_account_active(account_id, False)
     # `actor` names the PERSON, the way revoke and rotate already allow: a console
     # calls this with an operator credential, and "the operator retired the account"
     # loses the one fact worth keeping about the end of a tenant -- who ended it. This
@@ -589,11 +589,18 @@ def rotate_token(token_hash: str, request: Request, body: TokenActor | None = No
         # the same rule as issuing: only the server's root makes (or re-makes) an operator
         raise HTTPException(status_code=403, detail="only a token that holds %s can rotate "
                             "a token with an operator scope" % ACCOUNT_ROOT)
-    fresh = _mint(ms, principal, old["name"], expand(old["scopes"]), old["account_id"], "token.rotate",
-                  extra={"replaced": token_hash}, actor=body.actor if body else None,
-                  products=list(old.get("products") or ()))   # a limited token stays limited
-    ms.revoke_token(token_hash)
-    return fresh
+    if not ms.revoke_token(token_hash):
+        # the old one goes first, and only the caller that revoked it mints: two rotations
+        # at once each passed the check above and left two live replacements
+        raise HTTPException(status_code=409, detail="this token is revoked; issue a new one")
+    try:
+        return _mint(ms, principal, old["name"], expand(old["scopes"]), old["account_id"],
+                     "token.rotate", extra={"replaced": token_hash},
+                     actor=body.actor if body else None,
+                     products=list(old.get("products") or ()))  # a limited token stays limited
+    except Exception:
+        ms.restore_token(token_hash)     # no replacement was handed over: the old one stands
+        raise
 
 
 class PublishSeq(BaseModel):

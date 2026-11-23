@@ -296,6 +296,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   revoke cannot be undone by a renewal racing it. An operation that fails part-way on SQLite
   leaves nothing for the next statement to commit. A page offset without a limit is SQL
   Postgres accepts.
+- **A camera that moved itself to another product is not a rollout attempt there, and its
+  data is filed under the product the account knows it by,** until the move is known. Its
+  offer is not kept, so its outcome was never counted: the attempt alone thinned the
+  rollout's failure rate and padded a stage's gate.
+- **Rotating a token revokes the old one first, and only the caller that revoked it gets a
+  replacement.** Two rotations at once left two live replacements.
+- **A rollout stage's `min_soak` is a finite number.** A NaN was stored, never ramped, and
+  failed the response that reported it.
 - **A rollout's counters count cameras.** `attempted`, `updated` and `failures` were counted
   per transition in what a camera reported, so one camera alternating a fallback reason
   with none could fail a rollout into its auto-pause, and one alternating its version could

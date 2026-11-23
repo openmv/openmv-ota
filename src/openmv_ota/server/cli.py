@@ -332,16 +332,17 @@ def cmd_token_rotate(args: argparse.Namespace) -> int:
     old = store.get_token(found[0]) if len(found) == 1 else None
     if old is None:
         store.close()
-        print("error: no such token", file=sys.stderr)
+        print("error: %s" % ("no token's hash starts with %s" % args.token_hash if not found
+              else "%d tokens' hashes start with %s" % (len(found), args.token_hash)),
+              file=sys.stderr)
         return 1
-    if old["revoked"]:
+    if not store.revoke_token(old["token_hash"]):                # first, and only once
         store.close()
         print("error: this token is revoked; issue a new one", file=sys.stderr)
         return 1
     token = secrets.token_urlsafe(32)
     store.add_token(hash_token(token), old["name"], old["scopes"], account_id=old["account_id"],
                     products=list(old.get("products") or ()))   # a limited token stays limited
-    store.revoke_token(old["token_hash"])
     store.close()
     print("rotated (old revoked); store the new token now -- not recoverable:", file=sys.stderr)
     print(token)

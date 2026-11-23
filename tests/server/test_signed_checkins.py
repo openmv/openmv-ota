@@ -729,3 +729,32 @@ def test_two_check_ins_at_once_take_one_product_change_event_between_them(tmp_pa
     assert store.note_product_mismatch(DEV) is True
     assert store.note_product_mismatch(DEV) is False
     assert store.note_product_mismatch("OPENMV_N6:nobody") is False
+
+
+def test_a_camera_that_moved_itself_is_not_an_attempt_and_logs_where_it_is_known(tmp_path,
+                                                                                 monkeypatch):
+    """Its offer is not kept, so its outcome is never counted: the attempt alone thinned a
+    rollout's failure rate and padded a stage's gate. Its data goes on being filed under
+    the product the account knows it by."""
+    from openmv_ota.server import app as app_mod
+    c, store = _app(tmp_path)
+    key = _register(store)
+    _rel2(store)
+    store.add_rollout(rollout_id="ro2", release_id="rel2", product_id=BID + 1,
+                      cohort="__default__", percent=100, state="active", account_id=ACCT)
+    filed = []
+    monkeypatch.setattr(app_mod.datalog_mod, "ingest_grant",
+                        lambda settings, account, device, product: filed.append(product))
+    ts = int(time.time()) - 100
+
+    def report(**kw):
+        nonlocal ts
+        ts += 1
+        body = json.dumps({**json.loads(_body()), **kw}).encode()
+        return _check(c, body, camera.sign(key, body, ts=ts))
+
+    report()
+    assert report(product_id=BID + 1)["release_id"] == "rel2"          # offered, as anyone is
+    assert store.get_rollout("ro2")["attempted"] == 0 and filed == [BID, BID]
+    assert report(product_id=BID + 1)["release_id"] == "rel2"          # the move is known now
+    assert store.get_rollout("ro2")["attempted"] == 1 and filed[-1] == BID + 1

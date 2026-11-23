@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from openmv_ota.server.app import create_app
@@ -668,6 +669,26 @@ def test_token_rotate_api(tmp_path):
     assert store.get_token(th)["revoked"] == 1                  # old revoked
     assert store.get_token(new["token_hash"])["revoked"] == 0   # replacement live
     assert c.post("/api/v1/admin/tokens/ghost/rotate", headers=AUTH).status_code == 404
+    # two rotations at once: both read it live, one revokes it, and only that one mints
+    live = new["token_hash"]
+    store.revoke_token(live)
+    seen = store.get_token
+    store.get_token = lambda h: dict(seen(h), revoked=0)
+    assert c.post("/api/v1/admin/tokens/%s/rotate" % live, headers=AUTH).status_code == 409
+    store.get_token = seen
+    assert len(store.list_tokens("acctA")) == 2                 # the old one and its replacement
+    # a rotation that fails hands nothing over, so the token it would have replaced stands
+    th2 = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+                 json={"name": "ci2", "scopes": ["manage"]}).json()["token_hash"]
+    audit = store.append_audit
+
+    def broken(**kw):
+        raise RuntimeError("no audit")
+    store.append_audit = broken
+    with pytest.raises(RuntimeError):
+        c.post("/api/v1/admin/tokens/%s/rotate" % th2, headers=AUTH)
+    store.append_audit = audit
+    assert store.get_token(th2)["revoked"] == 0
 
 
 def test_account_lifecycle_api(tmp_path):
