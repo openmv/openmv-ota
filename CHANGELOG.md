@@ -191,12 +191,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   verified.
 - **A download slower than 1 KB/s is dropped.** The installer's reader timed out only when a
   connection went silent for 30 seconds, so a server that dripped a byte at a time held the
-  installer, and stopped the app, for as long as it kept sending. An install attempt's
-  download now gets a minute, plus a millisecond for every byte of the image it delivers,
-  never more than two minutes ahead of the clock; past that it fails like a dead link. It is
-  one allowance however many times the download reconnects, and bytes that are not the
-  image (headers, chunk framing) buy none of it. A download is also refused once it is
-  larger than any image for the slot could be.
+  installer, and stopped the app, for as long as it kept sending. From the moment its
+  download opens, an install attempt now gets a minute, plus a millisecond for every byte
+  of the image it has written, never more than two minutes ahead of the clock; past that
+  the download fails like a dead link and is not reconnected. It is one allowance however
+  many times the download reconnects, and bytes that write no image (headers, chunk
+  framing, a stream that inflates to nothing) buy none of it.
+- **A check-in answer that nests too deep is refused before it is parsed.** Eight KiB of
+  open brackets is hundreds of KiB of heap to the JSON parser, and running out there read
+  as the network stack's own exhaustion, which ends in a reboot.
+- **A short image file is refused before the erase.**
 - **A stream that ends short is refused before its last bytes are written.** They were
   programmed first, an odd count that is not a whole flash write unit.
 - **The manifest is read into whole buffers.** A server sending it a byte a read made the
@@ -207,8 +211,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   v2.2.1): the boot stub's include paths and device header, and the two firmware modules
   that named the old headers, follow.
 - **Host tools read a project's files and a firmware tree without running or following
-  them.** `git` is run with the tree's own monitor and hooks off; a history file that is a
-  link is not appended to, and one with a line that is not an event still reads.
+  them.** `git` is run with the tree's own monitor, hooks and content filters off; a
+  history file that is a link is neither read nor appended to, and one with a line that is
+  not an event still reads.
 
 - **A payload version is 32 bits.** A major up to 255, not 31 bits: check-ins accept it and
   Postgres stores it.

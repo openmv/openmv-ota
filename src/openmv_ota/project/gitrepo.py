@@ -18,6 +18,21 @@ from .errors import ProjectError
 GIT = "git"
 
 
+def _no_filters(repo: Path) -> list[str]:
+    """Options that empty every content filter the tree's own config defines (`git status`
+    runs a filter's `clean` program on a changed file). Reading the config runs nothing."""
+    try:
+        proc = subprocess.run([GIT, "-C", str(repo), "config", "--local", "--name-only",
+                               "--get-regexp", r"^filter\."], capture_output=True, text=True)
+    except FileNotFoundError:
+        return []           # run_git reports the missing binary
+    out: list[str] = []
+    for name in {n.rsplit(".", 1)[0] for n in proc.stdout.split() if n.count(".") >= 2}:
+        out += ["-c", name + ".clean=", "-c", name + ".smudge=", "-c", name + ".process=",
+                "-c", name + ".required=false"]
+    return out
+
+
 def run_git(repo: Path, *args: str, check: bool = True) -> str | None:
     """Run ``git -C <repo> <args>`` and return stripped stdout.
 
@@ -28,9 +43,9 @@ def run_git(repo: Path, *args: str, check: bool = True) -> str | None:
     try:
         proc = subprocess.run(
             # The tree is one the project was pointed at, and its own config can name a
-            # program for git to run (a filesystem monitor, hooks): read, never run.
+            # program for git to run (a filesystem monitor, hooks, a filter): read, never run.
             [GIT, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-             "-C", str(repo), *args],
+             *_no_filters(repo), "-C", str(repo), *args],
             capture_output=True, text=True,
         )
     except FileNotFoundError:

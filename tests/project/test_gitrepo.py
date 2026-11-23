@@ -220,3 +220,20 @@ def test_git_runs_nothing_the_tree_s_own_config_names(make_firmware, tmp_path):
     gitrepo.run_git(repo, "config", "core.fsmonitor", str(hook))
     gitrepo.run_git(repo, "status", "--porcelain")
     assert not ran.exists()
+
+
+def test_git_runs_no_filter_the_tree_s_own_config_defines(make_firmware, tmp_path, monkeypatch):
+    """`git status` runs a content filter's `clean` program on a changed file."""
+    repo = make_firmware()
+    ran = tmp_path / "ran"
+    prog = tmp_path / "clean.sh"
+    prog.write_text("#!/bin/sh\ntouch %s\ncat\n" % ran)
+    prog.chmod(0o755)
+    tracked = [p for p in repo.iterdir() if p.is_file() and p.name != ".gitattributes"][0]
+    (repo / ".gitattributes").write_text("* filter=x\n")
+    gitrepo.run_git(repo, "config", "filter.x.clean", str(prog))
+    tracked.write_bytes(tracked.read_bytes()[::-1] or b"x")
+    gitrepo.run_git(repo, "status", "--porcelain")
+    assert gitrepo.is_dirty(repo) and not ran.exists()
+    monkeypatch.setattr(gitrepo, "GIT", str(tmp_path / "no-such-git"))
+    assert gitrepo._no_filters(repo) == []
