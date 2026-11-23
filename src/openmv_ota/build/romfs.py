@@ -459,8 +459,12 @@ def _refuse_dropped_calls(app_dir: Path, board: str) -> None:
     ``find_datamatrices()``, the M4 ``lens_corr()``). A call to one of them would
     only fail on the camera, as an AttributeError at the moment the frame arrives; here it
     is a build error that names the file and line. Tokenized rather than grepped, so a
-    mention in a comment or a string is not a call. Taking the method without calling it
-    (``f = img.lens_corr``) is refused too: the lookup is what raises on the camera."""
+    mention in a comment or a string is not a call. What is refused is the method being
+    looked up on an object (``img.lens_corr(...)``, or ``f = img.lens_corr``: the lookup is
+    what raises on the camera). The app's own function of that name is not the image
+    method, and neither is an attribute it assigns (``cfg.lens_corr = 1.8``). A line that
+    ends in ``# openmv-ota: allow`` is let through: an app shared between boards that
+    guards the call (``hasattr``, or by board) knows what it is doing."""
     import tokenize
 
     dropped = boards_mod.get_board(board).ota_firmware_drops
@@ -474,20 +478,22 @@ def _refuse_dropped_calls(app_dir: Path, board: str) -> None:
                 toks = list(tokenize.generate_tokens(fh.readline))
         except (OSError, SyntaxError, UnicodeDecodeError, tokenize.TokenError):
             continue                     # mpy-cross reports an unreadable or broken file
-        for i, tok in enumerate(toks[:-1]):
-            nxt, prev = toks[i + 1], toks[i - 1] if i else None
-            if tok.type == tokenize.NAME and tok.string in methods and (
-                    (nxt.type == tokenize.OP and nxt.string == "(" and not (
-                        prev is not None and prev.type == tokenize.NAME
-                        and prev.string in ("def", "class")))
-                    or (prev is not None and prev.type == tokenize.OP and prev.string == ".")):
+        allowed = {t.start[0] for t in toks
+                   if t.type == tokenize.COMMENT and "openmv-ota: allow" in t.string}
+        for i, tok in enumerate(toks[1:-1], 1):
+            prev, nxt = toks[i - 1], toks[i + 1]
+            if tok.type == tokenize.NAME and tok.string in methods \
+                    and prev.type == tokenize.OP and prev.string == "." \
+                    and not (nxt.type == tokenize.OP and nxt.string == "=") \
+                    and tok.start[0] not in allowed:
                 hits.append("%s:%d: %s()" % (f.relative_to(app_dir).as_posix(),
                                              tok.start[0], tok.string))
     if hits:
         raise BuildError(
             "%s's OTA firmware does not carry %s -- they are turned off so the firmware fits "
             "its flash -- but the app calls them:\n  %s"
-            % (board, " or ".join("%s()" % m for m in sorted(methods)), "\n  ".join(hits)),
+            % (board, " or ".join("%s()" % m for m in sorted(methods)), "\n  ".join(hits))
+            + "\n(a call the app guards itself: end the line with  # openmv-ota: allow)",
             exit_code=1)
 
 

@@ -935,7 +935,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     cfg.last_stub = ob.stub                        # (stub_version, reason), or None
 
     os.chdir("/rom")
-    sys.path += ["/rom", "/rom/lib"]
+    sys.path[:] = ["/rom", "/rom/lib", ".frozen"]
     if trailer.kind == _KIND_FACTORY:              # a factory image: the camera's keys
         try:
             import openmv_se as se                 # frozen: the keys don't depend on the romfs

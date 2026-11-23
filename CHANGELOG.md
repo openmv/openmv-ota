@@ -170,11 +170,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **An image the hash refuses never becomes a filesystem.** The firmware mounts whatever
+  ROMFS starts the partition before any of this project's code runs, with `/rom` on the
+  import path, and its own frozen `_boot.py` then imports `os`, a module a file can stand
+  in for. Slot A (and the one slot of a single-image board) starts the partition, and the
+  installer programs an image as it arrives, before its hash can refuse it. A stream that
+  was not the signed image, left on flash by a failed or interrupted install, was mounted
+  on the next boot and its `os.py` ran ahead of every signature check. The installer now
+  holds back the image's first 16 bytes (the ROMFS magic is in them) and writes them only
+  after the whole image is on flash, read back and hashed.
+- **A manifest is signed by an OTA key.** A factory key's certificate was accepted on a
+  manifest; it is refused like any key the camera does not trust.
 - **A download slower than 1 KB/s is dropped.** The installer's reader timed out only when a
   connection went silent for 30 seconds, so a server that dripped a byte at a time held the
   installer, and stopped the app, for as long as it kept sending. A connection now gets a
-  minute of waiting plus a millisecond for every byte it delivers; past that it fails like a
-  dead link. Time spent writing flash does not count.
+  minute of waiting plus a millisecond for every byte it delivers, two minutes at most;
+  past that it fails like a dead link. The budget is one for the whole install, however
+  many times the download reconnects. Time spent writing flash does not count.
 
 - **A payload version is 32 bits.** A major up to 255, not 31 bits: check-ins accept it and
   Postgres stores it.
@@ -215,7 +227,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   imports were resolved along that path: a file named `openmv_log.py`, `struct.py`,
   `hashlib.py` or `_ota_config.py` on a card ran as the firmware's own code on every boot,
   before any slot was verified. `boot.py` now sets the path to the frozen modules before
-  its first import and adds only the verified slot (`/rom`, `/rom/lib`). **An app that
+  its first import; once a slot is verified the path is that slot and then the frozen
+  modules (`/rom`, `/rom/lib`, `.frozen`), so an app's own copy of a frozen library is
+  still the one it imports. **An app that
   imported modules from `/flash` or the SD card must now add that path itself**
   (`sys.path.append("/sdcard")`) once it is running.
 - **A check-in answer's body is under the same 30 seconds as its lines.** The body was read

@@ -400,6 +400,31 @@ def test_reader_drops_a_link_slower_than_1_kb_a_second():
     assert len(got) == slow // (slice_ms - 1)            # each byte costs a slice and earns 1 ms
 
 
+def test_a_reconnect_does_not_buy_another_minute_and_a_fast_start_not_an_hour():
+    """One budget for the whole download: handed to each connection's reader, and capped."""
+    slow, slice_ms = inst("_SLOW_MS"), inst("_RECV_POLL_MS")
+    slack, got = [slow], 0
+
+    def drip():                                              # 99 empty slices, then a byte
+        seq = {"n": 0}
+
+        def recv(_n):
+            seq["n"] += 1
+            return b"x" if seq["n"] % 100 == 0 else None
+        return _R(recv, feed=lambda: None, slack=slack)
+    with pytest.raises(OSError, match="timed out"):
+        while True:
+            r = drip()                                       # a new connection every 4 bytes
+            for _ in range(4):
+                r.read_exact(1)
+                got += 1
+    assert got == slow // (99 * slice_ms - 1)                # the one minute, however many sockets
+    fast = _R(lambda n: bytes(n), feed=lambda: None)
+    for _ in range(64):
+        fast.read_exact(4096)                                # 256 KB at once...
+    assert fast._slack[0] == 2 * slow                        # ...is two minutes of patience, no more
+
+
 def test_reader_keeps_a_link_that_waits_but_delivers():
     # 1 KB after every wait slice is 50 KB/s: the slack only grows, however long the download
     seq = {"n": 0}
@@ -1057,9 +1082,64 @@ def test_install_stream_sha_mismatch_raises():
         _run_install(bytes(image), front, block, expect_sha="00" * 32)
 
 
+def test_an_image_the_hash_refuses_never_gets_its_first_bytes():
+    """The firmware mounts whatever ROMFS starts the partition before any check of ours runs,
+    and imports from it. A stream that is not the signed image is on flash by the time its
+    hash says so -- all of it but the first write unit, which is what makes it a filesystem."""
+    import hashlib
+    block, front = 4096, 3 * 4096
+    image = bytearray(b"\xff" * front)
+    image[:64] = bytes(range(1, 65))
+    image[100:104] = b"BODY"
+    flash = _FakeFlash(front)
+    flash.erase(front)
+    with pytest.raises(OSError, match="sha256 does not match"):
+        inst("_install_stream")(_SourceOf(bytes(image)), flash.write, flash.readback, front,
+                                block, _noop, None, "00" * 32)
+    assert bytes(flash.mem[:16]) == b"\xff" * 16          # no magic: not a filesystem
+    assert bytes(flash.mem[16:64]) == bytes(range(17, 65))  # the rest landed as it arrived
+    assert bytes(flash.mem[100:104]) == b"BODY"
+    # ...and one that is cut off mid-stream (a reset) has none either
+    writes = []
+
+    class Cut(_FakeFlash):
+        def write(self, off, data):
+            writes.append(off)
+            if len(writes) == 2:
+                raise OSError("reset")
+            super().write(off, data)
+    cut = Cut(front)
+    cut.erase(front)
+    with pytest.raises(OSError, match="reset"):
+        inst("_install_stream")(_SourceOf(bytes(image)), cut.write, cut.readback, front,
+                                block, _noop, None, hashlib.sha256(bytes(image)).hexdigest())
+    assert bytes(cut.mem[:16]) == b"\xff" * 16 and bytes(cut.mem[16:20]) == bytes(range(17, 21))
+    # the image that IS the signed one is whole
+    good = _run_install(bytes(image), front, block,
+                        expect_sha=hashlib.sha256(bytes(image)).hexdigest())
+    assert bytes(good.mem[:64]) == bytes(range(1, 65))
+
+
+def test_install_stream_checks_the_first_bytes_it_writes_last():
+    block, front = 4096, 3 * 4096
+
+    class DropHead(_FakeFlash):
+        def write(self, off, data):
+            if off == 0 and len(data) == 16:
+                return
+            super().write(off, data)
+    image = bytearray(b"\xff" * front)
+    image[:4] = b"DATA"
+    flash = DropHead(front)
+    flash.erase(front)
+    with pytest.raises(OSError, match="image head verify failed"):
+        inst("_install_stream")(_SourceOf(bytes(image)), flash.write, flash.readback, front,
+                                block, _noop)
+
+
 # --- signed manifest: parse/select/reject/floor mirror the host codec --------
 
-def _host_manifest(body=None, alg=None, epoch=0):
+def _host_manifest(body=None, alg=None, epoch=0, kind=0):
     """A manifest signed by a fresh key, its certificate from ``tests.trust``'s root."""
     from openmv_ota.ota import ES256, algorithm_for
     from openmv_ota.ota.keys import generate_private_key
@@ -1072,7 +1152,8 @@ def _host_manifest(body=None, alg=None, epoch=0):
         body = {"schema": 1, "product_id": 7, "payload_version": 33685760,
                 "min_platform_version": 0, "sha256": "ab" * 32,
                 "representations": [{"format": "full", "url": "https://x/f.gz", "size": 9}]}
-    m = Manifest(body=body, certificate=trust.certificate(priv, epoch=epoch), sig_alg=spec.cose_id)
+    m = Manifest(body=body, certificate=trust.certificate(priv, epoch=epoch, kind=kind),
+                 sig_alg=spec.cose_id)
     m.signature = sign_region(priv, signed_region(m), spec)
     return pack_manifest(m)
 
@@ -1337,6 +1418,9 @@ def test_vet_manifest_trusts_only_a_root_signed_certificate():
     with pytest.raises(OSError, match="untrusted key"):                 # root bytes differ
         rogue = trust.pub_bytes(generate_private_key(trust.SPEC))
         vet("/sd/m.bin", good, _vet_cfg(roots={0: rogue}), verify, 0, 0, True)
+    with pytest.raises(OSError, match="untrusted key"):                 # a factory key's certificate
+        vet("/sd/m.bin", _host_manifest(body=_sd_body(), epoch=2, kind=1), _vet_cfg(), verify,
+            0, 0, True)
     with pytest.raises(OSError, match="retired key"):                   # epoch below the floor
         vet("/sd/m.bin", good, _vet_cfg(last_epoch=3), verify, 0, 0, True)
     with pytest.raises(OSError, match="retired key"):                   # ...or the floor on flash:
@@ -1685,7 +1769,7 @@ def test_install_stream_write_verify_fails():
             self.mem[off:off + len(data)] = b"\x00" * len(data)  # corrupt the write
 
     image = bytearray(b"\xff" * front)
-    image[:4] = b"DATA"
+    image[:24] = b"DATA" * 6                 # past the held-back first bytes
     flash = BadWrite(front)
     flash.erase(front)
     with pytest.raises(OSError, match="write verify failed"):
@@ -2252,7 +2336,7 @@ def test_open_collects_fed_right_after_the_handshake():
     connect = src.index("_connect(host, port, ca_pem, socket, ssl)")
     collect = src.index("_collect_fed()")
     get = src.index("sock.write(_request_bytes(")
-    reader = src.index("_Reader(readinto, feed)")
+    reader = src.index("_Reader(readinto, feed, slack=_SLACK)")
     assert connect < collect < get < reader
 
 

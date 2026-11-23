@@ -143,6 +143,14 @@ budget for now; these are the free/cheap passes to run first, in order.
     anything is fetched (a hostile server can loop it); the factory window signs any 32
     bytes with the identity key (console access); a `.hilcov_uart` file on a volume turns
     on debug logging; the installer's header reader keeps up to 64 headers of 4 KiB.
+  - Round 7 (device, host): the firmware's frozen `_boot.py` runs before `boot.py` with the
+    partition's first ROMFS mounted and on the import path. The installer no longer leaves
+    an unverified one there, but a signed image that is retired or below the rollback floor
+    and ships its own `os.py` still runs that file early; closing it needs an OTA-owned
+    `_boot` prelude. On the WINC the download's receive blocks, so neither the 30-second
+    timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
+    bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
+    directory is a bare error.
   - Round 7 (server): "is it news" checks are read-then-write, so a burst can audit a few rows
     instead of one; registration's device-limit check is check-then-write; an unsigned
     check-in naming a registered camera with a sealed release pending is one keykeeper

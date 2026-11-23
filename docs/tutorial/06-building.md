@@ -47,7 +47,9 @@ it has no `find_datamatrices()`, and on the OpenMV Cam M4 it has no `lens_corr()
 any of them is refused here, with the file and line, instead of raising on the camera the
 first time a frame reaches that call. Taking the method without calling it
 (`fix = img.lens_corr`) is refused the same way. A mention in a comment or a string is
-not a call.
+not a call, and neither is the app's own function or attribute of that name. An app
+shared between boards that guards the call itself (`if hasattr(img, "lens_corr"):`) ends
+that line with `# openmv-ota: allow`.
 
 The pegged firmware checkout must match the lock and be clean. The app is
 compiled with that checkout's own tools — the `.mpy` bytecode must match the

@@ -237,10 +237,17 @@ _SOCK_TIMEOUT = 30
 # feeding the watchdog each slice, so it must stay WELL under the watchdog window (~100 ms) -> a few
 # feeds per window. Only matters when a watchdog is armed; a fast recv returns the moment data arrives.
 _RECV_POLL_MS = 20
+# The image's first bytes, held back until the rest is on flash and hashed (_install_stream): one
+# flash write unit, and more than the ROMFS magic.
+_HEAD = 16
 # The slowest link a download is waited on: 1 KB/s. A connection may spend this long waiting for
 # data, plus a millisecond per byte it has delivered; past that it is dropped like a dead one. Only
 # the waiting counts (not the flash writes between reads), so the number is the link's alone.
 _SLOW_MS = 60000
+# ...shared by every connection of one install (a reconnect does not start a fresh minute: a
+# server that sent a byte and stalled, connection after connection, held the installer for
+# good), and capped, so a fast start does not buy an hour of dripping afterwards.
+_SLACK = [_SLOW_MS]
 # "Operation would block" errnos a non-blocking recv may raise (EAGAIN/EWOULDBLOCK) even right after
 # poll reports readable -- a TLS socket can be TCP-readable with no whole record decrypted yet. Both
 # the positive (11) and MicroPython's negated (-11) form; treated as "no data yet", keep polling.
@@ -392,14 +399,15 @@ class _Reader:
 
     ``size`` bounds the longest line too: a header line that does not fit is refused."""
 
-    def __init__(self, readinto, feed=_noop, size=_CHUNK):
+    def __init__(self, readinto, feed=_noop, size=_CHUNK, slack=None):
         self._readinto = readinto
         self._feed = feed          # progress-fed download: fed while WAITING for the next recv
         self._mem = bytearray(size)
         self._mv = memoryview(self._mem)
         self._lo = 0               # the unread bytes are _mem[_lo:_hi]
         self._hi = 0
-        self._slack = _SLOW_MS     # ms this connection may still wait: +1 a byte, -1 a ms waited
+        # [ms the download may still wait]: +1 a byte, -1 a ms waited, at most 2 * _SLOW_MS
+        self._slack = [_SLOW_MS] if slack is None else slack
 
     def _fill(self):
         # MAIN-THREAD progress-fed recv. The socket is NON-BLOCKING (set by _open), so readinto
@@ -432,14 +440,17 @@ class _Reader:
                 n = None
             if n:
                 self._hi += n
-                self._slack += n
+                s = self._slack
+                s[0] += n
+                if s[0] > 2 * _SLOW_MS:
+                    s[0] = 2 * _SLOW_MS
                 return True
             if n is not None:                        # n == 0 -> EOF
                 return False
             sleep_ms(_RECV_POLL_MS)                  # n is None -> no data yet; feed + wait a slice
             waited += _RECV_POLL_MS
-            self._slack -= _RECV_POLL_MS
-            if waited >= _SOCK_TIMEOUT * 1000 or self._slack < 0:   # dead, or under 1 KB/s
+            self._slack[0] -= _RECV_POLL_MS
+            if waited >= _SOCK_TIMEOUT * 1000 or self._slack[0] < 0:   # dead, or under 1 KB/s
                 raise OSError(_ETIMEDOUT, "recv timed out")  # dead link: NUMERIC errno -> transport (retry)
 
     def _newline(self):
@@ -1299,6 +1310,16 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     if gc_collect is not None:
         gc_collect()  # hil-residual: watchdog-armed proactive collect before the decompressor's first allocation
     mv = memoryview(work)
+    # THE IMAGE'S FIRST BYTES ARE WRITTEN LAST, AFTER THE SHA256 BELOW. The firmware mounts
+    # whatever ROMFS starts the partition before any of this project's code runs (mp_init), with
+    # /rom on the import path, and its own frozen _boot.py then imports modules a file can stand
+    # in for (`os`). Slot A -- and the one slot of a single-image board -- starts the partition,
+    # and its bytes are programmed as they arrive, before the hash can refuse them: a stream
+    # that was not the signed image, cut off by a reset, left a mountable filesystem whose
+    # `os.py` ran on the next boot, ahead of every check. Without its first bytes (the ROMFS
+    # magic) a slot is not a filesystem to anyone; they go in once the whole image is on flash,
+    # read back and hashed.
+    head = bytearray(_HEAD)
     off = 0
     since_gc = 0
     status_at = slot_size - 2 * block
@@ -1329,6 +1350,11 @@ def _install_stream(source, write, readback, slot_size, block, feed,
             # test below all see what the flash will hold. The pad after them stays blank.
             k = n if off + n <= crypt_size else crypt_size - off
             crypt(off, mv[:k])
+        if off == 0:  # hil-residual: every install's first chunk; no print of its own (the installer's budget on the M4), witnessed by `boot: mounted` after an install -- a slot whose head never landed is not one
+            k = n if n < _HEAD else _HEAD  # hil-residual: as the line above
+            head[:k] = chunk[:k]  # hil-residual: as above (after the cipher: what the flash will hold)
+            for i in range(k):  # hil-residual: as above
+                chunk[i] = 0xFF  # hil-residual: as above
         if not _is_blank(chunk):                     # erased regions are already 0xFF
             feed()                                   # the feed at the top of this iteration was
             #                                          spent by the recv + delta reconstruct above,
@@ -1361,6 +1387,10 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     if digest is not None and binascii.hexlify(digest.digest()).decode() != expect_sha:
         log.warning("install: reject sha")           # the integrity trust boundary rejected the image
         raise OSError("image sha256 does not match the manifest")
+    feed()
+    write(0, head)                                   # the held-back first bytes: now it is an image
+    if readback(0, _HEAD) != head:
+        raise OSError("image head verify failed")
 
     # ARM, IN THIS ORDER: provenance, then the counter, then PENDING. (The carried floor was
     # already programmed into the status sector's tail right after the blank verify above, so
@@ -1487,7 +1517,7 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
             readinto = sock.readinto
             if openmv_wdt is not None and _recv_blocks():  # hil-residual: WINC-only (H7 Plus wifi)
                 readinto = _relaxed(readinto, openmv_wdt)  # hil-residual: WINC-only (H7 Plus wifi)
-            reader = _Reader(readinto, feed)        # one preallocated buffer per connection
+            reader = _Reader(readinto, feed, slack=_SLACK)   # one preallocated buffer per connection
             code, headers = _read_response(reader)
         except Exception:
             sock.close()
@@ -1797,7 +1827,9 @@ def _vet_manifest(manifest_url, raw, cfg, verify, floor, base_version, delta_cap
         # outcome to the app and the fleet: the key is not one this camera trusts.
         c = m["cert"]
         root = cfg.ROOT_KEYS.get(c["root_id"])
-        if root is None or not verify(_ES256, root, c["signature"], c["region"]):
+        if root is None or c["kind"] or not verify(_ES256, root, c["signature"], c["region"]):
+            # (kind: an OTA key's certificate is kind 0. A factory key signs what a desk
+            # flashes; over the air it is not a key this camera takes a release from.)
             log.warning("install: reject untrusted key")
             raise OSError("manifest signed by an untrusted key")
         # ...by the running image's epoch or the floor on flash, whichever is higher: in
