@@ -104,7 +104,7 @@ def test_publish_and_consume_end_to_end(make_project):
     # --- device consume: the installer's own parse + select + streaming applier ---
     inst = _load_installer()
     m = inst._manifest_parse(manifest_bytes)
-    rep = inst._select_rep(inst._manifest_body(m), True, golden_pv,      # delta picked: base matches the
+    rep = inst._select_rep(m["body"], True, golden_pv,      # delta picked: base matches the
                            parse_trailer(back_tr).body_sha256.hex())  # golden by version AND bytes
     assert rep["format"] == "ocdl"
     # the relative URL resolves against the manifest's own URL

@@ -35,8 +35,7 @@ def _host(data):
 
 def _device(data):
     try:
-        m = INST._manifest_parse(data)
-        return dict(m, body=INST._manifest_body(m))
+        return INST._manifest_parse(data)
     except ValueError:
         return None
 

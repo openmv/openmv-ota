@@ -217,8 +217,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   parsed.** Eight KiB of open brackets, or of short list elements, is hundreds of KiB of
   heap to the JSON parser, and running out there read as the network stack's own
   exhaustion, which ends in a reboot. Recovery refuses the same answers.
-- **A manifest's body is parsed after its signatures verify.** It was parsed first, behind
-  only a checksum, so anyone's bytes reached the JSON parser.
+- **A manifest body made of brackets or elements is refused before it is parsed.** It is
+  parsed ahead of its signatures, behind only a checksum, and the parser builds an object
+  for each one.
 - **A short image file is refused before the erase.**
 - **A stream that ends short is refused before its last bytes are written.** They were
   programmed first, an odd count that is not a whole flash write unit.

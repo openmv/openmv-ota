@@ -1271,7 +1271,7 @@ def test_manifest_parse_mirrors_host():
     got = inst("_manifest_parse")(raw)
     host = parse_manifest(raw)
     cert = C.parse(host.certificate)
-    assert inst("_manifest_body")(got) == host.body
+    assert got["body"] == host.body
     assert got["sig_alg"] == host.sig_alg
     assert got["signature"] == host.signature
     assert got["region"] == signed_region(raw)            # the bytes the signature covers
@@ -1321,11 +1321,29 @@ def test_manifest_parse_rejections():
         inst("_manifest_parse")(bytes(bad))
 
 
+@pytest.mark.parametrize("body", [[[]] * 70, [0] * 600])
+def test_a_manifest_body_made_of_brackets_or_elements_is_refused_before_it_is_parsed(body,
+                                                                                    monkeypatch):
+    """The body is parsed ahead of its signatures, behind only a checksum: anyone's bytes,
+    and an object to the parser for each bracket and each element of them."""
+    from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota.keys import generate_private_key
+    from openmv_ota.ota.manifest import Manifest, pack_manifest
+    from tests import trust
+    priv = generate_private_key(algorithm_for(ES256))
+    raw = pack_manifest(Manifest(body={"x": body}, certificate=trust.certificate(priv),
+                                 sig_alg=ES256, signature=bytes(64)))
+    monkeypatch.setattr(_mod.json, "loads",
+                        lambda b: pytest.fail("parsed %d bytes" % len(b)))
+    with pytest.raises(ValueError, match="nests too deep"):
+        inst("_manifest_parse")(raw)
+
+
 @pytest.mark.parametrize("body", [[], [1, 2], 7, None, "x"])
 def test_manifest_body_that_is_not_an_object_is_a_value_error(body):
     """Vetting reads the body with .get(): a SIGNED manifest whose body is a list surfaced as an
     AttributeError out of install() -- not the ValueError/OSError an app is told to expect.
-    Now reading the body refuses it, like the host codec does."""
+    Now the parse refuses it, like the host codec does."""
     from openmv_ota.ota import ES256, algorithm_for
     from openmv_ota.ota.keys import generate_private_key, public_point_hex
     from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
@@ -1336,10 +1354,8 @@ def test_manifest_body_that_is_not_an_object_is_a_value_error(body):
     m = Manifest(body=body, certificate=trust.certificate(priv), sig_alg=ES256)
     m.signature = sign_region(priv, signed_region(m), spec)
     raw = pack_manifest(m)
-    parsed = inst("_manifest_parse")(raw)                  # the body is not read before the
-    assert "body" not in parsed                            # signatures: it is anyone's bytes
     with pytest.raises(ValueError, match="not an object"):
-        inst("_manifest_body")(parsed)
+        inst("_manifest_parse")(raw)
     del public_point_hex                                   # the roots are the only keys a camera has
 
     class Cfg:
