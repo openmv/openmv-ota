@@ -170,6 +170,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A rollout's failure rate is judged over at least five attempts,** or over every camera
+  the rollout can reach where that is fewer. At one failure in one attempt, a single camera
+  paused a rollout by itself.
+- **A rollout a newer one superseded cannot be resumed.** Resumed, there were two active
+  for one product and cohort, and the older release was offered again whenever the newer
+  paused. Going back to a release is a new rollout for it.
+- **`OPENMV_OTA_TRUSTED_PROXY_HOPS`: the client's address is the one the outermost proxy
+  wrote.** Behind a platform whose proxy addresses cannot be named, the server trusted
+  `X-Forwarded-For` from anyone and took its leftmost entry, which is the client's own when
+  the proxy appends: a new address a request, and no rate limit. Set to the number of
+  proxies in front of the server, the entry that many from the right is used.
+- **A pin lifted before the camera arrives still sent it** (migration v45). A flow that
+  pins a camera to another product's release and unpins it before the camera's next signed
+  check-in left its arrival reading as a move of its own. The product an account sent a
+  camera to is kept on its registration until it checks in from there.
+
 - **An image the hash refuses never becomes a filesystem.** The firmware mounts whatever
   ROMFS starts the partition before any of this project's code runs, with `/rom` on the
   import path, and its own frozen `_boot.py` then imports `os`, a module a file can stand

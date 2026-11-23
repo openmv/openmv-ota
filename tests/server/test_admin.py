@@ -1741,6 +1741,10 @@ def test_a_superseded_rollout_names_the_one_that_took_its_cohort(tmp_path):
     st = c.get("/api/v1/admin/rollouts/%s/status" % first, headers=AUTH).json()
     assert st["pause_reason"] == "superseded"
     assert st["superseded_by"] == {"rollout_id": second, "display_name": "Fix"}
+    # ...and stays behind it: resumed, there were two active for one product and cohort
+    r = c.patch("/api/v1/admin/rollouts/%s" % first, headers=AUTH, json={"state": "active"})
+    assert r.status_code == 409 and "superseded" in r.json()["detail"]
+    assert store.get_rollout(first)["state"] == "paused"
     assert c.get("/api/v1/admin/rollouts/%s/status" % second, headers=AUTH).json()["superseded_by"] is None
     ev = [e for e in c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
           if e["action"] == "rollout.superseded"]

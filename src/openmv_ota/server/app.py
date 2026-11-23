@@ -49,8 +49,8 @@ from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter, SharedRateLimiter
 from .schemas import CheckAnswer, Health, KeykeeperChain, Ok
-from .rollout import (fallback_payload_version, offers_update, ramp_action, stub_meets,
-                      running_body_sha256, settled, should_autopause, soak_elapsed_s)
+from .rollout import (autopause_floor, fallback_payload_version, offers_update, ramp_action,
+                      stub_meets, running_body_sha256, settled, should_autopause, soak_elapsed_s)
 from .storage import build_storage
 from .verify import Registration, build_verifier
 
@@ -712,13 +712,20 @@ def _ramp_or_autopause(ms, rid, ro):
         return
     acct, pid = ro.get("account_id", ""), ro.get("product_id")
     stages = json.loads(fresh["stages"]) if fresh.get("stages") else None
+
+    def floor():
+        # counted only when a pause is in question: the cameras this rollout can reach
+        return autopause_floor(ms.count_devices(product_id=pid, account_id=acct,
+                                                cohort=fresh["cohort"]), fresh["percent"])
     if stages:
         idx = fresh["stage_index"]
         stage_attempted = fresh["attempted"] - fresh["stage_attempted_base"]
         stage_failures = fresh["failures"] - fresh["stage_failures_base"]
-        action, nxt = ramp_action(stages, idx, stage_attempted, stage_failures,
-                                   _soak_elapsed_s(fresh["stage_entered_at"]),
-                                   fresh["failure_threshold"])
+        args = (stages, idx, stage_attempted, stage_failures,
+                _soak_elapsed_s(fresh["stage_entered_at"]), fresh["failure_threshold"])
+        action, nxt = ramp_action(*args)
+        if action == "pause":
+            action, nxt = ramp_action(*args, floor())
         if action == "raise":
             # never lower the dial: an operator may have raised past the next stage by hand
             nxt = max(nxt, fresh["percent"])
@@ -735,7 +742,9 @@ def _ramp_or_autopause(ms, rid, ro):
                             entity_id=rid, account_id=acct,
                             data={"stage": idx, "failures": stage_failures,
                                   "attempted": stage_attempted}, product_id=pid)
-    elif should_autopause(fresh["failures"], fresh["attempted"], fresh["failure_threshold"]):
+    elif should_autopause(fresh["failures"], fresh["attempted"], fresh["failure_threshold"]) \
+            and should_autopause(fresh["failures"], fresh["attempted"],
+                                 fresh["failure_threshold"], floor()):
         ms.update_rollout(rid, state="paused", pause_reason="failure_limit")
         ms.append_audit(actor="system", action="rollout.autopause", entity_type="rollout",
                         entity_id=rid, account_id=acct,
@@ -904,8 +913,12 @@ def _offer_answer(st, rel, manifest_url, device_id: str):
 
 def _sent_to_product(ms, existing, checkin, account_id, known) -> bool:
     """Whether this account sent this camera to the product it now reports: the release it
-    was last offered, or the one it is pinned to, is a release of that product. Both are what
-    the server did, so a camera cannot report its way into either."""
+    was last offered, or the one it is pinned to, is a release of that product -- or it was
+    pinned to one, and the pin was lifted before it arrived (a claim flow that pins, then
+    unpins, ahead of the camera's next signed check-in). All are what the server did, so a
+    camera cannot report its way into any of them."""
+    if ms.sent_product(checkin.device_id) == checkin.product_id:
+        return True
     for release_id in (existing.get("last_offered_release_id"),
                        ms.get_device_pin(checkin.device_id, account_id),
                        # a cohort pinned across products, under the product it is known as
@@ -1279,6 +1292,25 @@ _PUBLISH_PATH = "/api/v1/admin/releases"
 _PUBLISH_DELTAS_MAX = 1          # delta parts are small beside an image: room for one image's worth
 
 
+class _ClientFromHops:
+    """The client's address, from the proxies' own entries in ``X-Forwarded-For``.
+
+    Each proxy in front of the server appends the address it heard from, so with ``hops`` of
+    them the entry that many from the right is what the outermost one saw. Everything to the
+    left of it is what the client sent, and is not read. A request with fewer entries did not
+    come through them all: it has no address anyone vouches for, and shares one ("-")."""
+
+    def __init__(self, app, hops: int):
+        self.app, self.hops = app, hops
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            seen = b",".join(v for k, v in scope.get("headers") or () if k == b"x-forwarded-for")
+            hop = [e.strip() for e in seen.decode("latin-1").split(",") if e.strip()]
+            scope["client"] = (hop[-self.hops][:64] if len(hop) >= self.hops else "-", 0)
+        return await self.app(scope, receive, send)
+
+
 class _BodyLimit:
     """Caps every request body. The framework reads and parses a body BEFORE it runs a
     route's credential check, so without this anyone could have the server buffer whatever
@@ -1387,6 +1419,8 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
                   description=_API_DESCRIPTION, openapi_tags=_OPENAPI_TAGS,
                   docs_url=None, redoc_url=None)  # /docs is our self-hosted ReDoc page
     app.add_middleware(_BodyLimit)
+    if settings.trusted_proxy_hops:
+        app.add_middleware(_ClientFromHops, hops=settings.trusted_proxy_hops)
     app.state.settings = settings
     app.state.keykeeper = (keykeeper if keykeeper is not None
                            else keykeeper_mod.build_keykeeper(settings))

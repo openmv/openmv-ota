@@ -594,6 +594,11 @@ _MIGRATIONS: list[list[str]] = [
         "CREATE INDEX IF NOT EXISTS idx_audit_account ON audit (account_id, seq)",
         "CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit (account_id, action, entity_id)",
     ],
+    [   # v45 -- the product an account last SENT a registered camera to (a pin to a release
+        # of another product), kept past the pin: a flow that unpins before the camera's next
+        # signed check-in used to leave its arrival there reading as a move of its own.
+        "ALTER TABLE device_registrations ADD COLUMN sent_product_id BIGINT",
+    ],
 ]
 
 # How long after one refused check-in is audited the next one from the same camera is (see
@@ -1942,8 +1947,29 @@ class SqlMetadataStore:
     def set_registration_product(self, device_id: str, product_id) -> None:
         """Remember (or, with None, forget) the product a registered camera is in the fleet
         under. Nothing to do for a camera with no registration."""
-        self.execute("UPDATE device_registrations SET product_id = ? WHERE device_id = ?",
-                     (product_id, device_id))
+        self.execute("UPDATE device_registrations SET product_id = ?, sent_product_id = CASE "
+                     "WHEN sent_product_id = ? THEN NULL ELSE sent_product_id END "
+                     "WHERE device_id = ?", (product_id, product_id, device_id))   # it arrived
+
+    def note_sent(self, account_id: str, product_id: int, device_id: str | None = None,
+                  cohort: tuple | None = None) -> None:
+        """The account sent cameras to ``product_id`` (pinned them to a release of it): one
+        camera, or those of a ``(product, cohort)``. Remembered on each one's registration
+        until it checks in from there, whether or not the pin is still in place by then."""
+        if device_id is not None:
+            where, params = "device_id = ?", (device_id,)
+        else:
+            where, params = ("product_id = ? AND device_id IN (SELECT device_id FROM devices "
+                             "WHERE cohort = ? AND account_id = ?)", (*cohort, account_id))
+        self.execute("UPDATE device_registrations SET sent_product_id = ? WHERE account_id = ? "
+                     "AND (product_id IS NULL OR product_id <> ?) AND " + where,
+                     (product_id, account_id, product_id, *params))
+
+    def sent_product(self, device_id: str):
+        """The product this camera's account last sent it to and it has not arrived at."""
+        row = self.query_one("SELECT sent_product_id FROM device_registrations "
+                             "WHERE device_id = ?", (device_id,))
+        return None if row is None else _d(row)["sent_product_id"]
 
     def registration_product(self, device_id: str):
         """The product a registered camera is in the fleet under; None for a camera with no

@@ -663,6 +663,25 @@ def test_rate_limited(tmp_path):
     assert r.json() == {"update": False, "poll_after_s": retry}
 
 
+def test_one_camera_does_not_pause_a_rollout_by_itself(tmp_path):
+    """One failure in one attempt is not a rate. A fleet of six pauses at five attempts."""
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, pv=0x02000000, percent=100)
+    store.update_rollout("ro1", state="paused")
+    c = TestClient(app)
+    for n in range(6):                                        # the fleet, before the rollout
+        camera.check(c, _checkin(dev="d%d" % n, pv=0x01000000))
+    store.update_rollout("ro1", state="active")
+    camera.check(c, _checkin(dev="d0", pv=0x01000000))
+    camera.check(c, _checkin(dev="d0", pv=0x01000000, fallback_reason="crc"))
+    ro = store.get_rollout("ro1")
+    assert (ro["attempted"], ro["failures"], ro["state"]) == (1, 1, "active")
+    for n in range(1, 5):
+        camera.check(c, _checkin(dev="d%d" % n, pv=0x01000000))
+    ro = store.get_rollout("ro1")
+    assert (ro["attempted"], ro["failures"], ro["state"]) == (5, 1, "paused")
+
+
 def test_autopause_on_fallback_threshold(tmp_path):
     app, store, storage, v = _app(tmp_path)
     _seed(store, pv=0x02000000, percent=100)
@@ -1078,3 +1097,45 @@ def test_ramp_or_autopause_ignores_an_inactive_or_missing_rollout(tmp_path):
     _ramp_or_autopause(store, "ro1", {"account_id": "", "product_id": BID})
     assert store.get_rollout("ro1")["stage_index"] == 0       # left untouched (no raise)
     _ramp_or_autopause(store, "ghost", {"account_id": "", "product_id": BID})   # missing -> no crash
+
+
+def test_the_client_is_the_address_the_outermost_proxy_wrote(tmp_path):
+    """Behind proxies that append to X-Forwarded-For, the leftmost entry is the client's own
+    choice: a new address a request, and no rate limit. The entry `hops` from the right is
+    what the outermost proxy saw."""
+    import asyncio
+
+    from openmv_ota.server.app import _ClientFromHops
+    seen = []
+
+    async def inner(scope, receive, send):
+        seen.append(scope.get("client"))
+
+    def client(headers, kind="http", hops=2):
+        asyncio.run(_ClientFromHops(inner, hops)({"type": kind, "headers": headers}, None, None))
+        return seen[-1]
+
+    xff = b"x-forwarded-for"
+    assert client([(xff, b"6.6.6.6, 1.1.1.1, 10.0.0.1")]) == ("1.1.1.1", 0)
+    assert client([(xff, b"7.7.7.7,8.8.8.8"), (xff, b"1.1.1.1"), (xff, b" 10.0.0.1 ")]) \
+        == ("1.1.1.1", 0)                                     # two headers are one list
+    assert client([(xff, b"1.1.1.1")]) == ("-", 0)            # did not come through them all
+    assert client([]) == ("-", 0)
+    assert client([(xff, b"1.1.1.1, 10.0.0.1")], kind="websocket") == ("1.1.1.1", 0)
+    assert client([(xff, b"x")], kind="lifespan") is None     # not a request: left alone
+    assert client([(xff, b"a" * 200)], hops=1) == ("a" * 64, 0)
+
+    # ...and it is what the rate limit keys on
+    store = SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    store.set_meta("capability_secret", SECRET)
+    app = create_app(ServerSettings(base_url="https://ota.test", checkin_rate_per_min=2,
+                                    trusted_proxy_hops=2, poll_jitter=0,
+                                    swd_ids_verify_url="u", swd_ids_verify_token="t"),
+                     storage=LocalArtifactStorage(str(tmp_path / "blobs")),
+                     metastore=store, verifier=_Verifier(True))
+    c = TestClient(app)
+    codes = [c.post("/api/v1/check", json=_checkin(dev="d%d" % n),
+                    headers={"X-Forwarded-For": "6.6.6.%d, 1.1.1.1, 10.0.0.1" % n}).status_code
+             for n in range(4)]
+    assert codes[:2] == [codes[0]] * 2 and codes[0] != 429 and codes[2:] == [429, 429]

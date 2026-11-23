@@ -58,10 +58,9 @@ budget for now; these are the free/cheap passes to run first, in order.
   - `keys/keykeeper.json` is its own anchor once written: the configured pin is not read
     again, so whoever can rewrite that file can seal later releases to a key of theirs.
     Verify the kept chain from the configured pin every time.
-  - `OPENMV_OTA_TRUSTED_PROXY_IPS=*` (what the self-hosting page says to set behind a PaaS)
-    takes the leftmost `X-Forwarded-For` entry, which a client chooses when the proxy
-    appends: the per-IP rate limit is then per header. Document the proxy requirement or
-    take the rightmost untrusted hop.
+  - The hosted server runs with `OPENMV_OTA_TRUSTED_PROXY_IPS=*`, which takes the leftmost
+    `X-Forwarded-For` entry. `OPENMV_OTA_TRUSTED_PROXY_HOPS` takes the entry the outermost
+    proxy wrote; the hosted deployment's hop count has to be measured before it is set.
   - A refused check-in signature is audited when its reason changes, so alternating two bad
     signatures for a known camera id writes one audit row a request.
   - `keys/backends.json` names code to load (a `custom` signer's module, a PKCS#11 `.so`):
@@ -125,8 +124,7 @@ budget for now; these are the free/cheap passes to run first, in order.
     one boot on the RAM copy of an erased record; a signed trailer with `comp_count == 0`
     scrubs the firmware area on the N6 and RT1062; boards without slot encryption do not
     check `body_sha256` in the stub.
-  - Round 6 (server): whether the hosted proxy replaces or appends `X-Forwarded-For` is
-    unverified, and `TRUSTED_PROXY_IPS=*` is only sound if it replaces; a device pin on an
+  - Round 6 (server): a device pin on an
     id that is learned-bound to another account hides the camera from its owner until it
     registers; a learned binding from an unsigned check-in takes any account string; publish
     and local-storage downloads read a whole artifact into memory per request with no
@@ -177,14 +175,9 @@ budget for now; these are the free/cheap passes to run first, in order.
     call; a token in account `''` reads every account's `/fleet/bases`.
   - Rounds 8-10 (server): journal entries the audit budget dropped are not audited later; a
     `stale` refusal uses the day's refusal-audit slot.
-  - Round 13 (server): **a decision**: a camera that moves itself to another product of its
-    account is offered that product's rollout and counts in it, and a rollout pauses at one
-    failure in one attempt, so one camera can pause any product's rollout in its account
-    (the pause is visible, and the move is audited). Either a camera that moved itself does
-    not count until the account places it, or auto-pause needs a minimum number of attempts.
-    Round 16: **a decision**: resuming a rollout that a newer one superseded leaves two
-    active for one product and cohort, and the older release is offered again if the newer
-    pauses (refuse the resume, or let it supersede the newer). A webhook test ping has no
+  - Rounds 13-16 (server): a product a camera was sent to by a pin, and never went to,
+    stays noted on its registration, so a later move there by itself reads as sent. A
+    webhook test ping has no
     rate limit and its audit row lands in the unnamed account. An account can pin a device
     id it has never seen, and the id's later owner cannot pin or unpin until the camera
     checks in. Two accounts registering one id at once, or one account registering past

@@ -113,6 +113,18 @@ def test_should_autopause():
     assert should_autopause(6, 100, 0.05) is True
     assert should_autopause(4, 100, 0.05) is False
     assert should_autopause(0, 0, 0.05) is False         # no attempts yet
+    # ...over enough attempts to be a rate: one failure in one attempt paused a rollout
+    assert should_autopause(1, 1, 0.05, floor=5) is False
+    assert should_autopause(1, 5, 0.05, floor=5) is True
+    assert should_autopause(1, 1, 0.05, floor=0) is True
+
+
+def test_autopause_floor_is_five_or_what_the_rollout_can_reach():
+    from openmv_ota.server.rollout import autopause_floor
+    assert autopause_floor(100, 100) == 5
+    assert autopause_floor(3, 100) == 3                  # a fleet of three: all three
+    assert autopause_floor(20, 10) == 2                  # ten percent of twenty
+    assert autopause_floor(0, 100) == 1 and autopause_floor(1000, 0) == 1
 
 
 def test_running_body_sha256_reads_the_running_slot():
@@ -177,5 +189,7 @@ def test_ramp_action_uses_default_ceiling_and_stops_at_last_stage():
     assert ramp_action(stages, 0, 100, 6, 10, 0.05) == ("pause", None)          # 6% > default 5%
     assert ramp_action(stages, 0, 100, 4, 10, 0.05) == ("hold", None)           # last stage: never raises
     assert ramp_action(stages, 0, 0, 0, 10, 0.05) == ("hold", None)             # no attempts: no rate
+    assert ramp_action(stages, 0, 2, 1, 10, 0.05, 5) == ("hold", None)          # too few to judge
+    assert ramp_action(stages, 0, 5, 1, 10, 0.05, 5) == ("pause", None)
     assert ramp_action([], 0, 0, 0, 0, 0.05) == ("hold", None)                  # not a ramp
     assert ramp_action(stages, 5, 0, 0, 0, 0.05) == ("hold", None)              # index out of range

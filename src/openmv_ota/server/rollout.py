@@ -9,6 +9,7 @@ rollout isn't systematically the canary in the next.
 from __future__ import annotations
 
 import hashlib
+import math
 from datetime import datetime
 
 
@@ -113,9 +114,22 @@ def offers_update(*, current_payload_version: int, release_payload_version: int,
     return staged_in(rollout_id, device_id, rollout_percent)
 
 
-def should_autopause(failures: int, attempted: int, threshold: float) -> bool:
-    """Whether a rollout's fallback rate has crossed its failure threshold (the safety valve)."""
-    return attempted > 0 and (failures / attempted) > threshold
+# A failure rate is judged once this many cameras have tried, or every camera the rollout can
+# reach if that is fewer: at one failure in one attempt, one camera paused a rollout by itself.
+AUTOPAUSE_MIN_ATTEMPTED = 5
+
+
+def autopause_floor(fleet: int, percent: float) -> int:
+    """How many attempts a failure rate needs before it can pause a rollout offered to
+    ``percent`` of a ``fleet`` of cameras: never more than it can reach, never fewer than 1."""
+    reach = math.ceil(fleet * percent / 100)
+    return max(1, min(AUTOPAUSE_MIN_ATTEMPTED, reach))
+
+
+def should_autopause(failures: int, attempted: int, threshold: float, floor: int = 1) -> bool:
+    """Whether a rollout's fallback rate has crossed its failure threshold (the safety valve),
+    over at least ``floor`` attempts (see :func:`autopause_floor`)."""
+    return attempted >= max(1, floor) and (failures / attempted) > threshold
 
 
 # --- rollout ramps: declared stages the rollout raises itself through -----------------------
@@ -208,11 +222,11 @@ def stage_for_percent(stages, stage_index, percent):
 
 
 def ramp_action(stages, stage_index, stage_attempted, stage_failures, soak_elapsed_s,
-                default_max_failure_rate):
+                default_max_failure_rate, floor=1):
     """What a ramping rollout should do at ``stage_index`` given that stage's OWN window. Pure.
 
-    Returns ``("pause", None)`` when the stage's failure rate exceeds its ceiling (checked FIRST,
-    so it beats a raise), ``("raise", next_percent)`` when the stage has soaked long enough AND
+    Returns ``("pause", None)`` when the stage's failure rate exceeds its ceiling over at least
+    ``floor`` attempts (checked FIRST, so it beats a raise), ``("raise", next_percent)`` when the stage has soaked long enough AND
     reached ``min_attempted`` devices AND a later stage exists, else ``("hold", None)``. A stage
     with no ``max_failure_rate`` uses ``default_max_failure_rate`` (the rollout's failure_threshold).
     """
@@ -221,8 +235,9 @@ def ramp_action(stages, stage_index, stage_attempted, stage_failures, soak_elaps
     stage = stages[stage_index]
     ceiling = stage.get("max_failure_rate", default_max_failure_rate)
     rate = (stage_failures / stage_attempted) if stage_attempted > 0 else 0.0
-    if stage_attempted > 0 and rate > ceiling:
-        return ("pause", None)
+    if rate > ceiling:
+        # (too few attempts to judge is a hold, not a raise: the stage is failing so far)
+        return ("pause" if stage_attempted >= max(1, floor) else "hold", None)
     if (stage_index + 1 < len(stages)
             and soak_elapsed_s >= stage["min_soak"]
             and stage_attempted >= stage["min_attempted"]):
