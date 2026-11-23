@@ -1536,7 +1536,13 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
     between recvs (progress-fed, non-blocking) without a relax()."""
     for _ in range(max_redirects + 1):
         host, port, path = _parse_url(url)
+        t0 = ticks_ms()
         sock = _connect(host, port, ca_pem, socket, ssl)
+        # The connect and the handshake are not the download: a slow board behind a redirect
+        # or two spent its first minute here. They have their own bound (the socket timeout
+        # on each wait, and relax()'s minute where a watchdog is armed), and a reconnect that
+        # delivers nothing is counted (_RESUME_MAX_STALLS).
+        _slack_add(ticks_diff(ticks_ms(), t0))
         # The handshake left the heap full of its own garbage; collect it NOW, fed, before the
         # allocations below (the GET, the reader's buffer, the header lines) make an automatic
         # collect land in the unfed gap between them (see _collect_fed).

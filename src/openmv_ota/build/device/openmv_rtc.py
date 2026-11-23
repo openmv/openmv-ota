@@ -178,7 +178,7 @@ def fresh():
     return False
 
 
-def server_time(unix):
+def server_time(unix, verified=True):
     """Correct the clock from the server's time (Unix seconds), as the OTA runtime reads it off
     each check-in's ``Date`` header (``openmv_ota._server_date``, which parses it -- the parse
     lives in the romfs runtime so an OTA update can change it; this module is frozen).
@@ -188,10 +188,18 @@ def server_time(unix):
     ``_DRIFT_S`` off (or not trusted); either way the clock counts as freshly network-checked,
     which keeps NTP off the wire. A time before the build (a misconfigured proxy) is ignored.
 
+    NOT ``verified`` (a board that does not verify TLS): the time is anyone's on the path, so
+    it only ever moves the clock forward and is not a network check (NTP still runs).
+
     Returns True when the time was accepted."""
     global _source, _net_ms
     if unix < BUILD_TIME:
         return False
+    if not verified:
+        if trusted() and unix <= now() + _DRIFT_S:
+            return False
+        set_time(unix)
+        return True
     if not trusted() or abs(now() - unix) > _DRIFT_S:
         set_time(unix)
     _source = "server"

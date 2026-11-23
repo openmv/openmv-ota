@@ -14,16 +14,14 @@ _PACKED = ("app", "app-coprocessor", "device", "certs")
 _MSG = "%s is a link: a project's files are its own -- remove it"
 
 
-def _links(top: Path, files_only: bool = False):
-    """Every link under ``top`` (``top`` itself first), not followed. With ``files_only``
-    a link to a directory passes: where a directory is kept is the user's business."""
-    if top.is_symlink() and not (files_only and top.is_dir()):
+def _links(top: Path):
+    """Every link under ``top`` (``top`` itself first), not followed."""
+    if top.is_symlink():
         yield top
     for base, dirs, files in os.walk(top):
         for name in sorted(dirs + files):
-            path = Path(base) / name
-            if path.is_symlink() and not (files_only and path.is_dir()):
-                yield path
+            if (Path(base) / name).is_symlink():
+                yield Path(base) / name
 
 
 def check_project(root: str | Path, error: type = ProjectError) -> None:
@@ -33,7 +31,9 @@ def check_project(root: str | Path, error: type = ProjectError) -> None:
     ledger, a key file, anything in ``build/``) sends a write to whatever it names, with
     content the project chose, or packs what it names into an image that is then signed and
     published. What is in ``app/`` is checked where it is staged; the directories that are
-    packed whole are not links themselves."""
+    packed whole are not links themselves. ``keys/`` is the project's own too, the directory
+    and all: as a link it is another project's keys, signed with and rewritten (keys kept
+    somewhere else are a signer backend's business, in the machine's own config)."""
     root = Path(root)
     found = []
     if root.is_dir():
@@ -42,8 +42,8 @@ def check_project(root: str | Path, error: type = ProjectError) -> None:
             found = [Path(e.path) for e in entries if e.is_symlink()
                      and not e.name.startswith(".#")
                      and (e.name in _PACKED or not e.is_dir())]
-    for name, files_only in ((".openmv-ota", False), ("build", False), ("keys", True)):
-        found += _links(root / name, files_only)
+    for name in (".openmv-ota", "build", "keys"):
+        found += _links(root / name)
     if found:
         raise error(_MSG % sorted(found)[0])
 

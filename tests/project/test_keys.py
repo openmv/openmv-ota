@@ -333,6 +333,28 @@ def test_a_pin_is_refused_in_a_backend_record(tmp_path, make_firmware, make_sdk,
     assert signer_pkcs11.token_pin({"pkcs11_module": "m.so"}) == "4321"
 
 
+def test_code_to_load_is_refused_in_a_backend_record(tmp_path, make_firmware, make_sdk,
+                                                     monkeypatch):
+    """`keys/backends.json` comes with the project. A PKCS#11 library or a signer factory
+    named there is code that whoever made the project has the signing machine run."""
+    from openmv_ota.ota import signer_pkcs11
+    from openmv_ota.ota.errors import OtaError
+    root = _ota_project(tmp_path, make_firmware, make_sdk)
+    for record, env in (({"backend": "pkcs11", "pkcs11_module": "/tmp/evil.so"},
+                         "OPENMV_OTA_PKCS11_MODULE"),
+                        ({"backend": "custom", "factory": "evil:run"},
+                         "OPENMV_OTA_SIGNER_FACTORY")):
+        with pytest.raises(ProjectError, match=env):
+            keys_mod.set_backend(root, 0x0100, record)
+    with pytest.raises(OtaError, match="does not go in a backend record"):
+        signer_pkcs11.token_module({"pkcs11_module": "/tmp/evil.so"})
+    monkeypatch.delenv("OPENMV_OTA_PKCS11_MODULE", raising=False)
+    with pytest.raises(OtaError, match="set OPENMV_OTA_PKCS11_MODULE"):
+        signer_pkcs11.token_module({"token_label": "openmv"})
+    monkeypatch.setenv("OPENMV_OTA_PKCS11_MODULE", "/usr/lib/softhsm/libsofthsm2.so")
+    assert signer_pkcs11.token_module({}) == "/usr/lib/softhsm/libsofthsm2.so"
+
+
 def test_keys_retire_cli(tmp_path, make_firmware, make_sdk, capsys):
     from openmv_ota.cli import main
     root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=3, factory_keys=1)

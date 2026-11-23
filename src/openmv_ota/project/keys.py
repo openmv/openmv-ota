@@ -120,6 +120,13 @@ def set_backend(root: Path, key_id: int, record: dict) -> None:
     if "pin" in record:
         raise ProjectError("a PIN does not go in keys/backends.json (it is committed): set "
                            "OPENMV_OTA_PKCS11_PIN in the environment that signs")
+    for field, env in (("pkcs11_module", "OPENMV_OTA_PKCS11_MODULE"),
+                       ("factory", "OPENMV_OTA_SIGNER_FACTORY")):
+        if field in record:
+            # code the signing machine loads: its own to name, not the project's
+            raise ProjectError("%s does not go in keys/backends.json (it comes with the "
+                               "project, and names code to load): set %s in the environment "
+                               "that signs" % (field, env))
     records[key_id] = record
     write_backends(root, records)
 

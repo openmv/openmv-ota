@@ -417,6 +417,7 @@ def create_project(
     key_passphrase: str | None = None,
     dev: bool = False,
     keys_from: Path | None = None,
+    new_keys: bool = False,
 ) -> tuple[lock_mod.Lock, list[str]]:
     repo = firmware.expanduser().resolve()
     if not gitrepo.is_git_repo(repo):
@@ -424,6 +425,7 @@ def create_project(
 
     paths = ProjectPaths(root)
     root.mkdir(parents=True, exist_ok=True)
+    keep_keys = False
     if paths.config.exists() and not force:
         raise ProjectError("%s already exists; use --force" % paths.config.name, exit_code=1)
 
@@ -464,11 +466,26 @@ def create_project(
         _ensure_ota_capable(lock)  # fail before writing anything for an impossible board
         _ensure_ota_mbedtls(lock)
         warnings += _app_only_warnings(lock)
-        if force and keys_from is None and paths.trusted_keys.exists():
+        # THE KEYS A PROJECT HAS ARE KEPT. `--force` rewrites a project's files; replacing
+        # its roots and signing keys ends every update to a fleet that trusts them, and is
+        # asked for by name (`--new-keys`), not as a side effect of rewriting a config.
+        keep_keys = keys_from is None and paths.trusted_keys.exists() and not new_keys
+        if keys_from is None and paths.trusted_keys.exists() and new_keys:
             warnings.append(
                 "this regenerates the signing keys; devices already in the field trust the "
                 "OLD keys and will REJECT updates signed by the new ones (you'd have to "
                 "re-flash them). Only do this for a fresh fleet -- back up the old keys first")
+        if keep_keys:
+            try:
+                signing_key_id = config_mod.load_config(paths.config).signing_key_id
+            except ProjectError:
+                signing_key_id = None
+            if signing_key_id is None:
+                raise ProjectError(
+                    "%s holds signing keys, and no project config says which one is current: "
+                    "restore the config, or pass --new-keys to replace the keys (a fleet that "
+                    "trusts them can then no longer be updated)" % paths.trusted_keys.parent,
+                    exit_code=1)
         if keys_from is not None:
             # Checked before anything else touches the source, so "that is not a project
             # with keys" is the error rather than one about its passphrase file.
@@ -483,6 +500,8 @@ def create_project(
                     "(no cached passphrase at %s); pass --key-passphrase-file instead"
                     % src_dev, exit_code=1)
             key_passphrase = src_dev.read_text().strip()
+        elif keep_keys:
+            pass                                     # nothing is minted: no passphrase to take
         elif dev:
             key_passphrase = secrets.token_hex(16)   # random throwaway passphrase, cached in-project
         elif not key_passphrase:
@@ -492,6 +511,8 @@ def create_project(
                 exit_code=1)
         if keys_from is not None:
             signing_key_id, w = _adopt_keys(paths, keys_from, boards, key_passphrase)
+        elif keep_keys:
+            w = []
         else:
             provisioned, w = _provision_keys(sig_alg, factory_keys, ota_keys, key_passphrase)
             signing_key_id = provisioned.signing_key_id
@@ -520,7 +541,7 @@ def create_project(
         # same reason: a project should arrive with confidentiality rather than with a
         # decision about it. One per board target -- see project/payload_keys.
         payload_keys.mint(paths.private_keys_dir, boards, key_passphrase)
-    if config.ota and dev:
+    if config.ota and dev and not keep_keys:
         # Cached whether the keys were minted here or adopted -- an adopted project signs
         # with the SOURCE's passphrase, and the build resolver has to find it either way.
         dp = passphrase_mod.dev_passphrase_path(root)

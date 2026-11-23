@@ -129,9 +129,24 @@ def test_new_force_warns_key_regeneration(tmp_path, make_firmware, make_sdk, cap
     repo = make_firmware()
     _new(tmp_path, make_firmware, make_sdk, "--ota", repo=repo)
     capsys.readouterr()
+    root = tmp_path / "proj"
+    keys = sorted(p for p in (root / "keys").rglob("*") if p.is_file())
+    before = {p: p.read_bytes() for p in keys}
+    assert before
+    # --force rewrites the project's files and keeps its keys: replacing them ends every
+    # update to a fleet that trusts them, and is asked for by name
     rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", "--force", repo=repo)
     assert rc == 0
+    assert "REJECT" not in capsys.readouterr().err
+    assert {p: p.read_bytes() for p in keys} == before
+    rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", "--force", "--new-keys", repo=repo)
+    assert rc == 0
     assert "REJECT updates signed by the new ones" in capsys.readouterr().err
+    assert {p: p.read_bytes() for p in keys if p.exists()} != before
+    # keys with no config to say which is current: not guessed at
+    (root / "openmv-ota.toml").write_text("")
+    rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", "--force", repo=repo)
+    assert rc == 1 and "pass --new-keys" in capsys.readouterr().err
 
 
 # --- keys backup / restore ---------------------------------------------------

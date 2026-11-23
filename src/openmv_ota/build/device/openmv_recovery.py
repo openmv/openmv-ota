@@ -386,15 +386,16 @@ def _signer():  # pragma: no cover  (device)  # hil-residual-fn: see _uid -- no 
     return lambda body: trust.checkin_signature(body, ts)
 
 
-def _set_clock(value):  # pragma: no cover  (device)  # hil-residual-fn: see _signer
-    """Set the clock from the server's ``Date`` -- the check-in is TLS to a verified server, so
-    the time is authenticated. Never raises: the clock only lets the next check-in be signed."""
+def _set_clock(value, verified):  # pragma: no cover  (device)  # hil-residual-fn: see _signer
+    """Set the clock from the server's ``Date``. Where the check-in's TLS ``verified`` the
+    server the time is authenticated; where it did not, it only moves the clock forward.
+    Never raises: the clock only lets the next check-in be signed."""
     unix = http_date(value)
     if unix is None:
         return
     try:
         import openmv_rtc
-        openmv_rtc.server_time(unix)
+        openmv_rtc.server_time(unix, verified)
     except Exception:  # hil-residual: no clock module on this firmware
         pass
 
@@ -415,7 +416,8 @@ def _install(cfg):  # pragma: no cover  (device)  # hil-residual-fn: see _uid --
     ca = getattr(cfg, "CA_PEM", b"")
     host, port, _ = inst._parse_url(cfg.SERVER_URL)
     sign = _signer()
-    sock = inst._connect(host, port, inst._tls_anchors(ca, cfg), socket, ssl)
+    anchors = inst._tls_anchors(ca, cfg)
+    sock = inst._connect(host, port, anchors, socket, ssl)
     try:
         sock.write(checkin_request(cfg, host, port, bid, sys.platform, _uid(), sign))
         sock.setblocking(False)                # the installer's reader polls (see _open)
@@ -424,7 +426,7 @@ def _install(cfg):  # pragma: no cover  (device)  # hil-residual-fn: see _uid --
         raw = inst._read_all(inst._make_body(reader, headers), _RESP_MAX)  # ram-ok: capped at _RESP_MAX
     finally:
         sock.close()
-    _set_clock(headers.get(b"date"))
+    _set_clock(headers.get(b"date"), bool(anchors))
     url = offered(code, raw)
     if not url:
         log.info("recovery: no update offered")

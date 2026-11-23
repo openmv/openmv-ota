@@ -787,6 +787,26 @@ def test_apply_server_time_corrects_through_an_old_frozen_rtc(monkeypatch):
     assert len(warned) == 1 and "rebuild the firmware" in warned[0]   # said ONCE
 
 
+def test_an_unverified_server_s_time_only_moves_the_clock_forward():
+    """On a board that does not verify TLS the Date is anyone's on the path. Rewound, a
+    retired certificate is valid again; so it moves the clock forward or not at all, through
+    the calls every frozen clock has, and is never taken as a network check."""
+    now = 1_700_000_000
+    new = _NewRtc()                                           # a current frozen clock
+    new.set, new.trusted, new.now = [], lambda: True, lambda: now
+    new.set_time = new.set.append
+    for rtc in (new, _OldRtc(now=now)):
+        assert not rt._apply_server_time(rtc, now - 86400, verified=False)     # back: no
+        assert not rt._apply_server_time(rtc, now + rt._DRIFT_S, verified=False)   # within drift
+        assert rt._apply_server_time(rtc, now + 86400, verified=False)
+        assert rtc.set == [now + 86400]
+        assert getattr(rtc, "got", []) == []                  # the frozen policy is not asked
+    unset = _OldRtc(now=5, trusted=False)                     # a clock that was never set
+    assert not rt._apply_server_time(unset, 1_500_000_000, verified=False)     # before the build
+    assert rt._apply_server_time(unset, 1_700_000_000, verified=False)
+    assert unset.set == [1_700_000_000]
+
+
 def test_register_flush_is_idempotent_by_key(monkeypatch):
     monkeypatch.setattr(rt, "_flush_hooks", {})
 

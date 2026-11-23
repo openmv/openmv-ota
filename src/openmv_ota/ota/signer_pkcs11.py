@@ -62,7 +62,7 @@ def provisioner(backend: dict):  # pragma: no cover  (needs a real PKCS#11 token
     import pkcs11
     from pkcs11.util.ec import encode_named_curve_parameters
 
-    lib = pkcs11.lib(backend["pkcs11_module"])
+    lib = pkcs11.lib(token_module(backend))
     token = lib.get_token(token_label=backend.get("token_label"))
     session = token.open(user_pin=token_pin(backend), rw=True)
     curve = {"sha256": "secp256r1", "sha384": "secp384r1", "sha512": "secp521r1"}
@@ -76,8 +76,7 @@ def provisioner(backend: dict):  # pragma: no cover  (needs a real PKCS#11 token
                 local=True)
             pub, _priv = params.generate_keypair(store=True, label=label)
             point = _der_octet_string(bytes(pub[pkcs11.Attribute.EC_POINT]))
-            record = {"backend": "pkcs11", "object_label": label,
-                      "pkcs11_module": backend["pkcs11_module"]}
+            record = {"backend": "pkcs11", "object_label": label}
             if backend.get("token_label"):
                 record["token_label"] = backend["token_label"]
             return point.hex(), record
@@ -97,11 +96,28 @@ def token_pin(backend: dict):
     return os.environ.get(PIN_ENV) or None
 
 
+MODULE_ENV = "OPENMV_OTA_PKCS11_MODULE"
+
+
+def token_module(backend: dict) -> str:
+    """The PKCS#11 library to load: from the environment, never from a backend record. The
+    records are ``keys/backends.json``, which comes with the project, and a library named
+    there is code that whoever made the project has this machine run."""
+    if "pkcs11_module" in (backend or {}):
+        raise OtaError("a PKCS#11 module does not go in a backend record (keys/backends.json "
+                       "comes with the project, and the module is code this machine loads): "
+                       "set %s instead" % MODULE_ENV)
+    module = os.environ.get(MODULE_ENV)
+    if not module:
+        raise OtaError("set %s to the token's PKCS#11 library (its .so)" % MODULE_ENV)
+    return module
+
+
 # --- real PKCS#11 session (host-coverage excluded -- no token in CI) --------------------------
 
 def _open_session(backend):  # pragma: no cover
     import pkcs11
-    lib = pkcs11.lib(backend["pkcs11_module"])
+    lib = pkcs11.lib(token_module(backend))
     token = lib.get_token(token_label=backend.get("token_label"))
     return _RealSession(token.open(user_pin=token_pin(backend)), pkcs11)
 

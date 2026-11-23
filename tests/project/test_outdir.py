@@ -51,11 +51,12 @@ def test_a_project_s_own_files_are_not_links(tmp_path):
     n = 0
     for place in ("openmv-ota.lock", ".openmv-ota/ledger.json", ".openmv-ota",
                   "build/releases/OPENMV_N6-ota-1.0.0.img.gz", "keys/desk_keys.json",
-                  "keys/private/dangling"):
+                  "keys/private/dangling", "keys/private", "keys"):
         n += 1
         root = tmp_path / ("p%d" % n)
         (root / place).parent.mkdir(parents=True)
-        (root / place).symlink_to(elsewhere if place == ".openmv-ota" else
+        (root / place).symlink_to(elsewhere if place in (".openmv-ota", "keys/private", "keys")
+                                  else
                                   tmp_path / "nothing" if "dangling" in place else mine)
         with pytest.raises(ProjectError, match="is a link"):
             check_project(root)
@@ -63,9 +64,8 @@ def test_a_project_s_own_files_are_not_links(tmp_path):
         with pytest.raises(ProjectError, match="is a link"):       # where every command starts
             config_mod.load_config(root / config_mod.CONFIG_NAME)
     ok = tmp_path / "ok"
-    (ok / "keys").mkdir(parents=True)
-    (ok / "keys" / "private").symlink_to(elsewhere)                # where keys are kept: the user's
-    (ok / "firmware").symlink_to(elsewhere)                        # ...and a checkout beside it
+    ok.mkdir()
+    (ok / "firmware").symlink_to(elsewhere)                        # a checkout beside it: fine
     (ok / ".#openmv-ota.toml").symlink_to("someone@host.1234")     # an editor's lock
     check_project(ok)
     (ok / "app").symlink_to(elsewhere)                             # packed whole: not a link
