@@ -357,7 +357,10 @@ def _write_wrapper_manifest(p, repo: Path, name: str,
         if mod in _NETWORK_ONLY_MODULES and not networked:
             continue
         src = p.root / "device" / mod
-        shutil.copy2(src if src.exists() else _DEVICE_DIR / mod, mods / mod)
+        if src.exists() or src.is_symlink():
+            mods.joinpath(mod).write_bytes(_project_bytes(p, "device/" + mod, "device/" + mod))
+        else:
+            shutil.copy2(_DEVICE_DIR / mod, mods / mod)
         freezes.append('freeze("%s", "%s")\n' % (mods.as_posix(), mod))
     # The module boot.py makes the camera's flash key with, and keys the slot cipher's engine
     # (the AE3) or reads the booted slot into RAM (the H7 Plus, the Pure Thermal). Nowhere
@@ -540,6 +543,30 @@ def _relink_for_stub(overlay: Path, name: str, stub) -> None:
     mk.write_text(text, encoding="utf-8")
 
 
+def _project_bytes(p, rel: str, what: str) -> bytes:
+    """A file of the PROJECT that goes into the firmware, read. Inside the project and not
+    through a link: what is read here is frozen into an image that leaves the build machine,
+    and a checked-out project is not a reason to trust where its paths lead -- an ``[ota].ca``
+    of ``/proc/self/environ``, or a ``device/openmv_log.py`` linked to a credentials file,
+    put the build machine's secrets in the firmware."""
+    root = Path(p.root).resolve()
+    path = Path(p.root) / rel
+    resolved = path.resolve()
+    if Path(rel).is_absolute() or resolved != root / Path(rel) or not resolved.is_relative_to(root):
+        raise BuildError("%s (%r) must be a file inside the project, not a link and not a path "
+                         "out of it" % (what, rel), exit_code=1)
+    return resolved.read_bytes()
+
+
+def _pem_bundle(p, rel: str, what: str) -> bytes:
+    """A project file that is a PEM certificate bundle, read (see :func:`_project_bytes`)."""
+    pem = _project_bytes(p, rel, what)
+    if b"-----BEGIN CERTIFICATE-----" not in pem:
+        raise BuildError("%s (%r) does not look like a PEM certificate bundle" % (what, rel),
+                         exit_code=1)
+    return pem
+
+
 def _recovery_ca(p, t) -> bytes:
     """The TLS anchors baked into the firmware, read at build time: ``_ota_config.CA_PEM``.
 
@@ -558,9 +585,8 @@ def _recovery_ca(p, t) -> bytes:
     rather than ship a recovery that cannot connect."""
     rel = (p.config.ca or "").strip()
     if rel:
-        path = p.root / rel
         try:
-            return path.read_bytes()
+            return _pem_bundle(p, rel, "ota.ca")
         except OSError as e:
             raise BuildError("ota.ca %r is not readable: %s" % (rel, e)) from None
     if not t.tls_verify:
@@ -568,7 +594,7 @@ def _recovery_ca(p, t) -> bytes:
     if t.recovery_ca_bundle:
         bundle = p.root / "certs" / "ca.pem"
         try:
-            return bundle.read_bytes()
+            return _pem_bundle(p, "certs/ca.pem", "the project's CA bundle")
         except OSError as e:
             raise BuildError(
                 "%s: [ota].ca is unset and the project's CA bundle (%s) is not readable: %s\n"

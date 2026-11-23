@@ -2,8 +2,8 @@
 
 Host-side, built on ``cryptography``. Public keys are stored as the uncompressed
 EC point in hex (``04 || X || Y``), which the device's mbedtls verifier reads
-directly via ``mbedtls_ecp_point_read_binary``; private keys are unencrypted
-PKCS#8 PEM.
+directly via ``mbedtls_ecp_point_read_binary``; private keys are encrypted
+PKCS#8 PEM (see :func:`private_key_pem`).
 
 ``keys/trusted_keys.json`` is the committed public set the firmware build bakes
 into ``TRUSTED_KEYS``. Each entry carries the key's id, COSE algorithm, role
@@ -69,16 +69,80 @@ def public_key_from_hex(point_hex: str, alg: AlgSpec):
         raise OtaError("invalid public point: %s" % e) from None
 
 
+# PBKDF2-HMAC-SHA256 rounds for a private key at rest. The library's own encrypted PKCS#8
+# writer uses 2048, which a GPU walks through at millions of guesses a second; the roots sit
+# in the same backup under the same passphrase. This is the count OWASP gives for SHA-256.
+KDF_ROUNDS = 600_000
+
+
+def _der(tag: int, body: bytes) -> bytes:
+    n = len(body)
+    if n < 0x80:
+        return bytes([tag, n]) + body
+    size = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([tag, 0x80 | len(size)]) + size + body
+
+
+def _der_int(v: int) -> bytes:
+    return _der(0x02, v.to_bytes(v.bit_length() // 8 + 1, "big"))
+
+
+_OID_PBES2 = bytes.fromhex("06092a864886f70d01050d")
+_OID_PBKDF2 = bytes.fromhex("06092a864886f70d01050c")
+_OID_HMAC_SHA256 = bytes.fromhex("06082a864886f70d0209")
+_OID_AES256_CBC = bytes.fromhex("060960864801650304012a")
+
+
 def private_key_pem(private_key, passphrase: str) -> bytes:
-    """Serialize a private key as **encrypted** PKCS#8 PEM under ``passphrase``. There is no
-    plaintext-write path: the tool never emits an unencrypted private key."""
+    """Serialize a private key as **encrypted** PKCS#8 PEM under ``passphrase``: PBES2,
+    PBKDF2-HMAC-SHA256 at :data:`KDF_ROUNDS`, AES-256-CBC. Standard, so any PKCS#8 reader
+    opens it (the rounds are in the file). There is no plaintext-write path: the tool never
+    emits an unencrypted private key."""
+    import base64
+    import hashlib
+    import os
+
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
     if not passphrase:
         raise OtaError("a passphrase is required to write a private key (keys are never plaintext)")
-    return private_key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.BestAvailableEncryption(passphrase.encode("utf-8")),
-    )
+    plain = private_key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,
+                                      serialization.NoEncryption())
+    salt, iv = os.urandom(16), os.urandom(16)
+    key = hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, KDF_ROUNDS, 32)
+    padder = padding.PKCS7(128).padder()
+    enc = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+    data = enc.update(padder.update(plain) + padder.finalize()) + enc.finalize()
+    kdf = _der(0x30, _OID_PBKDF2 + _der(0x30, _der(0x04, salt) + _der_int(KDF_ROUNDS)
+                                        + _der(0x30, _OID_HMAC_SHA256 + b"\x05\x00")))
+    scheme = _der(0x30, _OID_AES256_CBC + _der(0x04, iv))
+    info = _der(0x30, _der(0x30, _OID_PBES2 + _der(0x30, kdf + scheme)) + _der(0x04, data))
+    b64 = base64.b64encode(info).decode("ascii")
+    lines = "\n".join(b64[i:i + 64] for i in range(0, len(b64), 64))
+    return ("-----BEGIN ENCRYPTED PRIVATE KEY-----\n%s\n-----END ENCRYPTED PRIVATE KEY-----\n"
+            % lines).encode("ascii")
+
+
+def write_private(path, data: bytes) -> None:
+    """Write key material readable by its owner alone, from the first byte: created 0600,
+    never written under the umask and narrowed after."""
+    import contextlib
+    import os
+    import secrets
+    # A new file beside it, then renamed over it: the bytes never go THROUGH what is at the
+    # path now. A link planted there (a project directory can be someone else's) is replaced,
+    # not followed, and an existing file's looser mode does not survive.
+    tmp = "%s.%s.tmp" % (path, secrets.token_hex(6))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, str(path))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def load_private_key_pem(data: bytes, passphrase: str | None = None):

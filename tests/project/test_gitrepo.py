@@ -147,9 +147,23 @@ class _FakeRun:
 def test_clone_with_commit(monkeypatch, tmp_path):
     fake = _FakeRun()
     monkeypatch.setattr(gitrepo.subprocess, "run", fake)
-    gitrepo.clone("git@x:openmv.git", tmp_path / "dst", commit="abc")
+    gitrepo.clone("git@x:openmv.git", tmp_path / "dst", commit="ab" * 20)
     assert any("clone" in c[0] for c in fake.calls)
     assert any("checkout" in c[0] for c in fake.calls)
+
+
+def test_clone_takes_nothing_from_a_lock_file_as_an_option(monkeypatch, tmp_path):
+    """The remote and the commit come from openmv-ota.lock.json, which someone else may have
+    written: `--upload-pack=...` as a remote would be a command."""
+    fake = _FakeRun()
+    monkeypatch.setattr(gitrepo.subprocess, "run", fake)
+    gitrepo.clone("--upload-pack=touch /tmp/x;", tmp_path / "dst")
+    argv = fake.calls[0][0]
+    assert argv[argv.index("clone") + 1] == "--"            # the remote is past the options
+    for commit in ("abc", "--orphan", "ab" * 20 + ":x", "HEAD"):
+        with pytest.raises(ProjectError, match="not a commit hash"):
+            gitrepo.clone("r", tmp_path / "d2", commit=commit)
+    assert len(fake.calls) == 1                             # refused before git ran
 
 
 def test_clone_without_commit(monkeypatch, tmp_path):

@@ -15,11 +15,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 
 from .errors import ProjectError
 
 MAGIC = b"OMVKB2"
 _HASH_LEN = 32
+# What a backup holds: the key PEMs (``ota-0100.pem``, ``root-0.pem``, ...) and the payload
+# keys. The SHA-256 below is integrity against rot, not authenticity -- anyone can make an
+# archive that passes it -- so a name is checked before it is ever used as a path.
+_NAME = re.compile(r"(?:[a-z]{1,16}-[0-9a-f]{1,16}\.pem|payload-keys\.bin)")
 
 
 def pack_keys(pems: dict[str, bytes]) -> bytes:
@@ -40,4 +45,13 @@ def unpack_keys(blob: bytes) -> dict[str, bytes]:
     digest, payload = bytes(blob[len(MAGIC):head]), bytes(blob[head:])
     if hashlib.sha256(payload).digest() != digest:
         raise ProjectError("corrupt key backup (integrity check failed)")
-    return {name: base64.b64decode(b64) for name, b64 in json.loads(payload).items()}
+    try:
+        entries = json.loads(payload)
+        if not isinstance(entries, dict):
+            raise ValueError("not a table of files")
+        for name, b64 in entries.items():
+            if not _NAME.fullmatch(name) or not isinstance(b64, str):
+                raise ValueError("%r is not a key file's name" % name)
+        return {name: base64.b64decode(b64, validate=True) for name, b64 in entries.items()}
+    except ValueError as e:
+        raise ProjectError("not a key backup this tool wrote: %s" % e) from None

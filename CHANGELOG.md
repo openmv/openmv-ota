@@ -170,6 +170,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A download slower than 1 KB/s is dropped.** The installer's reader timed out only when a
+  connection went silent for 30 seconds, so a server that dripped a byte at a time held the
+  installer, and stopped the app, for as long as it kept sending. A connection now gets a
+  minute of waiting plus a millisecond for every byte it delivers; past that it fails like a
+  dead link. Time spent writing flash does not count.
+
 - **The product rule lets a legitimate camera through.** Three cases it turned away, found
   in review before a release. A move that fails its trial: the camera reverts to the image
   it had and reports that image's product, so the product it left stays open to it until
@@ -200,6 +206,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   again. One camera now causes at most 48 such rows a day, and nothing is audited for a
   check-in whose row was not stored. `payload_version`, `publish_seq`, `product_id`, a
   stub's version and a slot's version and hash are bounded to what stores them.
+- **A platform project's factory image carries the publish counter.** The counter fix
+  reached `build ota-romfs` only: `build factory-romfs` took none, so a platform camera's
+  factory slots were signed with 0 and seeded an anti-rollback floor of 0, and a camera
+  fresh from the line accepted any release the account had ever published. The factory
+  build now takes the account's next counter and refuses a platform build without one.
+- **A project file frozen into firmware is a file of the project.** `[ota].ca`,
+  `certs/ca.pem` and the `device/` modules were read wherever their paths led, so a
+  project naming `/proc/self/environ` as its CA, or carrying a link in `device/`, put the
+  build machine's secrets (a key passphrase, a token) into the firmware image. Each must
+  now be a regular file inside the project, and a CA must be a PEM bundle.
+- **The boot code imports nothing from a volume someone can write.** MicroPython's import
+  path starts with the current directory, which the firmware sets to `/flash`, or to the SD
+  card when one is in, and only then the frozen modules. `boot.py` is frozen, but its
+  imports were resolved along that path: a file named `openmv_log.py`, `struct.py`,
+  `hashlib.py` or `_ota_config.py` on a card ran as the firmware's own code on every boot,
+  before any slot was verified. `boot.py` now sets the path to the frozen modules before
+  its first import and adds only the verified slot (`/rom`, `/rom/lib`). **An app that
+  imported modules from `/flash` or the SD card must now add that path itself**
+  (`sys.path.append("/sdcard")`) once it is running.
+- **A check-in answer's body is under the same 30 seconds as its lines.** The body was read
+  with `read(n)`, which stays in C until all `n` bytes arrive while each byte restarts the
+  socket timeout, so a server that answered at once and dripped a 4 KB body held the camera
+  for hours. It is read a byte per call, as the lines are.
 - **A refused check-in is audited once a day per camera, not once per reason.** A refusal
   needs no key: anyone can name a registered camera and send a signature header that does
   not parse. It was audited whenever the reason differed from the last one, so two reasons
@@ -331,6 +360,53 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no integrity check on the download). A retired key's manifest is refused by the epoch
   floor on flash as well as the running image's, which covers recovery. An update offer
   must name an `https://` URL; a path sent the installer to a file on the camera.
+- **A platform project's images were all signed with a publish counter of 0.** `build
+  ota-romfs` set the counter the server handed it on one signer and built the image with
+  another, so the trailer and the manifest both said 0. A `PRODUCT_ID = 0` camera orders
+  its images by that counter and nothing else, so it had no floor and no "not newer": it
+  took any older image of the account as readily as a newer one. The counter now reaches
+  the signer that signs. Projects with a product id order by version and were not affected.
+- **`project setup` could run code out of a project through its lock file.** The lock
+  file's MicroPython version went to `pip install mpy-cross==<version>` as written, and
+  pip reads a spec with a path in it as a directory to build. Only a version goes to pip.
+- **A symbolic link in the app directory is refused.** It was copied as the file it
+  pointed at, so an app tree linking to a key or a token file put that file in a signed,
+  published image.
+- **`project keys restore` wrote wherever a backup's file names pointed.** A name in the
+  archive was joined to the key directory unchecked, so `../../.bashrc` or an absolute path
+  was written with the archive's bytes; its SHA-256 guards against rot, not a forgery.
+  Restore takes key file names (`ota-0100.pem`, `root-0.pem`, `payload-keys.bin`) and
+  refuses the archive otherwise, before writing anything.
+- **Private keys at rest: 600 000 PBKDF2 rounds, and owner-only files.** The PEMs, the roots
+  among them, were encrypted with the library default of 2048 rounds, and written under
+  the umask. They are standard PKCS#8 still (PBES2, PBKDF2-HMAC-SHA256, AES-256-CBC), so
+  existing keys open as before; `project keys add`, a new project and a new desk or issuer
+  key write the new count. Key files, the backup and the client's token file are created
+  mode 0600.
+- **`keys backend provision` retires the keys it replaces.** The old keys left
+  `trusted_keys.json` with their certificates still valid and their PEMs still on disk, and
+  a key revoked but not yet retired vanished from the set, so nothing could ever make a
+  camera refuse them. The new set is certified one epoch up.
+- **A PKCS#11 PIN comes from `OPENMV_OTA_PKCS11_PIN`.** The only way to give one was a
+  `pin` field in `keys/backends.json`, which is committed, or `--set pin=` on a command
+  line. A `pin` in a record is refused.
+- **A keykeeper pin vouches for the seal key.** A pin was `<key id>:<sign key>`, and the
+  pinned record's own signature was never checked, so the server the chain is fetched from
+  could return the pinned generation with a seal key of its own and open every per-camera
+  release sealed after the next `keys keykeeper sync`. A pin carries the record's digest
+  now (`<key id>:<sign key>:<sha256>`, what `openmv-ota keykeeper pin` prints and a sync
+  stores). The older form still verifies a chain's first generation, by that record's
+  signature, and nothing later.
+- **A platform build refuses a publish counter of 2**48 or more.** The counter comes from
+  the server and is signed into the release; a camera that confirms it takes nothing below
+  it, so one answer near the top of the range would have ended a fleet's updates.
+- **A key file is written beside its path and renamed over it**, so a link planted there is
+  replaced and not written through; keykeeper's own keys are owner-only too. Restore takes
+  a name by full match (a trailing newline passed) and of bounded length.
+- **Smaller ones.** `git clone` of the firmware takes the remote after `--` and a commit
+  that is a full hash (both come from the lock file). `client device watch --out` refuses
+  a stream name from the server that is not a plain name, `release bases` a version that
+  is not one, and console text is printed without its control characters.
 
 - **The compromised eMudhra root is out of every trust store this tool ships or installs.**
   Eight eMudhra (emSign) intermediate CA keys were compromised in October 2026, and the root
@@ -346,6 +422,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   trusted it.
 
 ### Changed
+
+- **The OpenMV Cam M4's OTA firmware drops `lens_corr()`.** Its 832 KB code region was 88
+  bytes short once the boot script reset the import path. With it off the firmware has
+  about 1.7 KB; `build romfs` refuses an M4 app that calls it.
+- **`build romfs` refuses a dropped image method that is taken without being called.**
+  `fix = img.find_barcodes` raises on the camera at the lookup, and the check only looked
+  for calls. The app's own `def` of the same name is no longer mistaken for one.
 
 - **The OpenMV Cam H7's OTA firmware drops `linpolar()`, `logpolar()` and
   `get_similarity()`.** It was 704 bytes from the top of its flash, and the installer and

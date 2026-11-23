@@ -384,6 +384,34 @@ def test_reader_dead_link_trips_after_timeout():
         r.read_exact(1)
 
 
+def test_reader_drops_a_link_slower_than_1_kb_a_second():
+    """A server that drips a byte per poll slice (50 B/s) never trips the dead-link timeout; the
+    rate floor ends it once the connection's minute of slack is spent."""
+    seq, got = {"n": 0}, bytearray()
+
+    def recv(_n):
+        seq["n"] += 1
+        return b"x" if seq["n"] % 2 == 0 else None     # one 20 ms wait, then one byte
+    r = _R(recv, feed=lambda: None)
+    with pytest.raises(OSError, match="timed out"):
+        while True:
+            got += r.read_exact(1)
+    slice_ms, slow = inst("_RECV_POLL_MS"), inst("_SLOW_MS")
+    assert len(got) == slow // (slice_ms - 1)            # each byte costs a slice and earns 1 ms
+
+
+def test_reader_keeps_a_link_that_waits_but_delivers():
+    # 1 KB after every wait slice is 50 KB/s: the slack only grows, however long the download
+    seq = {"n": 0}
+
+    def recv(_n):
+        seq["n"] += 1
+        return bytes(min(_n, 1024)) if seq["n"] % 2 == 0 else None
+    r = _R(recv, feed=lambda: None)
+    for _ in range(4096):                                 # 4 MB, 82 s of waiting in all
+        assert len(r.read_exact(1024)) == 1024
+
+
 # --- _ResumingBody: surviving a link that drops mid-download -------------------------------
 # A poor link cannot finish a long download in one connection (the WINC1500 aborts EVERY transfer
 # at ~50 s regardless of progress). Restarting is wrong -- the decoder's state lives in RAM and

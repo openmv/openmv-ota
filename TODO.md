@@ -49,4 +49,115 @@ budget for now; these are the free/cheap passes to run first, in order.
 - **Internal red-team passes** — `/security-review`, and `/code-review ultra` on the
   signing/verify/installer/anti-rollback path and the camera-identity path (registration,
   signed check-ins, lockboxes).
+- **Left from the 2026-11 security review** (low severity, each needs a design call):
+  - Registration at a desk: the camera signs the desk's challenge and nothing else, so the
+    device id and exchange key it reports ride unsigned. A rogue USB device at a desk could
+    claim another camera's id. Sign the whole report.
+  - An issuer certificate cannot be revoked: `issuer replace` drops the old PEM and the old
+    certificate stays valid. Re-pinning the account's roots is the only remedy today.
+  - `keys/keykeeper.json` is its own anchor once written: the configured pin is not read
+    again, so whoever can rewrite that file can seal later releases to a key of theirs.
+    Verify the kept chain from the configured pin every time.
+  - `OPENMV_OTA_TRUSTED_PROXY_IPS=*` (what the self-hosting page says to set behind a PaaS)
+    takes the leftmost `X-Forwarded-For` entry, which a client chooses when the proxy
+    appends: the per-IP rate limit is then per header. Document the proxy requirement or
+    take the rightmost untrusted hop.
+  - A refused check-in signature is audited when its reason changes, so alternating two bad
+    signatures for a known camera id writes one audit row a request.
+  - `keys/backends.json` names code to load (a `custom` signer's module, a PKCS#11 `.so`):
+    building someone else's project runs it. Same trust as `make` in their firmware
+    checkout, but it fires at `build romfs`.
+  - A camera names its own `product_id` on every check-in, and the fleet row follows it. On
+    an account that models each customer as a product, a customer's camera can report a
+    sibling product: it is offered that product's release, shows in its fleet, and a
+    fallback from it counts against that rollout. Make the product sticky per device for a
+    nonzero id (with an admin move), which changes what a USB reflash to another product
+    does.
+  - A product-limited token lists every cohort label in the account, and assigning by
+    product declares a label account-wide.
+  - Whoever answers the check-in can reboot a camera once a poll: an offer after the boot
+    check-in makes it reboot to install from a fresh heap, before the manifest is fetched
+    and vetted. Vet the manifest in place first, so only a signed, newer release costs a
+    reboot.
+  - On a stub board whose trial slot spent the stub's own budget and whose other slot does
+    not verify, the stub jumps by its record and `boot.py` mounts the spent trial on every
+    boot, never reaching recovery. `boot.py` should read the stub journal's no-slot reason.
+  - Recovery on a stub board sends no stub version, so it could never take a release with
+    `min_stub` set. Nothing sets `min_stub` today.
+  - The publish counter a platform build signs comes from the server and is only bounded
+    (below 2**48). Record it in the project ledger and refuse a jump.
+  - Keys minted before 2026-11 keep their 2048-round encryption until rewritten: add a
+    `keys rewrap`.
+  - The signed check-in replay cache is per process: with several workers, or across a
+    restart, a capture replays once inside its five-minute window.
+  - The server reads what its own upstreams send without a size cap (the advisory service,
+    the registrar, keykeeper, the datalake), and on local storage a download reads the
+    whole artifact into memory per request.
+  - A publisher's upload is held in memory whole: about 1.7 GiB a request at the default
+    caps, with no cap on how many run at once.
+  - A webhook endpoint that sends its status line a byte at a time holds the one delivery
+    worker for as long as it keeps sending.
+  - `flash register`: a malformed identity line from the USB device is a traceback, and its
+    error text is printed with control characters.
+  - The cloud SDK's `poll_watch` and `_ws_connect` read header lines with an unbounded
+    asyncio `readline()`.
+  - The check-in's `Date` header sets the clock with no upper bound; a far-future date
+    fails TLS until NTP corrects it (up to six hours).
+  - A `manage` token can admin-bind a camera id nobody registered; the owner's registration
+    is then a 404 and no API call undoes it.
+  - One sequential webhook worker over a global queue: a tenant with many endpoints that
+    answer just inside the timeout delays every other account's deliveries.
+  - `OPENMV4`, `OPENMV4P`, `OPENMVPT` and `H7` are one row at the registrar, so a tenant
+    can register another's camera id under a sibling board name and hold a seat on it.
+  - A desk key's expiry comes from the request that stores it, so a `manage` token can
+    extend one (not un-revoke it).
+  - An anonymous client naming an account can push real boards out of that account's
+    capped unclaimed list with made-up ids.
+  - A webhook ping's audit row lands in the operator's account, not the caller's.
+  - `client data export` to stdout, error details and a few listings print server and
+    camera text unfiltered; `--json` output is safe.
+  - `project keys restore` overwrites the keys in place with whatever a well-named archive
+    holds, without checking that they open.
+  - A `keys/keykeeper.json` written before pins carried the record hash, holding a pin of
+    generation 2 or later, is refused with an error that does not say to delete it.
+  - Stub: `verify.c` never reads the certificate's `kind`; nothing calls `port_wdt_start`
+    although the design says the stub arms the trailer's watchdog; a failed install runs
+    one boot on the RAM copy of an erased record; a signed trailer with `comp_count == 0`
+    scrubs the firmware area on the N6 and RT1062; boards without slot encryption do not
+    check `body_sha256` in the stub.
+  - Round 6 (server): whether the hosted proxy replaces or appends `X-Forwarded-For` is
+    unverified, and `TRUSTED_PROXY_IPS=*` is only sound if it replaces; a device pin on an
+    id that is learned-bound to another account hides the camera from its owner until it
+    registers; a learned binding from an unsigned check-in takes any account string; publish
+    and local-storage downloads read a whole artifact into memory per request with no
+    concurrency bound; a product-limited token can list every cohort label of its account.
+  - A camera offered a release of another product while it could not sign (cold clock), and
+    unpinned before its next signed check-in, reads as `device.product_mismatch` until it
+    is pinned again or forgotten.
+  - Round 6 (host): `keys retire` re-certifies every entry of `trusted_keys.json` without
+    checking that its existing certificate verifies under the root; the keykeeper checks a
+    registration's signature but not its freshness, and seals for expired desks; USB serial
+    strings in `flash list`, the camera's `SE-ERROR` text and server `detail` in errors
+    print unfiltered; `flash bootloader -b OPENMV_AE3` runs the project's
+    `tools/alif/toolkit/*.py`, and a committed `openmv-ota.local.toml` picks the SDK home
+    whose `dfu-util` runs; the SDK archive's `.sha256` comes from the same host as the
+    archive and `SDK_VERSION` is not validated before it names a URL and a directory.
+  - Round 6 (device): an unverified offer with a new `release_id` reboots the camera before
+    anything is fetched (a hostile server can loop it); the factory window signs any 32
+    bytes with the identity key (console access); a `.hilcov_uart` file on a volume turns
+    on debug logging; the installer's header reader keeps up to 64 headers of 4 KiB.
+  - Round 7 (server): a camera that has never enrolled names its own product on its first
+    signed check-in (the server has nothing to compare it to; a pin's product is not
+    consulted); "is it news" checks are read-then-write, so a burst can audit a few rows
+    instead of one; registration's device-limit check is check-then-write; an unsigned
+    check-in naming a registered camera with a sealed release pending is one keykeeper
+    call; a token in account `''` reads every account's `/fleet/bases`.
+  - Rounds 8-10 (server), the product a camera is held to: registering a camera again in
+    the middle of a cross-product trial forgets the product it left, so a failed trial
+    then reads as a mismatch; so does a fallback to the other slot long after a move was
+    confirmed, a desk reflash to another product without registering, a limited-token
+    forget in the middle of a move (it drops the pin), and an unpin before the first signed
+    check-in in the new product. Each has a one-step exit (pin to a release of the
+    product, or register again). Journal entries the audit budget dropped are not audited
+    later; a `stale` refusal uses the day's refusal-audit slot.
 - **When there is budget** — a targeted pentest of the update + signing chain only.

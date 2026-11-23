@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import secrets
 import sys
 from dataclasses import asdict, dataclass
@@ -13,6 +14,7 @@ from pathlib import Path
 from openmv_ota import __version__
 from openmv_ota.ota import geometry
 from openmv_ota.ota.algorithms import ES256, algorithm_for
+from openmv_ota.ota.keys import write_private
 from openmv_ota.romfs import boards as boards_mod
 
 from . import (
@@ -521,8 +523,7 @@ def create_project(
         # Cached whether the keys were minted here or adopted -- an adopted project signs
         # with the SOURCE's passphrase, and the build resolver has to find it either way.
         dp = passphrase_mod.dev_passphrase_path(root)
-        dp.write_text(key_passphrase, encoding="utf-8")
-        dp.chmod(0o600)
+        write_private(dp, key_passphrase.encode("utf-8"))
     _scaffold_app(paths, app_version, config.ota, vendor)  # starter app/ (cloud-wired for OTA)
     if _boards_have_coprocessor(boards):  # a slaved second core (e.g. AE3's M55_HE)
         _scaffold_coprocessor(paths, app_version)
@@ -589,7 +590,7 @@ def _adopt_keys(paths: ProjectPaths, source: Path, boards: list[str],
     paths.private_keys_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
     for pem in sorted(src.private_keys_dir.glob("*.pem")):
-        (paths.private_keys_dir / pem.name).write_bytes(pem.read_bytes())
+        write_private(paths.private_keys_dir / pem.name, pem.read_bytes())
         copied += 1
     if not copied:
         raise ProjectError(
@@ -599,7 +600,7 @@ def _adopt_keys(paths: ProjectPaths, source: Path, boards: list[str],
     warnings: list[str] = []
     src_payload = payload_keys.path_for(src.private_keys_dir)
     if src_payload.exists():
-        payload_keys.path_for(paths.private_keys_dir).write_bytes(src_payload.read_bytes())
+        write_private(payload_keys.path_for(paths.private_keys_dir), src_payload.read_bytes())
         try:
             added = payload_keys.ensure_boards(paths.private_keys_dir, boards, passphrase)
         except ProjectError as e:
@@ -654,9 +655,9 @@ def _write_keys(paths: ProjectPaths, provisioned) -> None:
     role_by_id = {k.key_id: k.role for k in provisioned.trusted}
     for key_id, pem in provisioned.private_pems.items():
         pem_path = paths.private_keys_dir / ("%s-%04x.pem" % (role_by_id[key_id], key_id))
-        pem_path.write_bytes(pem)
+        write_private(pem_path, pem)
     for root_id, pem in provisioned.root_pems.items():
-        (paths.private_keys_dir / root_pem_name(root_id)).write_bytes(pem)
+        write_private(paths.private_keys_dir / root_pem_name(root_id), pem)
 
 
 KEY_BACKUP_NAME = "keys-backup.bin"
@@ -688,7 +689,7 @@ def backup_private_keys(root: str | Path) -> Path:
     if not pems:
         raise ProjectError("no private keys in %s to back up" % pem_dir, exit_code=1)
     out = Path(root) / KEY_BACKUP_NAME
-    out.write_bytes(keybackup.pack_keys(pems))
+    write_private(out, keybackup.pack_keys(pems))
     return out
 
 
@@ -701,8 +702,11 @@ def restore_private_keys(root: str | Path, blob: bytes) -> list[str]:
     pem_dir = ProjectPaths(Path(root)).private_keys_dir
     pems = keybackup.unpack_keys(blob)
     pem_dir.mkdir(parents=True, exist_ok=True)
-    for name, pem in pems.items():
-        (pem_dir / name).write_bytes(pem)
+    try:
+        for name, pem in pems.items():
+            write_private(pem_dir / name, pem)
+    except OSError as e:
+        raise ProjectError("could not restore into %s: %s" % (pem_dir, e), exit_code=1) from None
     return sorted(pems)
 
 
@@ -1256,6 +1260,9 @@ def setup_project(
     return dest
 
 
+_MPY_VERSION = re.compile(r"[0-9]+(\.[0-9]+){1,3}([a-z0-9.+-]{0,24})?")
+
+
 def _mpy_cross_installed() -> bool:
     return importlib.util.find_spec("mpy_cross") is not None
 
@@ -1267,6 +1274,12 @@ def _ensure_mpy_cross(version: str | None) -> None:
     firmware to get mpy-cross, or install it manually.
     """
     if not version or _mpy_cross_installed():
+        return
+    if not isinstance(version, str) or not _MPY_VERSION.fullmatch(version):
+        # The lock file names it, and pip reads a spec with a path in it as a directory
+        # to build: `mpy-cross==/../x` ran a build backend out of the project.
+        print("warning: the lock file's MicroPython version %r is not a version; not "
+              "installing mpy-cross" % (version,), file=sys.stderr)
         return
     try:
         gitrepo.pip_install("mpy-cross==%s" % version)

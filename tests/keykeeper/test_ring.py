@@ -82,7 +82,7 @@ def test_the_pin_must_match_and_be_in_the_chain(tmp_path):
         kr.verify_chain(r.chain(), "1:" + gens[1].sign)
     with pytest.raises(kr.KeykeeperError, match="isn't in the chain"):
         kr.verify_chain(r.chain(), "9:" + gens[0].sign)
-    with pytest.raises(kr.KeykeeperError, match="is '<key_id>:<sign key>'"):
+    with pytest.raises(kr.KeykeeperError, match="is '<key_id>:<sign key>:<record digest>'"):
         kr.verify_chain(r.chain(), "one:abc")
     assert r.genesis_pin() == gens[0].pin()
 
@@ -121,3 +121,50 @@ def test_a_missing_or_damaged_ring_says_so(tmp_path):
     r.init(NOW)
     with pytest.raises(kr.KeykeeperError, match="no seal key for keykeeper generation 7"):
         r.seal_key(7)
+
+
+# --- the pin vouches for the whole record: the seal key is what releases are sealed to --------
+
+def _with_seal(entry: dict, seal_hex: str) -> dict:
+    record = json.loads(entry["record"])
+    record["seal"] = seal_hex
+    return {"record": json.dumps(record, separators=(",", ":")), "signature": entry["signature"]}
+
+
+def test_a_server_cannot_hand_back_the_pinned_generation_with_its_own_seal_key(tmp_path):
+    """The chain is fetched from the update server. The pin was `<id>:<sign key>` and the
+    pinned record's signature was never checked, so the server could keep the sign key,
+    swap the seal key for its own, and read every release sealed after the next sync."""
+    r = _ring(tmp_path)
+    gens = r.init(NOW)
+    chain = r.chain()
+    theirs = public_point_hex(ec.generate_private_key(ec.SECP256R1()).public_key())
+    forged = [_with_seal(chain[0], theirs)] + chain[1:]
+    legacy = "1:" + gens[0].sign                              # what a first start used to print
+    assert gens[0].pin().startswith(legacy + ":") and len(gens[0].pin().split(":")) == 3
+    # the genuine chain verifies from both forms of the pin
+    assert kr.verify_chain(chain, legacy)[0].seal == gens[0].seal
+    assert kr.verify_chain(chain, gens[0].pin())[0].seal == gens[0].seal
+    # the forged one from neither: the old pin now checks the record's own signature
+    with pytest.raises(kr.KeykeeperError, match="isn't signed by that key"):
+        kr.verify_chain(forged, legacy)
+    with pytest.raises(kr.KeykeeperError, match="isn't the one pinned"):
+        kr.verify_chain(forged, gens[0].pin())
+    # a later generation is signed by the one before it, so only its digest vouches for it:
+    # a full pin holds, and a pin of its sign key alone is not accepted there at all
+    later = [chain[0], _with_seal(chain[1], theirs)]
+    with pytest.raises(kr.KeykeeperError, match="isn't the one pinned"):
+        kr.verify_chain(later, gens[1].pin())
+    assert kr.verify_chain(chain, gens[1].pin())[0].seal == gens[1].seal
+    with pytest.raises(kr.KeykeeperError, match="isn't signed by that key"):
+        kr.verify_chain(chain, "2:" + gens[1].sign)
+    with pytest.raises(kr.KeykeeperError, match="record digest"):
+        kr.verify_chain(chain, gens[0].pin() + ":extra")
+
+
+def test_keykeeper_keys_are_owner_only_files(tmp_path):
+    r = _ring(tmp_path)
+    r.init(NOW)
+    modes = {p.name: p.stat().st_mode & 0o777 for p in (tmp_path / "kk" / "private").glob("*.pem")} \
+        or {p.name: p.stat().st_mode & 0o777 for p in tmp_path.rglob("kk-*.pem")}
+    assert modes and set(modes.values()) == {0o600}

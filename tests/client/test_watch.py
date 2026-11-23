@@ -234,8 +234,8 @@ def test_reconnecting_gives_up_when_idle():
 
 
 def _status(code):
-    from websockets.http11 import Response
     from websockets.datastructures import Headers
+    from websockets.http11 import Response
     return InvalidStatus(Response(code, "x", Headers()))
 
 
@@ -385,3 +385,23 @@ def test_connect_surfaces_a_real_refusal(relay):
     with pytest.raises(ClientError, match="HTTP 403"):
         watch.watch(lambda: grant, lambda u, t: watch.connect(u, t, "openmv-ota/test"),
                     lambda k, i: None)
+
+
+@pytest.mark.parametrize("name", ["../../x", "/etc/cron.d/x", "a/b", "", ".hidden", "a b"])
+def test_pick_stream_refuses_a_name_that_is_not_a_stream_name(name):
+    """The server names the streams, and `watch --out` puts the name in a file name."""
+    grant = {"token": "t", "streams": {name: {"watch_url": "wss://r/x?token=t"}}}
+    with pytest.raises(ClientError, match="not a stream name"):
+        watch.pick_stream(grant, name, False)
+
+
+def test_a_version_from_the_server_is_a_file_name_part_or_refused():
+    assert client_cli._file_part("1.2.3") == "1.2.3" and client_cli._file_part("2.0.0-rc1+b7") == "2.0.0-rc1+b7"
+    for bad in ("../../x", "/abs", "a/b", "..", "", "1.0\n", "a\\b", "x" * 65, None):
+        with pytest.raises(ClientError, match="not a version"):
+            client_cli._file_part(bad)
+
+
+def test_console_text_reaches_the_terminal_without_its_escape_sequences():
+    text = "ok\tline\r\n\x1b[2J\x1b]0;title\x07\x9b31m\x00done\n"
+    assert client_cli._CONTROL.sub("?", text) == "ok\tline\r\n?[2J?]0;title??31m?done\n"

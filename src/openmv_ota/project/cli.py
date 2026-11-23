@@ -381,8 +381,9 @@ def cmd_keys_backend_provision(args: argparse.Namespace) -> int:
     print("Provisioned %d factory + %d ota keys in the %s backend -> keys/trusted_keys.json + "
           "keys/backends.json (no private key on disk). Now signing with 0x%04x."
           % (args.factory_keys, args.ota_keys, args.backend, signing))
-    print("The new keys are certified by the project's root, so cameras accept them as they are. "
-          "Commit both files.")
+    print("The new keys are certified by the project's root, one epoch above the keys they "
+          "replace: cameras accept them as they are, and refuse every earlier key and image "
+          "once they confirm a release signed by one. Commit both files.")
     return 0
 
 

@@ -3,8 +3,8 @@
 Maps a trusted ``key_id`` to how *this project* reaches that key's private material: the default is
 a local encrypted PEM (no record needed); a record selects ``pkcs11`` / ``aws-kms`` / ``gcp-kms`` /
 ``azure-kms`` / ``custom`` with **non-secret** references (ARNs, token/object labels, module paths).
-Secrets (PINs, cloud credentials) live in ``openmv-ota.local.toml`` or the ambient cloud
-credentials, never here. Committed so teammates + CI can sign without reconfiguring.
+Secrets never live here: a PKCS#11 PIN comes from ``OPENMV_OTA_PKCS11_PIN``, cloud credentials
+from the ambient cloud environment. Committed so teammates + CI can sign without reconfiguring.
 """
 
 from __future__ import annotations

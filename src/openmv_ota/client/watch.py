@@ -15,6 +15,7 @@ forever."""
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from .errors import ClientError
@@ -44,6 +45,10 @@ def pick_stream(grant: dict, stream: str | None, console: bool) -> tuple[str, st
     if stream not in streams:
         raise ClientError("no stream %r on this device (streams: %s)"
                           % (stream, ", ".join(streams)), exit_code=1)
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}", str(stream)):
+        # the name comes from the server and ends up in a file name (`watch --out`)
+        raise ClientError("the server named a stream %r, which is not a stream name" % stream,
+                          exit_code=1)
     url = str((streams[stream] or {}).get("watch_url") or "").split("?", 1)[0]
     return stream, url, token
 

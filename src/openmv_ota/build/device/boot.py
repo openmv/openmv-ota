@@ -28,6 +28,20 @@ streamed, and large data is aliased with memoryview/bytearray_at rather than
 copied.
 """
 
+import sys                             # a C built-in no file can stand in for: it comes first
+
+if ".frozen" in sys.path:  # pragma: no cover  (MicroPython only: CPython has no such entry)
+    # NOTHING ON A VOLUME SOMEONE CAN WRITE IS IMPORTED BEFORE A SLOT IS VERIFIED. The path the
+    # firmware starts with is the current directory -- /flash, or the SD card when one is in --
+    # and only then the frozen modules, so `openmv_log.py` (or `struct.py`, `hashlib.py`,
+    # `_ota_config.py`) on a card ran as this firmware's code on every boot, ahead of every
+    # check below. From here the frozen modules are the only ones there are; _main adds the
+    # mounted slot, and that is the whole path the app starts with. An app that wants modules
+    # from /flash or a card says so itself (sys.path.append), after it is running.
+    # (Written this way round for size: the OpenMV Cam M4's firmware had 32 bytes fewer than
+    # a test of sys.implementation.name cost.)
+    sys.path[:] = [".frozen"]  # hil-residual: no marker of its own; every boot marker after it (boot.ready first) is this line's imports resolving from the frozen set
+
 import binascii
 import hashlib
 import struct
@@ -758,7 +772,6 @@ def factory_keys(kind, se, challenge, device_id=""):
 
 def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     import os
-    import sys
 
     import uctypes
     import vfs
@@ -922,8 +935,7 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     cfg.last_stub = ob.stub                        # (stub_version, reason), or None
 
     os.chdir("/rom")
-    sys.path.append("/rom")
-    sys.path.append("/rom/lib")
+    sys.path += ["/rom", "/rom/lib"]
     if trailer.kind == _KIND_FACTORY:              # a factory image: the camera's keys
         try:
             import openmv_se as se                 # frozen: the keys don't depend on the romfs

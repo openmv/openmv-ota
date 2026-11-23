@@ -39,6 +39,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.padding import PKCS7
 
+from openmv_ota.ota.keys import write_private
 from openmv_ota.ota.payload import new_key
 
 from .errors import ProjectError
@@ -101,7 +102,7 @@ def write(private_keys_dir: str | Path, keys: dict[str, dict[int, bytes]],
     than assembling this themselves."""
     out = path_for(private_keys_dir)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(_dump(keys, passphrase))
+    write_private(out, _dump(keys, passphrase))
     return out
 
 

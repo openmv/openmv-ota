@@ -187,3 +187,58 @@ def test_provisioned_private_keys_match_public_set():
         priv = load_private_key_pem(pem, "pw")
         pub = public_key_from_hex(by_id[key_id].pubkey, alg)
         assert verify_region(pub, region, sign_region(priv, region, alg), alg) is True
+
+
+# --- a private key at rest --------------------------------------------------------------------
+
+def test_a_private_key_is_written_as_standard_pkcs8_at_the_real_round_count(monkeypatch):
+    """The library's own encrypted writer uses 2048 PBKDF2 rounds. The PEM stays plain
+    PKCS#8 (PBES2, PBKDF2-HMAC-SHA256, AES-256-CBC), so the library still opens it."""
+    import base64
+
+    from openmv_ota.ota import algorithm_for
+    from openmv_ota.ota import keys as K
+    from openmv_ota.ota.algorithms import ES256
+    from openmv_ota.ota.errors import OtaError
+    monkeypatch.setattr(K, "KDF_ROUNDS", 600_000)           # the suite runs on a small count
+    priv = K.generate_private_key(algorithm_for(ES256))
+    pem = K.private_key_pem(priv, "correct horse")
+    assert pem.startswith(b"-----BEGIN ENCRYPTED PRIVATE KEY-----\n")
+    der = base64.b64decode(b"".join(pem.splitlines()[1:-1]))
+    assert bytes.fromhex("02030927c0") in der               # INTEGER 600000
+    assert bytes.fromhex("06082a864886f70d0209") in der     # hmacWithSHA256
+    back = K.load_private_key_pem(pem, "correct horse")
+    assert K.public_point_hex(back.public_key()) == K.public_point_hex(priv.public_key())
+    with pytest.raises(OtaError):
+        K.load_private_key_pem(pem, "wrong horse")
+    assert K.private_key_pem(priv, "correct horse") != pem  # a fresh salt and iv each time
+
+
+def test_write_private_is_owner_only_even_over_a_loose_file(tmp_path):
+    from openmv_ota.ota.keys import write_private
+    p = tmp_path / "ota-0100.pem"
+    write_private(p, b"one")
+    assert p.stat().st_mode & 0o777 == 0o600
+    p.chmod(0o644)
+    write_private(p, b"two")
+    assert p.read_bytes() == b"two" and p.stat().st_mode & 0o777 == 0o600
+
+
+def test_write_private_replaces_a_planted_link_and_does_not_write_through_it(tmp_path):
+    """A project directory can be someone else's. A link at a key file's path used to be
+    followed, so restoring a backup wrote the archive's bytes wherever it pointed."""
+    from openmv_ota.ota.keys import write_private
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"untouched")
+    victim.chmod(0o644)
+    link = tmp_path / "ota-0100.pem"
+    link.symlink_to(victim)
+    write_private(link, b"key bytes")
+    assert victim.read_bytes() == b"untouched" and victim.stat().st_mode & 0o777 == 0o644
+    assert not link.is_symlink() and link.read_bytes() == b"key bytes"
+    assert link.stat().st_mode & 0o777 == 0o600
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []
+    (tmp_path / "dir.pem").mkdir()
+    with pytest.raises(OSError):
+        write_private(tmp_path / "dir.pem", b"x")
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []   # nothing left behind

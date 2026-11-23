@@ -48,8 +48,9 @@ def load(path: Path | None = None) -> ClientConfig | None:
 def save(server_url: str, token: str, path: Path | None = None) -> Path:
     p = path or config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[server]\nurl = "%s"\n\n[auth]\ntoken = "%s"\n' % (server_url, token),
-                 encoding="utf-8")
+    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)   # never world-readable,
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:                       # not even for an instant
+        fh.write('[server]\nurl = "%s"\n\n[auth]\ntoken = "%s"\n' % (server_url, token))
     p.chmod(0o600)
     return p
 

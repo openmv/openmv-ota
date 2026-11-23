@@ -437,3 +437,25 @@ def test_a_check_in_answer_line_costs_a_fixed_amount_of_ram_and_time(monkeypatch
     now[0] = 5000
     with pytest.raises(OSError, match="took too long"):
         rt._read_capped(Drip(), 8192, None, 4000)
+
+    class Body:
+        """A body that is read the only way the deadline can bound: a byte per call."""
+        def __init__(self, data):
+            self.data, self.asked = data, []
+
+        def read(self, n):
+            self.asked.append(n)
+            out, self.data = self.data[:n], self.data[n:]
+            return out
+    now[0] = 0
+    whole = Body(b"x" * 300 + b"rest")
+    assert rt._read_capped(whole, 8192, 300, 10 ** 9) == b"x" * 300      # the length, no further
+    assert set(whole.asked) == {1}
+    assert rt._read_capped(Body(b"short"), 8192, 300, 10 ** 9) == b"short"   # closed early
+    empty = Body(b"not a body")
+    assert rt._read_capped(empty, 8192, 0, 10 ** 9) == b"" and empty.asked == [0]
+    assert rt._read_capped(Body(b"to the end"), 8192, None, 10 ** 9) == b"to the end"
+    with pytest.raises(OSError, match="over 4 bytes"):
+        rt._read_capped(Body(b"12345"), 4, None, 10 ** 9)
+    with pytest.raises(OSError, match="over 4 bytes"):
+        rt._read_capped(Body(b"12345"), 4, 5, 10 ** 9)

@@ -307,13 +307,30 @@ def test_retire_refuses_with_nothing_left_to_sign_and_without_the_root(tmp_path,
         keys_mod.retire_revoked(root)
 
 
-def test_provision_backend_keeps_the_epoch(tmp_path, make_firmware, make_sdk):
-    """New keys certified at an old epoch would be refused by every camera past it."""
+def test_provision_backend_retires_the_keys_it_replaces(tmp_path, make_firmware, make_sdk):
+    """The old keys leave trusted_keys.json, so nothing could retire them afterwards, while
+    their certificates and PEMs live on: the new set goes one epoch up. That also covers a
+    key that was revoked and not yet retired, which used to vanish from the set unrefused."""
     root = _ota_project(tmp_path, make_firmware, make_sdk, ota_keys=2, factory_keys=1)
-    keys_mod.revoke_key(root, 0x0100)
-    keys_mod.retire_revoked(root)
     keys_mod.provision_backend(root, _FakeProvisioner(), n_factory=1, n_ota=2)
     assert {keys_mod.key_epoch(k) for k in _trusted(root).values()} == {1}
+    keys_mod.revoke_key(root, 0x0100)                       # revoked, never retired...
+    keys_mod.provision_backend(root, _FakeProvisioner(), n_factory=1, n_ota=2)
+    assert {keys_mod.key_epoch(k) for k in _trusted(root).values()} == {2}   # ...and still refused
+
+
+def test_a_pin_is_refused_in_a_backend_record(tmp_path, make_firmware, make_sdk, monkeypatch):
+    from openmv_ota.ota import signer_pkcs11
+    from openmv_ota.ota.errors import OtaError
+    root = _ota_project(tmp_path, make_firmware, make_sdk)
+    with pytest.raises(ProjectError, match="OPENMV_OTA_PKCS11_PIN"):
+        keys_mod.set_backend(root, 0x0100, {"backend": "pkcs11", "pin": "1234"})
+    with pytest.raises(OtaError, match="does not go in a backend record"):
+        signer_pkcs11.token_pin({"pkcs11_module": "m.so", "pin": "1234"})
+    monkeypatch.delenv("OPENMV_OTA_PKCS11_PIN", raising=False)
+    assert signer_pkcs11.token_pin({"pkcs11_module": "m.so"}) is None
+    monkeypatch.setenv("OPENMV_OTA_PKCS11_PIN", "4321")
+    assert signer_pkcs11.token_pin({"pkcs11_module": "m.so"}) == "4321"
 
 
 def test_keys_retire_cli(tmp_path, make_firmware, make_sdk, capsys):

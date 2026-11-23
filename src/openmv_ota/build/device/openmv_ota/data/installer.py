@@ -32,7 +32,8 @@ arrived, ``feed``\\s the watchdog and ``sleep_ms``\\s one short slice before ret
 feed cadence driven from the main thread, with no reliance on ``select.poll`` or a timer (the
 AE3's SSL poll() blocks through its own timeout, and relax()'s ISR is not serviced inside an
 mbedtls read, so only a main-thread feed is reliable there). A slow/paced link stays fed while a
-dead link (no data at all) stops producing and trips the watchdog after ``_SOCK_TIMEOUT`` ->
+dead link (no data at all) stops producing and trips the watchdog after ``_SOCK_TIMEOUT``, and one
+that drips under 1 KB/s is dropped the same way once its minute of slack is spent (``_SLOW_MS``) ->
 a reboot into the surviving slot. The erase/write loops feed per block/piece the same way. ``relax()`` (an ISR feed that also does not yield) is a LAST
 RESORT, used ONLY for the two genuinely unsplittable single C calls with no seam to feed
 through: the TLS handshake (``_connect``) and this file's own ``exec`` compile (in
@@ -236,6 +237,10 @@ _SOCK_TIMEOUT = 30
 # feeding the watchdog each slice, so it must stay WELL under the watchdog window (~100 ms) -> a few
 # feeds per window. Only matters when a watchdog is armed; a fast recv returns the moment data arrives.
 _RECV_POLL_MS = 20
+# The slowest link a download is waited on: 1 KB/s. A connection may spend this long waiting for
+# data, plus a millisecond per byte it has delivered; past that it is dropped like a dead one. Only
+# the waiting counts (not the flash writes between reads), so the number is the link's alone.
+_SLOW_MS = 60000
 # "Operation would block" errnos a non-blocking recv may raise (EAGAIN/EWOULDBLOCK) even right after
 # poll reports readable -- a TLS socket can be TCP-readable with no whole record decrypted yet. Both
 # the positive (11) and MicroPython's negated (-11) form; treated as "no data yet", keep polling.
@@ -394,6 +399,7 @@ class _Reader:
         self._mv = memoryview(self._mem)
         self._lo = 0               # the unread bytes are _mem[_lo:_hi]
         self._hi = 0
+        self._slack = _SLOW_MS     # ms this connection may still wait: +1 a byte, -1 a ms waited
 
     def _fill(self):
         # MAIN-THREAD progress-fed recv. The socket is NON-BLOCKING (set by _open), so readinto
@@ -426,12 +432,14 @@ class _Reader:
                 n = None
             if n:
                 self._hi += n
+                self._slack += n
                 return True
             if n is not None:                        # n == 0 -> EOF
                 return False
             sleep_ms(_RECV_POLL_MS)                  # n is None -> no data yet; feed + wait a slice
             waited += _RECV_POLL_MS
-            if waited >= _SOCK_TIMEOUT * 1000:
+            self._slack -= _RECV_POLL_MS
+            if waited >= _SOCK_TIMEOUT * 1000 or self._slack < 0:   # dead, or under 1 KB/s
                 raise OSError(_ETIMEDOUT, "recv timed out")  # dead link: NUMERIC errno -> transport (retry)
 
     def _newline(self):

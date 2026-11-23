@@ -25,6 +25,24 @@ from .errors import BuildError
 from .staging import iter_files, stage_app
 
 
+PUBLISH_SEQ_MAX = 1 << 48      # the publish counter a build signs is below this
+
+
+def checked_publish_seq(publish_seq) -> int:
+    """``publish_seq`` (None for a project that takes none) as the counter a build signs.
+
+    It comes from the update server and is signed into the release: a camera that confirms
+    the release takes nothing below it, ever. A server that answered with a number near the
+    top of the range would end the fleet's updates for good, so the top of the range is not
+    taken: 2**48 is 280 thousand years of a publish a second."""
+    seq = 0 if publish_seq is None else publish_seq
+    if not isinstance(seq, int) or isinstance(seq, bool) or not 0 <= seq < PUBLISH_SEQ_MAX:
+        raise BuildError("the server's publish counter is %r, which is not a counter this "
+                         "build will sign (it is signed into the release, and cameras take "
+                         "nothing below it afterwards)" % (publish_seq,), exit_code=2)
+    return seq
+
+
 @dataclass
 class _OtaSigner:
     """The project-wide signing context for OTA builds (resolved once)."""
@@ -373,6 +391,7 @@ def build_romfs(
     keep_build_dir: bool = False,
     key_passphrase_file: str | Path | None = None,
     allow_dev_key: bool = False,
+    publish_seq: int | None = None,
 ) -> list[BuildResult]:
     project = Path(project)
     try:
@@ -396,6 +415,8 @@ def build_romfs(
                                key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
                   if p.config.ota else None)
     if ota_signer is not None:
+        # The counter goes on the signer that signs the trailer, which is this one.
+        ota_signer.publish_seq = checked_publish_seq(publish_seq)
         app_version, vendor = ota_signer.app_version, ota_signer.vendor
     else:
         settings = _read_settings(app_dir)
@@ -435,10 +456,11 @@ def _refuse_dropped_calls(app_dir: Path, board: str) -> None:
     ``build firmware`` turns some imlib features off on a board whose flash cannot hold an
     OTA firmware with them (``ota_firmware_drops`` in the board table -- the OpenMV Cam H7
     loses ``find_barcodes()`` and ``find_datamatrices()``, the H7 Plus
-    ``find_datamatrices()``). A call to one of them would
+    ``find_datamatrices()``, the M4 ``lens_corr()``). A call to one of them would
     only fail on the camera, as an AttributeError at the moment the frame arrives; here it
     is a build error that names the file and line. Tokenized rather than grepped, so a
-    mention in a comment or a string is not a call."""
+    mention in a comment or a string is not a call. Taking the method without calling it
+    (``f = img.lens_corr``) is refused too: the lookup is what raises on the camera."""
     import tokenize
 
     dropped = boards_mod.get_board(board).ota_firmware_drops
@@ -453,9 +475,12 @@ def _refuse_dropped_calls(app_dir: Path, board: str) -> None:
         except (OSError, SyntaxError, UnicodeDecodeError, tokenize.TokenError):
             continue                     # mpy-cross reports an unreadable or broken file
         for i, tok in enumerate(toks[:-1]):
-            nxt = toks[i + 1]
-            if tok.type == tokenize.NAME and tok.string in methods \
-                    and nxt.type == tokenize.OP and nxt.string == "(":
+            nxt, prev = toks[i + 1], toks[i - 1] if i else None
+            if tok.type == tokenize.NAME and tok.string in methods and (
+                    (nxt.type == tokenize.OP and nxt.string == "(" and not (
+                        prev is not None and prev.type == tokenize.NAME
+                        and prev.string in ("def", "class")))
+                    or (prev is not None and prev.type == tokenize.OP and prev.string == ".")):
                 hits.append("%s:%d: %s()" % (f.relative_to(app_dir).as_posix(),
                                              tok.start[0], tok.string))
     if hits:
@@ -708,6 +733,7 @@ def build_factory_romfs(
     no_account: bool = False,
     key_passphrase_file: str | Path | None = None,
     allow_dev_key: bool = False,
+    publish_seq: int | None = None,
 ) -> list[BuildResult]:
     """Compose the PROVISIONING ROMFS partition image per target -- the image flashed at
     manufacture. Under A/B that is the SAME factory-signed image written into both slots with
@@ -730,6 +756,15 @@ def build_factory_romfs(
     if not p.config.ota:
         raise BuildError("factory-romfs needs an OTA project (create with "
                          "`openmv-ota project new --ota`)", exit_code=1)
+    if p.config.platform and not publish_seq:
+        # The factory image SEEDS the floor a camera orders by. For a platform camera that is
+        # the publish counter: signed as 0 it seeded a floor of 0, and a camera fresh from the
+        # line took any release the account had ever published, the oldest included.
+        raise BuildError(
+            "this project sets `platform`, so the factory image takes the account's next "
+            "publish counter from the server -- log in (`openmv-ota client login`) and build "
+            "again. It is the floor a new camera starts from: without one, nothing the "
+            "account ever published is too old for it.", exit_code=1)
     if not p.config.account_id and not no_account:
         # v1 made this an ERROR because the golden slot was permanent: an accountless golden
         # was burned for the life of the device and would strand it on fallback. Under A/B no
@@ -754,6 +789,7 @@ def build_factory_romfs(
     key_id = factory_key if factory_key is not None else FACTORY_KEY_ID_BASE
     signer = _load_signer(p, app_dir, key_id, require_role="factory",
                           key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
+    signer.publish_seq = checked_publish_seq(publish_seq)
     ctx = ModelContext(
         sdk_home=p.sdk_home, vela_path=p.vela_path, stedgeai_path=p.stedgeai_path,
         vela_optimise=vela_optimise, stedgeai_optimization=stedgeai_optimization,
@@ -1415,7 +1451,7 @@ def build_ota_romfs(
     app_dir = Path(app) if app else project / "app"
     signer = _load_signer(p, app_dir, p.config.signing_key_id, require_role="ota",
                           key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
-    signer.publish_seq = int(publish_seq or 0)
+    publish_seq = checked_publish_seq(publish_seq)
     new_pv = signer.payload_version
 
     # 1) compile + sign the romfs bundle, then render the download image(s) from it.
@@ -1423,7 +1459,8 @@ def build_ota_romfs(
                 convert_models=convert_models, mpy_extra=mpy_extra, vela_extra=vela_extra,
                 stedgeai_extra=stedgeai_extra, vela_optimise=vela_optimise,
                 stedgeai_optimization=stedgeai_optimization, firmware=firmware,
-                key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key)
+                key_passphrase_file=key_passphrase_file, allow_dev_key=allow_dev_key,
+                publish_seq=publish_seq)
     build_ota_image(project, output=output, boards=boards, firmware=firmware)
 
     results = []

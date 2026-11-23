@@ -5,6 +5,7 @@
     "OPENMV2": {
       "secure_element": {"chip": "soft", "key_area": 134246400, "bootloader_max": 28672, "trust": false},
       "ota_runtime_drops_network": true,
+      "ota_firmware_drops": {"IMLIB_ENABLE_LENS_CORR": "lens_corr"},
       "display_name": "OpenMV Cam M4 (STM32F427)",
       "tls_verify": false,
       "arch": "OMV2 F4 256 JPEG",

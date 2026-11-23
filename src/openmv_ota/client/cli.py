@@ -905,6 +905,18 @@ class _BaseDecryptor:
         return plain
 
 
+
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")      # C0 (bar \t \n \r) and all of C1
+
+
+def _file_part(text) -> str:
+    """``text`` (a version the SERVER reported) as part of a file name, or a ClientError: a
+    version is digits, letters, dots, dashes and plus signs, never a path."""
+    if not isinstance(text, str) or not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}", text):
+        raise ClientError("the server reported a version %r, which is not a version" % text,
+                          exit_code=1)
+    return text
+
 def cmd_bases(args: argparse.Namespace) -> int:
     """Download recent release images to build deltas FROM.
 
@@ -928,7 +940,8 @@ def cmd_bases(args: argparse.Namespace) -> int:
         # build script chaining `bases` into `build ota-romfs --delta-from` reads exactly this.
         got, lines = [], []
         for rel in releases:
-            path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX, rel["version"]))
+            path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX,
+                                             _file_part(rel["version"])))
             path.write_bytes(plain(api.release_image(rel["release_id"]), rel))
             got.append({"path": str(path), "release_id": rel["release_id"],
                         "version": rel["version"], "bytes": path.stat().st_size})
@@ -980,7 +993,7 @@ def _fleet_bases(args: argparse.Namespace, api, out: Path, plain) -> int:
                   "(republished version?) -- they will take the full image"
                   % (row["devices"], row["version"]), file=sys.stderr)
             continue
-        path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX, rel["version"]))
+        path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX, _file_part(rel["version"])))
         path.write_bytes(data)
         got.append({"path": str(path), "release_id": rel["release_id"],
                     "version": rel["version"], "devices": row["devices"],
@@ -1414,7 +1427,8 @@ def cmd_device_watch(args: argparse.Namespace) -> int:
                                             ("  -> " + ", ".join(saved)) if saved else ""),
                   flush=True)
         elif kind == "console":
-            sys.stdout.write(info["text"])
+            # the camera's text, on the operator's terminal: its escape sequences are not
+            sys.stdout.write(_CONTROL.sub("?", info["text"]))
             sys.stdout.flush()
         elif kind == "hello":
             say("camera %s (%s viewer%s)%s" % (

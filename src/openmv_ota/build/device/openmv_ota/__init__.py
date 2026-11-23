@@ -1605,25 +1605,31 @@ def _read_capped(sock, limit, clen=None, deadline=None):  # pragma: no cover  (d
     EXACTLY that many bytes and stop -- never wait for EOF: the WINC1500 reports a peer close only
     after the socket timeout elapses, so an EOF-terminated read stalls a whole _CHECKIN_TIMEOUT every
     poll. Without a length (chunked / connection-close), fall back to read-to-EOF. Never ``read(-1)``:
-    a captive portal or broken proxy must not size our allocation. Bounded chunks joined once."""
+    a captive portal or broken proxy must not size our allocation.
+
+    A BYTE AT A TIME, like the lines before it (_resp_line): ``read(n)`` stays in C until it has
+    all ``n`` bytes, and each byte that arrives restarts the socket timeout -- so a server that
+    answered at once and then dripped a 4 KB body held the camera for hours inside one call,
+    with the deadline checked only on either side of it. One byte per call is one timeout per
+    deadline check."""
     import time  # hil-residual: device clock import (no marker can witness a clock read)
     if clen is not None and clen > limit:
         raise OSError("check-in response over %d bytes" % limit)  # hil-residual: bare raise (declared over cap)
-    chunks, total = [], 0
-    while clen is None or total < clen:
+    body = bytearray()
+    while True:
         if deadline is not None and time.ticks_diff(deadline, time.ticks_ms()) < 0:
             raise OSError("check-in answer took too long")  # hil-residual: bare raise (a server dripping its body; inject-only)
-        d = sock.read(_CHUNK if clen is None else min(_CHUNK, clen - total))
-        if not d:                                     # EOF (peer closed) -- a short body, or the no-length case
-            break  # hil-residual: EOF before the declared length -- a TRUNCATED body. Every server we talk to sends Content-Length (witnessed by run.checkin_clen), so the loop normally exits on total==clen and this fires only when the peer closes early; reaching it needs a fault-injected short response
-        total += len(d)
-        if total > limit:
+        d = sock.read(0 if clen == 0 else 1)          # a declared-empty body: nothing to wait for
+        if d and len(body) >= limit:
             raise OSError("check-in response over %d bytes" % limit)  # hil-residual: bare raise (over-cap guard, inject-only)
-        chunks.append(d)
-        log.debug("checkin: body chunk")              # HIL path witness (a body chunk accumulated)
-    body = b"".join(chunks)                            # bounded: sum of capped chunks <= limit
+        body += d
+        # The declared length (stop there, never wait for EOF), or EOF: the peer closed -- the
+        # no-length case, or a body cut short of the length it declared.
+        if not d or len(body) == clen:
+            break
+    log.debug("checkin: body chunk")                  # HIL path witness (the read loop ran to its end)
     log.debug("checkin: body read")                   # HIL path witness (response body complete)
-    return body  # hil-residual: bare return of the joined body
+    return bytes(body)  # hil-residual: bare return of the body
 
 
 _tls_warned = False
