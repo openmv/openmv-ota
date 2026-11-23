@@ -2388,9 +2388,10 @@ class SqlMetadataStore:
                               "AND revoked = 0", (account_id, name)) is not None
 
     def revoke_token(self, token_hash: str) -> bool:
-        """Revoke a token by its whole hash. False when there is no such token."""
-        return self.execute("UPDATE admin_tokens SET revoked = 1 WHERE token_hash = ?",
-                            (token_hash,)).rowcount == 1
+        """Revoke a token by its whole hash. False when there is no such live token: of two
+        callers at once, one revokes it."""
+        return self.execute("UPDATE admin_tokens SET revoked = 1 WHERE token_hash = ? "
+                            "AND revoked = 0", (token_hash,)).rowcount == 1
 
     def token_hashes(self, prefix: str) -> list[str]:
         """The hashes of the tokens whose hash starts with ``prefix``, eight characters of

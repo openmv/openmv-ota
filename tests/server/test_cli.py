@@ -206,7 +206,7 @@ def test_token_rotate_and_list_account(tmp_path, monkeypatch, capsys):
     assert fresh["revoked"] == 0 and fresh["account_id"] == "acctA"   # replacement keeps the account
     s2.close()
     assert main(["server", "token", "rotate", "nope"]) == 1
-    assert "no such token" in capsys.readouterr().err
+    assert "no token's hash starts with nope" in capsys.readouterr().err
 
 
 def test_account_lifecycle_cli(tmp_path, monkeypatch, capsys):

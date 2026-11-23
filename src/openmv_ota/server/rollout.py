@@ -160,7 +160,7 @@ def validate_stages(stages):
             raise ValueError("stage %d percent must be 0..100" % i)
         if pct < last_pct:
             raise ValueError("stage percents must not decrease (a ramp only raises)")
-        if soak < 0 or att < 0:
+        if not 0 <= soak < float("inf") or att < 0:              # (a NaN is not >= 0)
             raise ValueError("stage %d min_soak/min_attempted must be >= 0" % i)
         clean = {"percent": pct, "min_soak": soak, "min_attempted": att}
         if s.get("max_failure_rate") is not None:

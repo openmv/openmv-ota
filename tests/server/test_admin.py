@@ -668,6 +668,14 @@ def test_token_rotate_api(tmp_path):
     assert store.get_token(th)["revoked"] == 1                  # old revoked
     assert store.get_token(new["token_hash"])["revoked"] == 0   # replacement live
     assert c.post("/api/v1/admin/tokens/ghost/rotate", headers=AUTH).status_code == 404
+    # two rotations at once: both read it live, one revokes it, and only that one mints
+    live = new["token_hash"]
+    store.revoke_token(live)
+    seen = store.get_token
+    store.get_token = lambda h: dict(seen(h), revoked=0)
+    assert c.post("/api/v1/admin/tokens/%s/rotate" % live, headers=AUTH).status_code == 409
+    store.get_token = seen
+    assert len(store.list_tokens("acctA")) == 2                 # the old one and its replacement
 
 
 def test_account_lifecycle_api(tmp_path):
