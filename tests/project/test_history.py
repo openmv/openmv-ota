@@ -87,3 +87,20 @@ def test_a_linked_history_file_is_not_read_either(tmp_path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.symlink_to(target)
     assert history.read(tmp_path) == []
+
+
+def test_a_linked_history_directory_is_not_read(tmp_path):
+    theirs = tmp_path / "theirs"
+    theirs.mkdir()
+    (theirs / history.history_path(tmp_path).name).write_text('{"action": "theirs", "ts": "t"}\n')
+    root = tmp_path / "project"
+    root.mkdir()
+    history.history_path(root).parent.symlink_to(theirs)
+    assert history.read(root) == []
+
+
+def test_a_line_of_brackets_is_skipped(tmp_path):
+    history.record(tmp_path, "x")
+    with history.history_path(tmp_path).open("a") as f:
+        f.write("[" * 200_000 + "\n")
+    assert [e["action"] for e in history.read(tmp_path)] == ["x"]

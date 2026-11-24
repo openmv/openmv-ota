@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import abc
 import importlib
+import os
 from pathlib import Path
 
 from .algorithms import AlgSpec
@@ -147,10 +148,17 @@ def build_provisioner(backend: dict) -> KeyProvisioner:
     raise OtaError("unknown provisioning backend: %r" % tag)
 
 
+FACTORY_ENV = "OPENMV_OTA_SIGNER_FACTORY"
+
+
 def _custom_signer(entry, alg, backend):
-    ref = backend.get("factory")
+    if "factory" in backend:
+        raise OtaError("a custom signer's factory does not go in a backend record "
+                       "(keys/backends.json comes with the project, and the factory is code "
+                       "this machine imports): set %s instead" % FACTORY_ENV)
+    ref = os.environ.get(FACTORY_ENV)
     if not ref or ":" not in ref:
-        raise OtaError("custom signer backend needs a 'factory' = 'pkg.module:callable'")
+        raise OtaError("custom signer backend needs %s = 'pkg.module:callable'" % FACTORY_ENV)
     mod_name, _, attr = ref.partition(":")
     try:
         factory = getattr(importlib.import_module(mod_name), attr)

@@ -51,7 +51,7 @@ def read(root: str | Path) -> list[dict]:
     """Every recorded event, oldest first (``[]`` if none). A corrupt/partial line is
     skipped rather than failing the whole read."""
     path = history_path(root)
-    if path.is_symlink() or not path.is_file():
+    if path.is_symlink() or path.parent.is_symlink() or not path.is_file():
         return []           # none, or not a file of the project's own (a link, a pipe)
     out: list[dict] = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -60,7 +60,7 @@ def read(root: str | Path) -> list[dict]:
             continue
         try:
             entry = json.loads(line)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):               # (a line of brackets is the second)
             continue
         if isinstance(entry, dict):
             out.append(entry)

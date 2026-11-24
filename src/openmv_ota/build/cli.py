@@ -220,6 +220,7 @@ def cmd_sbom(args: argparse.Namespace) -> int:
     if args.output == "-":
         sys.stdout.write(text)
         return 0
+    # (rendering loaded the project, which refuses one with a link in its build/)
     out = Path(args.output) if args.output else Path(args.project) / "build" / SBOM_NAME
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")

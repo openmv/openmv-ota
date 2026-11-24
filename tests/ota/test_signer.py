@@ -72,12 +72,16 @@ def test_custom_signer_hook(tmp_path, monkeypatch):
         not_a_signer = staticmethod(lambda e, a, b: object())
 
     monkeypatch.setattr("openmv_ota.ota.signer.importlib.import_module", lambda name: _Mod)
-    s = build_signer(entry, ALG, private_keys_dir=tmp_path,
-                     backend={"backend": "custom", "factory": "any.mod:make"})
+    monkeypatch.setenv("OPENMV_OTA_SIGNER_FACTORY", "any.mod:make")
+    s = build_signer(entry, ALG, private_keys_dir=tmp_path, backend={"backend": "custom"})
     assert s.sign(b"x") == b"\x00" * ALG.sig_size and s.public_point_hex() == "aa"
+    monkeypatch.setenv("OPENMV_OTA_SIGNER_FACTORY", "any.mod:not_a_signer")
     with pytest.raises(OtaError, match="did not return a Signer"):
+        build_signer(entry, ALG, private_keys_dir=tmp_path, backend={"backend": "custom"})
+    # the record comes with the project: what this machine imports to sign is not its to say
+    with pytest.raises(OtaError, match="does not go in a backend record"):
         build_signer(entry, ALG, private_keys_dir=tmp_path,
-                     backend={"backend": "custom", "factory": "any.mod:not_a_signer"})
+                     backend={"backend": "custom", "factory": "any.mod:make"})
 
 
 class _FakePriv:
@@ -162,13 +166,14 @@ def test_build_signer_kms_dispatch(tmp_path, monkeypatch):
                             backend={"backend": tag}) is sentinel
 
 
-def test_custom_signer_bad_ref(tmp_path):
+def test_custom_signer_bad_ref(tmp_path, monkeypatch):
     entry, _ = _entry_and_key(tmp_path)
-    with pytest.raises(OtaError, match="needs a 'factory'"):
+    monkeypatch.delenv("OPENMV_OTA_SIGNER_FACTORY", raising=False)
+    with pytest.raises(OtaError, match="needs OPENMV_OTA_SIGNER_FACTORY"):
         build_signer(entry, ALG, private_keys_dir=tmp_path, backend={"backend": "custom"})
+    monkeypatch.setenv("OPENMV_OTA_SIGNER_FACTORY", "no_such_pkg.mod:x")
     with pytest.raises(OtaError, match="not importable"):
-        build_signer(entry, ALG, private_keys_dir=tmp_path,
-                     backend={"backend": "custom", "factory": "no_such_pkg.mod:x"})
+        build_signer(entry, ALG, private_keys_dir=tmp_path, backend={"backend": "custom"})
 
 
 class _FakeProvisioner:

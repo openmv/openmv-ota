@@ -59,7 +59,11 @@ def register(project_parser: argparse.ArgumentParser):
                        help="OTA rotation-pool size to provision (default 32)")
     p_new.add_argument("--factory-keys", type=int, default=8, metavar="N",
                        help="factory-key reserve to provision, one per site (default 8)")
-    p_new.add_argument("--force", action="store_true", help="overwrite an existing project")
+    p_new.add_argument("--force", action="store_true",
+                       help="overwrite an existing project's files (its signing keys are kept)")
+    p_new.add_argument("--new-keys", action="store_true",
+                       help="with --force --ota: replace the project's roots and signing keys. "
+                            "Cameras that trust the old ones can then no longer be updated")
     p_new.add_argument("--key-passphrase-file", metavar="FILE",
                        help="passphrase (from a file, else a confirmed prompt on a terminal) to "
                             "encrypt the signing keys at rest; keys "
@@ -262,7 +266,7 @@ def register(project_parser: argparse.ArgumentParser):
     p_kbp.add_argument("--backend", required=True,
                        choices=["pkcs11", "aws-kms", "gcp-kms", "azure-kms"], help="backend tag")
     p_kbp.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", dest="settings",
-                       help="a backend config field (repeatable), e.g. --set pkcs11_module=/usr/...")
+                       help="a backend config field (repeatable), e.g. --set token_label=openmv")
     p_kbp.add_argument("--ota-keys", type=int, default=4, metavar="N",
                        help="OTA keys to mint (default: 4 — external keys are often billable)")
     p_kbp.add_argument("--factory-keys", type=int, default=1, metavar="N",
@@ -430,6 +434,7 @@ def cmd_new(args: argparse.Namespace) -> int:
             install_sdk=args.install_sdk,
             allow_dirty=args.allow_dirty,
             force=args.force,
+            new_keys=args.new_keys,
             ota=args.ota,
             sig_alg=sig_alg,
             ca=args.ca,

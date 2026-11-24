@@ -28,6 +28,7 @@ from . import (
 )
 from .config import LOCAL_NAME, OtaConfig
 from .errors import ProjectError
+from .outdir import check_project
 from .resolve import firmware as fw_res
 from .resolve import micropython as mp_res
 from .resolve import sdk as sdk_res
@@ -416,6 +417,7 @@ def create_project(
     key_passphrase: str | None = None,
     dev: bool = False,
     keys_from: Path | None = None,
+    new_keys: bool = False,
 ) -> tuple[lock_mod.Lock, list[str]]:
     repo = firmware.expanduser().resolve()
     if not gitrepo.is_git_repo(repo):
@@ -423,6 +425,8 @@ def create_project(
 
     paths = ProjectPaths(root)
     root.mkdir(parents=True, exist_ok=True)
+    check_project(paths.root)        # --force on a directory someone else made: before a write
+    keep_keys = False
     if paths.config.exists() and not force:
         raise ProjectError("%s already exists; use --force" % paths.config.name, exit_code=1)
 
@@ -463,11 +467,26 @@ def create_project(
         _ensure_ota_capable(lock)  # fail before writing anything for an impossible board
         _ensure_ota_mbedtls(lock)
         warnings += _app_only_warnings(lock)
-        if force and keys_from is None and paths.trusted_keys.exists():
+        # THE KEYS A PROJECT HAS ARE KEPT. `--force` rewrites a project's files; replacing
+        # its roots and signing keys ends every update to a fleet that trusts them, and is
+        # asked for by name (`--new-keys`), not as a side effect of rewriting a config.
+        keep_keys = keys_from is None and paths.trusted_keys.exists() and not new_keys
+        if keys_from is None and paths.trusted_keys.exists() and new_keys:
             warnings.append(
                 "this regenerates the signing keys; devices already in the field trust the "
                 "OLD keys and will REJECT updates signed by the new ones (you'd have to "
                 "re-flash them). Only do this for a fresh fleet -- back up the old keys first")
+        if keep_keys:
+            try:
+                signing_key_id = config_mod.load_config(paths.config).signing_key_id
+            except ProjectError:
+                signing_key_id = None
+            if signing_key_id is None:
+                raise ProjectError(
+                    "%s holds signing keys, and no project config says which one is current: "
+                    "restore the config, or pass --new-keys to replace the keys (a fleet that "
+                    "trusts them can then no longer be updated)" % paths.trusted_keys.parent,
+                    exit_code=1)
         if keys_from is not None:
             # Checked before anything else touches the source, so "that is not a project
             # with keys" is the error rather than one about its passphrase file.
@@ -482,6 +501,8 @@ def create_project(
                     "(no cached passphrase at %s); pass --key-passphrase-file instead"
                     % src_dev, exit_code=1)
             key_passphrase = src_dev.read_text().strip()
+        elif keep_keys:
+            pass                                     # nothing is minted: no passphrase to take
         elif dev:
             key_passphrase = secrets.token_hex(16)   # random throwaway passphrase, cached in-project
         elif not key_passphrase:
@@ -491,6 +512,8 @@ def create_project(
                 exit_code=1)
         if keys_from is not None:
             signing_key_id, w = _adopt_keys(paths, keys_from, boards, key_passphrase)
+        elif keep_keys:
+            w = []
         else:
             provisioned, w = _provision_keys(sig_alg, factory_keys, ota_keys, key_passphrase)
             signing_key_id = provisioned.signing_key_id
@@ -519,7 +542,7 @@ def create_project(
         # same reason: a project should arrive with confidentiality rather than with a
         # decision about it. One per board target -- see project/payload_keys.
         payload_keys.mint(paths.private_keys_dir, boards, key_passphrase)
-    if config.ota and dev:
+    if config.ota and dev and not keep_keys:
         # Cached whether the keys were minted here or adopted -- an adopted project signs
         # with the SOURCE's passphrase, and the build resolver has to find it either way.
         dp = passphrase_mod.dev_passphrase_path(root)
@@ -675,6 +698,7 @@ def backup_private_keys(root: str | Path) -> Path:
     accept, and without the board key you cannot encrypt one the fleet can read."""
     from . import keybackup, passphrase
 
+    check_project(root)              # the keys read, and the archive written, are its own
     if passphrase.dev_passphrase_path(root).exists():
         raise ProjectError(
             "refusing to back up a --dev project's keys: the cached dev passphrase lives "
@@ -699,6 +723,7 @@ def restore_private_keys(root: str | Path, blob: bytes) -> list[str]:
     ``ProjectError`` on a corrupt backup (recovery fails loudly)."""
     from . import keybackup
 
+    check_project(root)              # a linked keys/ is another project's keys, replaced
     pem_dir = ProjectPaths(Path(root)).private_keys_dir
     pems = keybackup.unpack_keys(blob)
     pem_dir.mkdir(parents=True, exist_ok=True)
@@ -1241,11 +1266,16 @@ def setup_project(
     """Reconstruct the pinned checkout + SDK from the committed lock; write the
     local file. Returns the firmware checkout path."""
     paths = ProjectPaths(root)
+    check_project(paths.root)        # the first command run on a project someone else made
     locked = lock_mod.read(paths.lock)
     fw = locked.firmware
     remote, commit = fw.get("remote"), fw.get("commit")
     if not remote or not commit:
         raise ProjectError("lock has no firmware remote/commit to clone from")
+    if not (isinstance(remote, str) and isinstance(commit, str)
+            and re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", commit)):
+        # before it names the cache directory: a path there is a directory of the user's
+        raise ProjectError("the lock's firmware commit is not a commit hash: %r" % (commit,))
 
     dest = cache.firmware_clone_dir(commit, cache_override)
     if not gitrepo.is_git_repo(dest):

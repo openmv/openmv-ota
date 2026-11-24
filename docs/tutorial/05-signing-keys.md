@@ -242,15 +242,17 @@ with no record uses its local encrypted PEM, so external and local keys mix free
 in one set. The records hold only **non-secret** references — ARNs, token and
 object labels, module paths. Secrets come from the environment, never the repo: a
 PKCS#11 PIN from `OPENMV_OTA_PKCS11_PIN`, cloud credentials from whatever the
-provider's SDK finds. A `pin` in a record is refused. That is what lets teammates
+provider's SDK finds. A `pin` in a record is refused. So is anything that names code to
+load (a PKCS#11 library, a custom signer's factory): the records come with the project,
+and what a machine loads to sign is that machine's to say, in its environment. That is what lets teammates
 and CI commit-and-sign without reconfiguring.
 
 ```bash
 openmv-ota project keys backend show                  # each key's backend
 openmv-ota project keys backend configure 0x0100 --backend aws-kms \
     --set uri=arn:aws:kms:us-east-1:111122223333:key/example
-openmv-ota project keys backend provision --backend pkcs11 \
-    --set pkcs11_module=/usr/lib/softhsm/libsofthsm2.so --set token_label=openmv
+OPENMV_OTA_PKCS11_MODULE=/usr/lib/softhsm/libsofthsm2.so \
+openmv-ota project keys backend provision --backend pkcs11 --set token_label=openmv
 ```
 
 **`configure`** is bring-your-own-key: it points one **existing** trusted key at
@@ -271,11 +273,11 @@ most one:
 
 | `--backend` | Record fields (`--set k=v`) | Extra |
 |---|---|---|
-| `pkcs11` | `pkcs11_module` (the token's `.so`), `token_label`, `object_label` (defaults to `<role>-<keyid>`); the PIN comes from `OPENMV_OTA_PKCS11_PIN`, never a record | `openmv-ota[hsm]` |
+| `pkcs11` | `token_label`, `object_label` (defaults to `<role>-<keyid>`); the token's library (its `.so`) comes from `OPENMV_OTA_PKCS11_MODULE` and the PIN from `OPENMV_OTA_PKCS11_PIN`, never a record | `openmv-ota[hsm]` |
 | `aws-kms` | `uri` — the key ARN | `openmv-ota[aws-kms]` |
 | `gcp-kms` | `uri` — the crypto-key **version** resource name | `openmv-ota[gcp-kms]` |
 | `azure-kms` | `uri` — the vault key URL (`provision` takes `vault_url`) | `openmv-ota[azure-kms]` |
-| `custom` | `factory` — `pkg.module:callable` returning a `Signer`; bring anything | — |
+| `custom` | whatever your signer reads; the `pkg.module:callable` that returns the `Signer` comes from `OPENMV_OTA_SIGNER_FACTORY`, never a record | — |
 
 **How well each is proven.** `gcp-kms`, `aws-kms` and `azure-kms` have been run end to end
 against the real services — `provision` minting a key set in the service, then `build romfs`

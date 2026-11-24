@@ -180,3 +180,11 @@ def test_sbom_cli_writes_and_stdout(tmp_path, capsys):
 
     assert main(["build", "sbom", str(tmp_path / "nope")]) == 1
     assert "error:" in capsys.readouterr().err
+
+    # the project's build/ is its own files: a link there is where the SBOM would be written
+    mine = tmp_path / "mine.json"
+    mine.write_text("mine")
+    (root / "build" / "sbom.cdx.json").unlink()
+    (root / "build" / "sbom.cdx.json").symlink_to(mine)
+    assert main(["build", "sbom", str(root)]) != 0
+    assert "is a link" in capsys.readouterr().err and mine.read_text() == "mine"

@@ -274,3 +274,15 @@ def test_host_ticks_fallback_counts_milliseconds():
     assert rtc._ticks_diff(a + 5, a) == 5
     assert rtc._age_s(None) is None
     assert rtc._age_s(rtc._ticks_ms()) == 0
+
+
+def test_an_unverified_server_s_time_only_moves_the_clock_forward(monkeypatch, _clock):
+    """A board that does not verify TLS takes its Date from anyone on the path: forward or
+    not at all, and never as a network check (NTP still runs)."""
+    _at(monkeypatch, 1_700_000_000)
+    assert not rtc.server_time(1_700_000_000 - 86400, verified=False)
+    assert not rtc.server_time(1_700_000_000 + rtc._DRIFT_S, verified=False)
+    assert _clock["set"] == [] and rtc.source() != "server"
+    assert rtc.server_time(1_700_000_000 + 86400, verified=False)
+    assert _clock["set"] == [1_700_000_000 + 86400] and rtc.source() != "server"
+    assert not rtc.server_time(rtc.BUILD_TIME - 1, verified=False)

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from openmv_ota.project.config import derive_product_id
+from openmv_ota.project.outdir import output_dir
 from openmv_ota.project.project import ProjectError, ProjectPaths, load_project
 from openmv_ota.romfs.boards import firmware_image_name, get_board
 
@@ -76,7 +77,7 @@ def build_stub(
         raise BuildError(str(e)) from None
 
     signer = _footer_signer(p, factory_key, key_passphrase_file, allow_dev_key)
-    out_dir = Path(output) if output else project / "build"
+    out_dir = output_dir(project, output, BuildError)
     out_dir.mkdir(parents=True, exist_ok=True)
     return [_build_one(p, name, roots, out_dir, jobs, signer) for name in names]
 

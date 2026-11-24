@@ -253,12 +253,26 @@ _SLOW_MS = 60000
 # [the tick the count began, the ms allowed since]. Shared by every connection of one install
 # (a reconnect does not start a fresh minute), and never more than two minutes ahead of the
 # clock, so a fast start does not buy an hour of dripping afterwards.
-_SLACK = [0, _SLOW_MS]
+# The third is what is left of the time connecting may take without being charged (see
+# _slack_connect).
+_SLACK = [0, _SLOW_MS, 0]
 
 
 def _slack_start(s=_SLACK):
     s[0] = ticks_ms()
     s[1] = _SLOW_MS
+    s[2] = 5 * _SLOW_MS
+
+
+def _slack_connect(ms, s=_SLACK):
+    """A connect and its TLS handshake took ``ms``: not the download's time, up to five
+    minutes of it an install. Past that it is, or a server that hands out a few bytes a
+    connection and takes its time over each handshake holds the install for as long as it
+    likes."""
+    if ms > s[2]:
+        ms = s[2]
+    s[2] -= ms
+    s[1] += ms
 
 
 def _slack_add(n, s=_SLACK):
@@ -709,7 +723,14 @@ def _manifest_parse(data):
             or kind not in (0, 1) or pubkey[0] != 0x04:
         raise ValueError("bad manifest certificate")
     region = bytes(data[:_MANIFEST_BODY_OFFSET + body_size])
-    body = json.loads(data[_MANIFEST_BODY_OFFSET:_MANIFEST_BODY_OFFSET + body_size])
+    body = bytes(data[_MANIFEST_BODY_OFFSET:_MANIFEST_BODY_OFFSET + body_size])
+    if body.count(b"[") + body.count(b"{") > 64 or body.count(b",") > 512:
+        # Nobody has signed for these bytes yet (the caller checks that next), and the parser
+        # builds an object for each bracket and each element of them. Refused here and not
+        # parsed after the signatures: on the smallest boards the body parsed that late left
+        # the heap with no room for the install's first buffer (the M7's file install).
+        raise ValueError("manifest body nests too deep")
+    body = json.loads(body)
     if not isinstance(body, dict):
         # Vetting reads it with body.get(...): a list or a number would surface as an
         # AttributeError out of install() instead of the documented rejection.
@@ -1529,7 +1550,11 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
     between recvs (progress-fed, non-blocking) without a relax()."""
     for _ in range(max_redirects + 1):
         host, port, path = _parse_url(url)
+        t0 = ticks_ms()
         sock = _connect(host, port, ca_pem, socket, ssl)
+        # The connect and the handshake are not the download: a slow board behind a redirect
+        # or two spent its first minute here.
+        _slack_connect(ticks_diff(ticks_ms(), t0))
         # The handshake left the heap full of its own garbage; collect it NOW, fed, before the
         # allocations below (the GET, the reader's buffer, the header lines) make an automatic
         # collect land in the unfed gap between them (see _collect_fed).

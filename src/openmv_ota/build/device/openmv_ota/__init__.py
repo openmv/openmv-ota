@@ -1543,8 +1543,13 @@ _DRIFT_S = 2              # re-set the RTC only past this (Date has 1 s resoluti
 _legacy_rtc_warned = False
 
 
-def _apply_server_time(rtc, unix):
+def _apply_server_time(rtc, unix, verified=True):
     """Hand the server's time to the clock module ``rtc`` (the FROZEN openmv_rtc). Pure.
+
+    NOT ``verified`` (a board that does not verify TLS): the time is anyone's on the path. It
+    may only move the clock FORWARD, and not to before the build: rewound, a retired
+    certificate is valid again and yesterday's signed check-in is fresh. It does not count as
+    a network check either, so NTP still runs. Through the calls every frozen version has.
 
     THE CLOCK POLICY IS SPLIT ON PURPOSE: openmv_rtc is frozen into the firmware (boot.py and
     recovery need it before any romfs is mounted), so an OTA update never replaces it -- while
@@ -1555,6 +1560,11 @@ def _apply_server_time(rtc, unix):
     global _legacy_rtc_warned
     if unix is None:
         return False
+    if not verified:
+        if unix < getattr(rtc, "BUILD_TIME", 0) or (rtc.trusted() and unix <= rtc.now() + _DRIFT_S):
+            return False
+        rtc.set_time(unix)
+        return True
     server_time = getattr(rtc, "server_time", None)
     if server_time is not None:
         return server_time(unix)
@@ -1569,14 +1579,15 @@ def _apply_server_time(rtc, unix):
     return True
 
 
-def _server_date(value):  # pragma: no cover  (device: RTC)
+def _server_date(value, verified=True):  # pragma: no cover  (device: RTC)
     """Hand a check-in's ``Date`` header value to the clock. This is the device's main time
-    source: free (the check-in happens anyway) and authenticated (the TLS session verified the
-    server). Defensive like _resolve_clock: a missing clock module or an RTC fault must never
-    fail the check-in it rides on."""
+    source: free (the check-in happens anyway) and authenticated where the TLS session
+    ``verified`` the server (see _apply_server_time for where it did not). Defensive like
+    _resolve_clock: a missing clock module or an RTC fault must never fail the check-in it
+    rides on."""
     try:
         import openmv_rtc
-        if _apply_server_time(openmv_rtc, _parse_http_date(value)):
+        if _apply_server_time(openmv_rtc, _parse_http_date(value), verified):
             log.debug("clock: server date")           # HIL path witness (check-in Date set/confirmed the clock)
     except Exception:  # hil-residual: missing clock module / RTC fault -> the check-in goes on
         pass  # hil-residual: bare pass; timestamps stay as they were
@@ -1775,9 +1786,9 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
                 except Exception:  # hil-residual: malformed length -> fall back to read-to-EOF
                     clen = None  # hil-residual: bare assign
             elif line[:5].lower() == b"date:":  # hil-residual: header dispatch; the taken branch is witnessed by the callee's `clock: server date` (every check-in: uvicorn and Cloudflare both send Date)
-                _server_date(line[5:])  # hil-residual: the witness is emitted by the CALLEE (`clock: server date`); the audit cannot see across the call boundary
+                _server_date(line[5:], bool(ca))  # hil-residual: the witness is emitted by the CALLEE (`clock: server date`); the audit cannot see across the call boundary
         resp = _read_capped(ss, _RESP_MAX, clen, deadline)
-        if resp.count(b"[") + resp.count(b"{") > 64:
+        if resp.count(b"[") + resp.count(b"{") > 64 or resp.count(b",") > 256:
             # each is an object to the parser: 8 KiB of them is hundreds of KB of heap, and
             # running out here reads as the network stack's own exhaustion (a reboot)
             raise OSError("check-in answer nests too deep")  # hil-residual: bare raise (a hostile answer; inject-only)

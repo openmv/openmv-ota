@@ -213,9 +213,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the download fails like a dead link and is not reconnected. It is one allowance however
   many times the download reconnects, and bytes that write no image (headers, chunk
   framing, a stream that inflates to nothing) buy none of it.
-- **A check-in answer that nests too deep is refused before it is parsed.** Eight KiB of
-  open brackets is hundreds of KiB of heap to the JSON parser, and running out there read
-  as the network stack's own exhaustion, which ends in a reboot.
+- **A check-in answer that nests too deep, or lists too much, is refused before it is
+  parsed.** Eight KiB of open brackets, or of short list elements, is hundreds of KiB of
+  heap to the JSON parser, and running out there read as the network stack's own
+  exhaustion, which ends in a reboot. Recovery refuses the same answers.
+- **A manifest body made of brackets or elements is refused before it is parsed.** It is
+  parsed ahead of its signatures, behind only a checksum, and the parser builds an object
+  for each one.
 - **A short image file is refused before the erase.**
 - **A stream that ends short is refused before its last bytes are written.** They were
   programmed first, an odd count that is not a whole flash write unit.
@@ -227,9 +231,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   v2.2.1): the boot stub's include paths and device header, and the two firmware modules
   that named the old headers, follow.
 - **Host tools read a project's files and a firmware tree without running or following
-  them.** `git` is run with the tree's own monitor, hooks and content filters off; a
-  history file that is a link is neither read nor appended to, and one with a line that is
+  them.** `git` is run with the tree's own monitor, hooks and content filters off, wherever
+  its config keeps a filter (an included file, a worktree's config, a submodule's); a tree
+  whose config has git work on another tree, or whose submodule is a link, is refused, and
+  git fetches nothing to read a tree (a partial clone's config names the program that
+  would). A project with a link where the tools write or read back is refused by every
+  command: a file at its top level (the lock), anything in `build/` or `.openmv-ota/`, a
+  file in `keys/`, an output directory named inside it, and `app/`, `app-coprocessor/`,
+  `device/` or `certs/` itself (each is packed whole). `project setup` takes the lock's
+  commit as a hash before it names the cache directory. A history file with a line that is
   not an event still reads.
+- **What a machine loads to sign is that machine's to say.** `keys/backends.json` comes
+  with the project, and named the PKCS#11 library to load and the custom signer's
+  `module:callable` to import: building a project someone else made ran their code. Both
+  now come from the environment (`OPENMV_OTA_PKCS11_MODULE`, `OPENMV_OTA_SIGNER_FACTORY`),
+  and a record that names either is refused.
+- **`project new --force` keeps a project's signing keys.** It replaced the roots, the
+  signing keys and the payload keys of a project that had them, after which a fleet in the
+  field can no longer be updated. Replacing them is `--new-keys`.
+- **A project's `keys/` is not a link.** As one, it was another project's keys: signed
+  with, and rewritten by `keys rotate`. `project new --force` and `keys backup`/`restore`
+  check the project for links like every other command.
+- **On a board that does not verify TLS, the server's `Date` only moves the clock
+  forward.** It is anyone's on the path there: rewound, a retired certificate was valid
+  again. It is no longer taken as a network check either, so NTP still runs.
+- **The connect and the TLS handshake are not charged to the download's allowance,** up to
+  five minutes of them an install. A slow board behind a redirect spent its first minute
+  there.
+- **`flash register` does not send the saved token to a server the project names.** The
+  project's `server_url` came ahead of the saved profile's while the token came from the
+  profile; when they differ, `--server` or `--token` says which is meant.
 
 - **A payload version is 32 bits.** A major up to 255, not 31 bits: check-ins accept it and
   Postgres stores it.

@@ -149,25 +149,43 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
-  - Round 9 (device, host): **a decision**: `keys/backends.json` is committed with the
-    project and names what signs (a PKCS#11 module to load, a `module:callable` to import),
-    so building a project someone else made runs their code; taking those two from the
-    machine's own config, or asking on first use, would close it. A signed image that ships
+  - Round 15 (device, host): the device's clock is only as good as NTP. A spoofed NTP
+    answer moves it either way on any board, and on a board that does not verify TLS an
+    unverified `Date` moves it forward as far as the trust window: check-ins are then
+    stale at the server until NTP corrects it (minutes to six hours, never where NTP is
+    blocked). Rewound on a verifying board, an expired server certificate validates again.
+    NTP is not made forward-only because a clock pushed forward then never comes back;
+    closing this wants an authenticated time kept on flash as a floor (the newest verified
+    `Date`). Host: `--keys-from` follows links in the source's key files; the ROMFS reader
+    copies a slice of the image for each record that points into it; `stage_app` copies a
+    FIFO or a device; the Azure signer talks to whatever host a record's `uri` names (the
+    SDK checks the challenge from 4.7, now the floor).
+  - Round 14 (host): `flash register --token` sends the
+    token it is given to the server the project names (only the saved one is held back);
+    `project setup` reuses a cached checkout without checking its HEAD is the locked commit (the build's
+    drift check catches it); a tracked file name that is not UTF-8, and a lock or manifest
+    field of the wrong type, end in a traceback.
+  - Round 12 (device, host), each needs a bench: the STM32 stub reads the four places of
+    the flash key in one call, so a word torn in the first (power cut while it was
+    programmed) fails the read of all four; the RT1062 fuse key's plausibility is checked
+    on the words drawn, not on the fuses, before the lock; the N6 and RT1062 stubs leave the
+    derived key in RAM when they lock the engine (the H7 and AE3 ports clear it). Host:
+    `gzip.decompress` of an image or a component has no size cap; a ledger entry's `path`
+    is joined without containment.
+  - Round 9 (device, host): a signed image that ships
     a module named as a firmware one (`openmv_se`, `logging`) is imported ahead of it. The
-    connect and the TLS handshake are outside the download's rate floor and block: a peer
-    that drips its handshake holds the installer, and every check-in, until the watchdog
-    (a non-blocking handshake under the same clock, on every port). On boards that do not
-    verify TLS the server's `Date` still sets the clock. `openmv-ota history` prints a
+    connect and the TLS handshake block: a peer that drips its handshake holds the
+    installer, and every check-in, for as long as each wait stays under the socket timeout,
+    or until the watchdog's minute where one is armed (nothing in Python can end a blocking
+    handshake, and the WINC cannot do a non-blocking one). `openmv-ota history` prints a
     file's fields as they are. The N6 stub's flash
     reads and writes have no range checks of their own, a failed re-map leaves the part in
     octal mode, and the prescaler rounds down; the H7 stub retries a dead QSPI part on
     every call. A resumed download's `Content-Range` is not compared with what was asked.
     The recovery check-in's body is read an object a read. A firmware tree's version
     numbers are not range-checked.
-  - Round 8 (host): `project new --force --ota` in a project that has keys replaces the
-    roots, the signing keys, the payload keys and the key backup, and says so only in a
-    warning afterwards; a fleet in the field can then no longer be updated. Wants its own
-    flag, and a backup that is never overwritten. `flash factory` takes `SE-NONE` from a
+  - Round 8 (host): `project new --force --new-keys` overwrites the key backup with the
+    new keys'. `flash factory` takes `SE-NONE` from a
     board that declares a secure element.
   - Round 7 (server): "is it news" checks are read-then-write, so a burst can audit a few rows
     instead of one; registration's device-limit check is check-then-write; an unsigned

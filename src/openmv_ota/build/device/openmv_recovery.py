@@ -172,6 +172,18 @@ def http_date(value):
     return days * 86400 + hh * 3600 + mm * 60 + ss
 
 
+def _answer(raw):
+    """The check-in answer, parsed. It is unsigned, and the parser builds an object for each
+    bracket and each element: an answer made of them is refused, as the runtime refuses it."""
+    import json
+    if raw.count(b"[") + raw.count(b"{") > 64 or raw.count(b",") > 256:
+        raise OSError("check-in answer nests too deep")
+    resp = json.loads(raw)
+    if not isinstance(resp, dict):
+        raise OSError("check-in answer is not an object")
+    return resp
+
+
 def offered(code, raw):
     """The manifest URL the server offers, or ``None`` when it has nothing for this device (a
     429 is the server pacing a crowd: nothing, for now). Any other status is a refusal and
@@ -180,8 +192,7 @@ def offered(code, raw):
         return None
     if code != 200:
         raise OSError("check-in refused: HTTP %d" % code)
-    import json
-    resp = json.loads(raw)
+    resp = _answer(raw)
     url = resp.get("manifest_url") if resp.get("update") else None
     # an https URL and nothing else, as in the runtime's _offer: the reply is unsigned, and
     # a path would send the installer to a file on the camera
@@ -192,8 +203,7 @@ def offered_lockbox(raw):
     """The lockbox (hex) that came with an offer, or ``None``: an update encrypted for each
     camera is opened with it (see the installer's ``_lockbox_key``). Read only after
     :func:`offered` has found an offer in the same answer."""
-    import json
-    return json.loads(raw).get("lockbox")
+    return _answer(raw).get("lockbox")
 
 
 # --- device entry -----------------------------------------------------------
@@ -376,15 +386,16 @@ def _signer():  # pragma: no cover  (device)  # hil-residual-fn: see _uid -- no 
     return lambda body: trust.checkin_signature(body, ts)
 
 
-def _set_clock(value):  # pragma: no cover  (device)  # hil-residual-fn: see _signer
-    """Set the clock from the server's ``Date`` -- the check-in is TLS to a verified server, so
-    the time is authenticated. Never raises: the clock only lets the next check-in be signed."""
+def _set_clock(value, verified):  # pragma: no cover  (device)  # hil-residual-fn: see _signer
+    """Set the clock from the server's ``Date``. Where the check-in's TLS ``verified`` the
+    server the time is authenticated; where it did not, it only moves the clock forward.
+    Never raises: the clock only lets the next check-in be signed."""
     unix = http_date(value)
     if unix is None:
         return
     try:
         import openmv_rtc
-        openmv_rtc.server_time(unix)
+        openmv_rtc.server_time(unix, verified)
     except Exception:  # hil-residual: no clock module on this firmware
         pass
 
@@ -405,7 +416,8 @@ def _install(cfg):  # pragma: no cover  (device)  # hil-residual-fn: see _uid --
     ca = getattr(cfg, "CA_PEM", b"")
     host, port, _ = inst._parse_url(cfg.SERVER_URL)
     sign = _signer()
-    sock = inst._connect(host, port, inst._tls_anchors(ca, cfg), socket, ssl)
+    anchors = inst._tls_anchors(ca, cfg)
+    sock = inst._connect(host, port, anchors, socket, ssl)
     try:
         sock.write(checkin_request(cfg, host, port, bid, sys.platform, _uid(), sign))
         sock.setblocking(False)                # the installer's reader polls (see _open)
@@ -414,7 +426,7 @@ def _install(cfg):  # pragma: no cover  (device)  # hil-residual-fn: see _uid --
         raw = inst._read_all(inst._make_body(reader, headers), _RESP_MAX)  # ram-ok: capped at _RESP_MAX
     finally:
         sock.close()
-    _set_clock(headers.get(b"date"))
+    _set_clock(headers.get(b"date"), bool(anchors))
     url = offered(code, raw)
     if not url:
         log.info("recovery: no update offered")
