@@ -150,9 +150,9 @@ budget for now; these are the free/cheap passes to run first, in order.
     counter from the server the user is logged in to; `flash bootloader --dry-run` on the
     AE3 writes its key-area file.
   - Round 15 (device, host): NTP cannot rewind the clock past the newest time a verified
-    server gave since boot, or the build's after a reboot; that floor is in RAM. Kept on
-    flash it would survive a reboot, which wants a region of the status sector (a layout
-    the boot stub shares) and not a file on `/flash`. Forward, the clock is anyone's on the
+    server gave since boot, or, after a reboot, past when the image it runs was built (the
+    trailer's `built`). Between a release and a reboot that floor is as old as the release.
+    Forward, the clock is anyone's on the
     path: a spoofed NTP answer, or an unverified `Date` on a board that does not verify
     TLS, makes check-ins stale at the server until NTP or a verified server corrects it
     (minutes to six hours, never where NTP is blocked and the server unreachable).

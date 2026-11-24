@@ -65,7 +65,8 @@ typedef struct __attribute__((packed)) {
     uint32_t wdt_timeout_ms;
     uint64_t product_id;
     uint64_t publish_seq;
-    uint64_t reserved;
+    uint32_t built;                 // Unix seconds the image was built; the stub does not read it
+    uint32_t reserved;
     uint8_t body_sha256[32];
 } trailer_header_t;
 

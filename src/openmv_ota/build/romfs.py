@@ -205,6 +205,17 @@ def _build_system_info(p, t, app_version, vendor: str, dev: bool = False) -> dic
     }
 
 
+def _built_now() -> int:
+    """When this image is built: what the camera that runs it takes as the earliest its
+    clock can read. ``SOURCE_DATE_EPOCH`` names it for a build that has to be repeatable."""
+    import os
+    import time
+    try:
+        return int(os.environ["SOURCE_DATE_EPOCH"]) & 0xFFFFFFFF
+    except (KeyError, ValueError):
+        return int(time.time()) & 0xFFFFFFFF
+
+
 def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict,
                    components=()) -> bytes:
     """Build + sign the complete trailer for ``body`` (the filesystem image) and its
@@ -221,6 +232,7 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict,
         product_id=int(system_info["product_id"]),
         publish_seq=signer.publish_seq,
         payload_version=signer.payload_version,
+        built=_built_now(),
         body_sha256=hashlib.sha256(body).digest(),
         certificate=signer.certificate,
         components=list(components),
