@@ -174,6 +174,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and a spoofed answer set the clock anywhere after the build: rewound, a server
   certificate that had since expired validated again. The clock now has a floor: the
   build's time, raised by each time a verified server gives.
+- **An image says when it was built, and the clock is never set earlier.** The trailer's
+  `built` (Unix seconds, four of the header's eight reserved bytes: the layout is the one
+  it was, and an image from before the field reads as 0) is signed with the rest, and
+  `boot.py` raises the clock's floor to it. The firmware's own build time, the only floor
+  until now, never moves on an app update. `SOURCE_DATE_EPOCH` names it for a repeatable
+  build.
 
 - **A build does not run an `mpy-cross` the firmware checkout came with.** `build romfs`
   prefers the tree's own compiler, and a fork that commits a program at that path had it

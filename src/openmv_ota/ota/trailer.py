@@ -26,7 +26,7 @@ semantics)::
     framing     magic(4s)=OMVR header_version body_size comp_count meta_size
     versions    min_stub payload_version
     stub        uart_en(u8) uart_id(u8) wdt_en(u8) wdt_id(u8) baud wdt_timeout_ms
-    identity    product_id(u64) publish_seq(u64) reserved(u64)
+    identity    product_id(u64) publish_seq(u64) built(u32) reserved(u32)
     digest      body_sha256(32s)
 
 ``body_sha256`` covers the filesystem image only (what ``boot.py`` mounts); each component
@@ -39,7 +39,8 @@ with ``PRODUCT_ID = 0``; every other camera orders by ``payload_version``.
 equality and refuse anything else, and the boot stub that reads it is flashed over USB
 only — so a bump makes every camera in the field reject every new image until it is
 reflashed. Version 4 is the stub format; ``reserved`` is the headroom the next field comes
-out of.
+out of. ``built`` came out of it: the Unix time the image was built (0 in an image from
+before the field), which the camera takes as the earliest its clock can read.
 """
 
 from __future__ import annotations
@@ -66,7 +67,7 @@ HEADER_VERSION = 4
 TRAILER_SZ = 4096
 CRC_SIZE = 4
 
-HEADER_STRUCT = "<4sIIIIIIBBBBIIQQQ32s"
+HEADER_STRUCT = "<4sIIIIIIBBBBIIQQII32s"
 HEADER_SIZE = struct.calcsize(HEADER_STRUCT)            # 96
 _COMP_COUNT_OFFSET = struct.calcsize("<4sII")           # magic, version, body_size => 12
 _META_SIZE_OFFSET = struct.calcsize("<4sIII")           # ... comp_count => 16
@@ -122,6 +123,9 @@ class Trailer:
     """The account's publish counter. 0 when the project does not use one, which is
     every project that is not a platform minting images for ``PRODUCT_ID = 0``
     cameras -- the field is in the header for all of them, and ignored by all of them."""
+    built: int = 0
+    """When the image was built, in Unix seconds; 0 when it does not say. Signed with the
+    rest: the camera's clock is not set earlier than the image it runs was built."""
     reserved: int = 0
     signature: bytes = b""
     header_version: int = HEADER_VERSION
@@ -186,6 +190,7 @@ def _build_signed_region(t: Trailer) -> tuple[bytes, AlgSpec]:
         t.wdt_timeout_ms,
         t.product_id,
         t.publish_seq,
+        t.built,
         t.reserved,
         t.body_sha256,
     )
@@ -255,7 +260,7 @@ def parse_trailer(data: bytes) -> Trailer:
     (
         magic, header_version, body_size, _comp_count, meta_size, min_stub, payload_version,
         uart_en, uart_id, wdt_en, wdt_id, baud, wdt_timeout_ms,
-        product_id, publish_seq, reserved, body_sha256,
+        product_id, publish_seq, built, reserved, body_sha256,
     ) = struct.unpack_from(HEADER_STRUCT, data, 0)
 
     if magic != MAGIC_ROMFS_APP:
@@ -305,6 +310,7 @@ def parse_trailer(data: bytes) -> Trailer:
         uart_en=uart_en, uart_id=uart_id, wdt_en=wdt_en, wdt_id=wdt_id,
         baud=baud, wdt_timeout_ms=wdt_timeout_ms,
         publish_seq=publish_seq,
+        built=built,
         reserved=reserved,
         signature=bytes(signature),
         header_version=header_version,

@@ -375,6 +375,8 @@ def test_ota_build_signs_and_verifies(make_project):
     t = parse_trailer(trailer_bytes)
     assert t.payload_version == encode_app_version("1.2.3")
     assert t.product_id == 999
+    import time
+    assert abs(t.built - time.time()) < 3600                   # says when it was built
     assert t.body_sha256 == hashlib.sha256(body[:t.body_size]).digest()   # the filesystem only
     assert t.meta["vendor"] == "Acme" and t.meta["app_version"] == "1.2.3"
     assert t.meta["firmware"]["version"] == "5.0.0"
@@ -2004,3 +2006,11 @@ def test_a_platform_factory_image_carries_the_counter_and_seeds_its_floor(make_p
     image = r.output.read_bytes()
     for end in (target.front_size, 2 * target.front_size):          # slot A, slot B
         assert parse_trailer(image[end - block:end]).publish_seq == 4242
+
+
+def test_a_repeatable_build_names_its_own_build_time(monkeypatch):
+    """`built` is the wall clock, which no two builds share: SOURCE_DATE_EPOCH names it."""
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1795000000")
+    assert build_mod._built_now() == 1795000000
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "soon")
+    assert abs(build_mod._built_now() - __import__("time").time()) < 5

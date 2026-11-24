@@ -75,8 +75,8 @@ try:                                  # the build stamps this into _ota_config
 except ImportError:                   # host, or a non-OTA firmware: no floor
     BUILD_TIME = 0
 
-# The latest time this camera knows it to be at least: the build's, raised by each time a
-# verified server gives (see _ntp_ok). In RAM: after a reboot it is the build's again.
+# The latest time this camera knows it to be at least: the firmware build's, raised at boot
+# to when the mounted image was built (floor) and by each time a verified server gives.
 _floor = BUILD_TIME
 
 # Seconds between the two epochs MicroPython ports use (1970-01-01 -> 2000-01-01).
@@ -213,10 +213,18 @@ def server_time(unix, verified=True):
     return True
 
 
+def floor(unix):
+    """It is at least ``unix`` (boot.py: when the image it mounted was built, which the
+    image's signature covers). Raises the floor; a time outside the window is not one."""
+    global _floor
+    if unix > _floor and _in_window(unix):
+        _floor = unix
+
+
 def _ntp_ok(unix):
     """Whether an NTP answer may set the clock. NTP is not authenticated: anyone on the path
     answers it. It can put the clock anywhere from the latest time this camera KNOWS it to
-    be -- the build's, or the newest a verified server has told it since boot -- and no
+    be -- the build of what it runs, or the newest a verified server has told it -- and no
     earlier: rewound past that, a certificate that has since expired is valid again."""
     return unix >= _floor - _DRIFT_S
 

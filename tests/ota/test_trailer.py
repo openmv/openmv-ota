@@ -47,14 +47,14 @@ def _raw_header(**over) -> bytes:
         magic=MAGIC_ROMFS_APP, header_version=trailer_mod.HEADER_VERSION, body_size=0,
         comp_count=0, meta_size=0, min_stub=0, payload_version=0,
         uart_en=0, uart_id=0, wdt_en=0, wdt_id=0, baud=0, wdt_timeout_ms=0,
-        product_id=0, publish_seq=0, reserved=0, body_sha256=b"\x00" * 32,
+        product_id=0, publish_seq=0, built=0, reserved=0, body_sha256=b"\x00" * 32,
     )
     f.update(over)
     return struct.pack(
         trailer_mod.HEADER_STRUCT, f["magic"], f["header_version"], f["body_size"],
         f["comp_count"], f["meta_size"], f["min_stub"], f["payload_version"],
         f["uart_en"], f["uart_id"], f["wdt_en"], f["wdt_id"], f["baud"], f["wdt_timeout_ms"],
-        f["product_id"], f["publish_seq"], f["reserved"], f["body_sha256"],
+        f["product_id"], f["publish_seq"], f["built"], f["reserved"], f["body_sha256"],
     )
 
 
@@ -189,11 +189,13 @@ def test_the_64_bit_fields_carry_their_full_width():
     collision means one product line's devices accept another's firmware. ``publish_seq``
     is 64-bit because it is an account-wide counter with no reason to ever run out, and
     ``reserved`` is the headroom the NEXT field comes out of -- header_version is a
-    one-shot (see the module docstring), so the space has to be there in advance."""
+    one-shot (see the module docstring), so the space has to be there in advance. ``built``
+    (when the image was built) was the first to come out of it."""
     assert trailer_mod.HEADER_VERSION == 4
-    big = (1 << 64) - 1
-    t = parse_trailer(pack_trailer(_trailer(product_id=big, publish_seq=big, reserved=big)))
-    assert (t.product_id, t.publish_seq, t.reserved) == (big, big, big)
+    big, mid = (1 << 64) - 1, (1 << 32) - 1
+    t = parse_trailer(pack_trailer(_trailer(product_id=big, publish_seq=big, built=mid,
+                                            reserved=mid)))
+    assert (t.product_id, t.publish_seq, t.built, t.reserved) == (big, big, mid, mid)
 
 
 def test_publish_seq_defaults_to_zero():

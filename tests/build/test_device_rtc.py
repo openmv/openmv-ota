@@ -304,3 +304,16 @@ def test_ntp_cannot_rewind_past_what_a_verified_server_said(monkeypatch, _clock)
     assert not rtc._ntp_ok(t - 3600)                            # ...and the floor does not drop
     assert rtc.server_time(t + 86400 * 400, verified=False)
     assert rtc._ntp_ok(t)                                       # an unverified time raises nothing
+
+
+def test_the_mounted_image_s_build_time_is_a_floor(monkeypatch, _clock):
+    """boot.py hands over when the image it mounted was built (its signature covers that).
+    The firmware's own build time is a floor an app update never moves."""
+    rtc.BUILD_TIME = BUILD
+    monkeypatch.setattr(rtc, "_floor", BUILD)
+    rtc.floor(BUILD + 86400 * 90)                               # a release three months on
+    assert not rtc._ntp_ok(BUILD + 86400) and rtc._ntp_ok(BUILD + 86400 * 90)
+    rtc.floor(BUILD + 86400)                                    # an older image: no lower
+    rtc.floor(0)                                                # one that does not say
+    rtc.floor(BUILD + rtc._MAX_AHEAD + 1)                       # outside the window: not a time
+    assert rtc._floor == BUILD + 86400 * 90

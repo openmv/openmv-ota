@@ -81,8 +81,21 @@ def test_a_trailer_using_the_reserved_field_still_parses():
     """The one piece of headroom in the header: a later build may put a number there, and
     today's reader must carry it rather than refuse the image."""
     later = _trailer()
-    later.reserved = 0x0102030405060708
-    assert trailer.parse_trailer(trailer.pack_trailer(later)).reserved == 0x0102030405060708
+    later.reserved = 0x01020304
+    assert trailer.parse_trailer(trailer.pack_trailer(later)).reserved == 0x01020304
+
+
+def test_a_trailer_says_when_it_was_built_in_what_was_reserved():
+    """`built` came out of the reserved eight bytes: the low four, so an image from before
+    the field reads as built at 0 and the old sample is the bytes it was."""
+    t = _trailer()
+    t.built = 1_795_000_000
+    raw = trailer.pack_trailer(t)
+    assert raw.hex() == PINS["trailer_built"]
+    assert trailer.parse_trailer(raw).built == 1_795_000_000
+    old = trailer.parse_trailer(bytes.fromhex(PINS["trailer"]))
+    assert (old.built, old.reserved) == (0, 0)
+    assert raw[56:60] == (1_795_000_000).to_bytes(4, "little") and raw[60:64] == bytes(4)
 
 
 def _manifest() -> manifest.Manifest:
