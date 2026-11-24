@@ -286,3 +286,21 @@ def test_an_unverified_server_s_time_only_moves_the_clock_forward(monkeypatch, _
     assert rtc.server_time(1_700_000_000 + 86400, verified=False)
     assert _clock["set"] == [1_700_000_000 + 86400] and rtc.source() != "server"
     assert not rtc.server_time(rtc.BUILD_TIME - 1, verified=False)
+
+
+def test_ntp_cannot_rewind_past_what_a_verified_server_said(monkeypatch, _clock):
+    """NTP is anyone's on the path. Rewound past the newest verified time, a certificate
+    that has since expired is valid again; forward, or back as far as that time, is NTP's
+    to say (a clock pushed ahead has to be able to come back)."""
+    rtc.BUILD_TIME = BUILD
+    monkeypatch.setattr(rtc, "_floor", BUILD)
+    t = BUILD + 1_000_000
+    assert rtc._ntp_ok(BUILD) and not rtc._ntp_ok(BUILD - 60)
+    _at(monkeypatch, t)
+    assert rtc.server_time(t)                                   # verified
+    assert not rtc._ntp_ok(t - 3600)
+    assert rtc._ntp_ok(t - rtc._DRIFT_S) and rtc._ntp_ok(t + 86400)
+    assert rtc.server_time(t - 500)                             # a verified server may correct it
+    assert not rtc._ntp_ok(t - 3600)                            # ...and the floor does not drop
+    assert rtc.server_time(t + 86400 * 400, verified=False)
+    assert rtc._ntp_ok(t)                                       # an unverified time raises nothing
