@@ -1325,7 +1325,7 @@ def test_connecting_is_not_the_download_s_time_up_to_five_minutes_an_install():
     """A slow handshake behind a redirect is not charged to the download. All of it free, a
     server that handed out a few bytes a connection held the install as long as it liked."""
     slack = [0, 60000, 0]
-    inst("_slack_start")(slack)
+    inst("_slack_start")(slack, install=True)
     assert slack[1:] == [60000, 300000]
     inst("_slack_connect")(20000, slack)
     assert slack[1:] == [80000, 280000]
@@ -1333,6 +1333,8 @@ def test_connecting_is_not_the_download_s_time_up_to_five_minutes_an_install():
     assert slack[1:] == [360000, 0]
     inst("_slack_connect")(20000, slack)
     assert slack[1:] == [360000, 0]
+    inst("_slack_start")(slack)                              # a retry's download: no more of it
+    assert slack[1:] == [60000, 0]
 
 
 @pytest.mark.parametrize("body", [[[]] * 70, [0] * 600])
@@ -1342,11 +1344,15 @@ def test_a_manifest_body_made_of_brackets_or_elements_is_refused_before_it_is_pa
     and an object to the parser for each bracket and each element of them."""
     from openmv_ota.ota import ES256, algorithm_for
     from openmv_ota.ota.keys import generate_private_key
-    from openmv_ota.ota.manifest import Manifest, pack_manifest
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.manifest import Manifest, pack_manifest, signed_region
     from tests import trust
     priv = generate_private_key(algorithm_for(ES256))
-    raw = pack_manifest(Manifest(body={"x": body}, certificate=trust.certificate(priv),
-                                 sig_alg=ES256, signature=bytes(64)))
+    m = Manifest(body={"x": body}, certificate=trust.certificate(priv), sig_alg=ES256,
+                 signature=bytes(64))
+    with pytest.raises(OtaError, match="than a camera reads"):  # refused where it is built
+        pack_manifest(m)
+    raw = _resealed(signed_region(m) + bytes(64) + bytes(4))
     monkeypatch.setattr(_mod.json, "loads",
                         lambda b: pytest.fail("parsed %d bytes" % len(b)))
     with pytest.raises(ValueError, match="nests too deep"):

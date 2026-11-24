@@ -153,6 +153,11 @@ def pack_manifest(m: Manifest) -> bytes:
     out = body + struct.pack("<I", crc)
     if len(out) > MANIFEST_SZ:
         raise OtaError("manifest is %d bytes, over the %d-byte limit" % (len(out), MANIFEST_SZ))
+    text = region[BODY_OFFSET:]
+    if text.count(b"[") + text.count(b"{") > 64 or text.count(b",") > 512:
+        # the camera's own limit (installer._manifest_parse): a release it would refuse is
+        # refused here, where it is built
+        raise OtaError("manifest body has more brackets or elements than a camera reads")
     return out
 
 

@@ -13,6 +13,8 @@ Commands are namespaced by subsystem:
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,6 +81,21 @@ def main(argv: list[str] | None = None) -> int:
     if not getattr(args, "func", None):
         parser.print_help()
         return 1
+
+    # A command that names a project checks it before it does anything else: every one of
+    # them reads or writes the project's own files somewhere, and each used to have to
+    # remember to (see project/outdir.check_project).
+    from openmv_ota.project.config import CONFIG_NAME
+    from openmv_ota.project.errors import ProjectError
+    from openmv_ota.project.outdir import check_project
+    for name in ("dir", "project"):
+        root = getattr(args, name, None)
+        if isinstance(root, str) and os.path.lexists(os.path.join(root, CONFIG_NAME)):
+            try:
+                check_project(root)
+            except ProjectError as e:
+                print("error: %s" % e, file=sys.stderr)
+                return e.exit_code
 
     return args.func(args)
 

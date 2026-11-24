@@ -170,6 +170,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **Every command that names a project checks it for links first.** The check lived where
+  the config is loaded, and the desk, issuer and roots commands never load it: they wrote
+  `keys/issuer.json` and `keys/desk_keys.json` through a link. The directories `project new`
+  scaffolds into (`app/`, `device/`, `certs/`, `compliance/`) hold no link either.
+- **`project new --force --keys-from` does not replace a project's keys** without
+  `--new-keys`, a project with keys is not rewritten as a non-OTA one, and `--new-keys`
+  without `--ota` is an error.
+- **A release a camera would refuse is refused where it is built:** the manifest body's
+  bracket and element cap is checked when it is packed.
+- **Reading a firmware tree's macros takes no longer for a long line.** Two patterns were
+  quadratic in a line of spaces, at `project status`.
+- **Connecting is free of the download's clock for five minutes an install,** not five a
+  retry.
+
 - **A rollout's failure rate is judged over at least five attempts,** or over every camera
   the rollout can reach where that is fewer. At one failure in one attempt, a single camera
   paused a rollout by itself.

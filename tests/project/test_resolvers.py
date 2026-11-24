@@ -299,3 +299,16 @@ def test_board_no_size_anywhere_raises(make_firmware):
     # A board whose bundled partition size is 0 and has no firmware header.
     with pytest.raises(ProjectError, match="no partition size"):
         board_res.resolve_board(repo, "ARDUINO_NANO_33_BLE_SENSE")
+
+
+def test_a_macro_line_of_spaces_is_read_in_no_time(tmp_path):
+    """`project status` reads a firmware tree someone else may have made. A lazy match up
+    to trailing space is quadratic in a line of spaces: seconds at 20 KB, hours at 1 MB."""
+    import time
+
+    from openmv_ota.project.resolve import macros
+    text = "#define A  1  \n#define B b" + " " * 200_000 + "c\n#define C (2) // two\n"
+    t0 = time.monotonic()
+    got = macros.parse_defines(text, ["A", "B", "C"])
+    assert time.monotonic() - t0 < 1
+    assert got == {"A": "1", "C": "2"}                      # the long line is not a define read

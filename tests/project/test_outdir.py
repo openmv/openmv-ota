@@ -101,3 +101,64 @@ def test_commands_that_do_not_load_a_project_check_it_too(tmp_path, make_firmwar
         proj.restore_private_keys(root, b"")
     assert (victim / "trusted_keys.json").read_text() == "theirs"
     assert sorted(p.name for p in root.iterdir()) == ["keys"]          # and nothing written
+
+
+def test_every_command_checks_the_project_it_names(tmp_path, capsys):
+    """The desk, issuer and roots commands never loaded the config, which is where the
+    check lived: they wrote `keys/issuer.json` and `keys/desk_keys.json` through a link.
+    The check is at the door now, for any command that names a project."""
+    from openmv_ota.cli import main
+    from openmv_ota.project import config as config_mod
+    mine = tmp_path / "mine.json"
+    mine.write_text("mine")
+    root = tmp_path / "p"
+    (root / "keys").mkdir(parents=True)
+    (root / config_mod.CONFIG_NAME).write_text("")
+    (root / "keys" / "issuer.json").symlink_to(mine)
+    for argv in (["project", "keys", "issuer", "replace", str(root)],
+                 ["project", "keys", "desk", "list", str(root)],
+                 ["project", "show", str(root)],
+                 ["flash", "list", str(root)],
+                 ["client", "release", "bases", "--project", str(root), "-b", "OPENMV_N6"]):
+        assert main(argv) != 0, argv
+        assert "is a link" in capsys.readouterr().err, argv
+    assert mine.read_text() == "mine"
+    # a directory that is no project is nobody's to check (`flash list` in a home directory)
+    other = tmp_path / "home"
+    other.mkdir()
+    (other / ".bashrc").symlink_to(mine)
+    from openmv_ota.project.outdir import check_project
+    with pytest.raises(ProjectError):
+        check_project(other)
+    import openmv_ota.cli as cli_mod
+    seen = []
+    parser = cli_mod.build_parser()
+    args = parser.parse_args(["flash", "list", str(other)])
+    args.func = lambda a: seen.append(a) or 0
+    import argparse
+    orig = argparse.ArgumentParser.parse_args
+    try:
+        argparse.ArgumentParser.parse_args = lambda self, argv=None: args
+        assert main(["flash", "list", str(other)]) == 0 and seen
+    finally:
+        argparse.ArgumentParser.parse_args = orig
+
+
+def test_the_directories_new_writes_into_hold_no_link(tmp_path):
+    """`project new --force` scaffolds into app/, device/, certs/ and compliance/: a link
+    in one of them, or one of them as a link, sent a template to a file of the user's."""
+    from openmv_ota.project.outdir import check_project
+    mine = tmp_path / "mine"
+    mine.write_text("mine")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    for n, (place, target) in enumerate((("app/main.py", tmp_path / "nothing"),
+                                         ("device/openmv_log.py", mine),
+                                         ("certs/my-ca.pem", mine),
+                                         ("compliance", elsewhere),
+                                         ("app-coprocessor/lib/x.py", mine))):
+        root = tmp_path / ("p%d" % n)
+        (root / place).parent.mkdir(parents=True)
+        (root / place).symlink_to(target)
+        with pytest.raises(ProjectError, match="is a link"):
+            check_project(root)

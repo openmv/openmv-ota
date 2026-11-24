@@ -142,6 +142,9 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 16 (host): a project with `platform = true` has `build ota-romfs` take a publish
+    counter from the server the user is logged in to; `flash bootloader --dry-run` on the
+    AE3 writes its key-area file.
   - Round 15 (device, host): the device's clock is only as good as NTP. A spoofed NTP
     answer moves it either way on any board, and on a board that does not verify TLS an
     unverified `Date` moves it forward as far as the trust window: check-ins are then

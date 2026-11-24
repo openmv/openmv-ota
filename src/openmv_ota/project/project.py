@@ -427,6 +427,13 @@ def create_project(
     root.mkdir(parents=True, exist_ok=True)
     check_project(paths.root)        # --force on a directory someone else made: before a write
     keep_keys = False
+    if new_keys and not ota:
+        raise ProjectError("--new-keys replaces an OTA project's signing keys: it goes with "
+                           "--ota", exit_code=1)
+    if not ota and paths.trusted_keys.exists():
+        # rewritten without [ota], the config forgets which key signs, and the keys stay
+        raise ProjectError("%s holds signing keys: this is an OTA project -- pass --ota"
+                           % paths.trusted_keys.parent, exit_code=1)
     if paths.config.exists() and not force:
         raise ProjectError("%s already exists; use --force" % paths.config.name, exit_code=1)
 
@@ -491,6 +498,12 @@ def create_project(
             # Checked before anything else touches the source, so "that is not a project
             # with keys" is the error rather than one about its passphrase file.
             _shared_key_source(keys_from)
+            if paths.trusted_keys.exists() and not new_keys and \
+                    Path(keys_from).expanduser().resolve() != paths.root.resolve():
+                raise ProjectError(
+                    "%s already holds signing keys: taking another project's replaces them, and "
+                    "a fleet that trusts them can then no longer be updated -- pass --new-keys "
+                    "to do that" % paths.trusted_keys.parent, exit_code=1)
         if dev and keys_from is not None:
             # Shared keys stay encrypted under the passphrase they were minted with, so a
             # throwaway one would produce PEMs this project cannot open. Take the source's.
