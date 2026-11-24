@@ -258,10 +258,11 @@ _SLOW_MS = 60000
 _SLACK = [0, _SLOW_MS, 0]
 
 
-def _slack_start(s=_SLACK):
+def _slack_start(s=_SLACK, install=False):
     s[0] = ticks_ms()
     s[1] = _SLOW_MS
-    s[2] = 5 * _SLOW_MS
+    if install:                 # once an install, not once a download of it
+        s[2] = 5 * _SLOW_MS
 
 
 def _slack_connect(ms, s=_SLACK):
@@ -2522,7 +2523,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                 return both  # hil-residual: same
         return base_read_at(base_off + off, n)  # hil-residual: bare return of the slot-relative base read
 
-    _slack_start()         # this install's own minute (frozen, the module outlives an install)
+    _slack_start(install=True)   # this install's own minute (frozen, the module outlives an install)
     # Pre-erase: fetch + verify + vet the manifest, pick the image. Errors raise to the
     # app (the target slot is untouched). Log the reason first: run() swallows this exception
     # (transient failures retry next poll), so without a line here a REJECTED update -- bad

@@ -423,6 +423,8 @@ def cmd_new(args: argparse.Namespace) -> int:
     from openmv_ota.ota.algorithms import ES256, ES384, ES512
 
     sig_alg = {"ES256": ES256, "ES384": ES384, "ES512": ES512}[args.sig_alg]
+    kept_keys = not args.new_keys and not args.keys_from and \
+        (Path(args.dir) / "keys" / "trusted_keys.json").exists()
     try:
         lock, warnings = proj.create_project(
             Path(args.dir),
@@ -456,8 +458,12 @@ def cmd_new(args: argparse.Namespace) -> int:
         print("Scaffolded app-coprocessor/ for the helper core (plain romfs, written "
               "by the main core).")
     if args.ota:
-        print("Provisioned %d factory + %d ota keys -> keys/trusted_keys.json "
-              "(private keys gitignored in keys/private/)" % (args.factory_keys, args.ota_keys))
+        if kept_keys:
+            print("Kept the project's signing keys (keys/trusted_keys.json).")
+        else:
+            print("Provisioned %d factory + %d ota keys -> keys/trusted_keys.json "
+                  "(private keys gitignored in keys/private/)"
+                  % (args.factory_keys, args.ota_keys))
         if not args.dev:                        # dev keys are disposable; backup is refused
             try:
                 out = proj.backup_private_keys(args.dir)

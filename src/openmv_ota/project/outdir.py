@@ -30,9 +30,9 @@ def check_project(root: str | Path, error: type = ProjectError) -> None:
     The project may be one someone else made. A file of it that is a link (the lock, the
     ledger, a key file, anything in ``build/``) sends a write to whatever it names, with
     content the project chose, or packs what it names into an image that is then signed and
-    published. What is in ``app/`` is checked where it is staged; the directories that are
-    packed whole are not links themselves. ``keys/`` is the project's own too, the directory
-    and all: as a link it is another project's keys, signed with and rewritten (keys kept
+    published. The directories that are packed whole, and the ones `project new` writes
+    its scaffolding into, hold no link and are none. ``keys/`` is the project's own too, the
+    directory and all: as a link it is another project's keys, signed with and rewritten (keys kept
     somewhere else are a signer backend's business, in the machine's own config)."""
     root = Path(root)
     found = []
@@ -40,9 +40,8 @@ def check_project(root: str | Path, error: type = ProjectError) -> None:
         with os.scandir(root) as entries:
             # (an editor's lock beside a file it has open is a link that names no file)
             found = [Path(e.path) for e in entries if e.is_symlink()
-                     and not e.name.startswith(".#")
-                     and (e.name in _PACKED or not e.is_dir())]
-    for name in (".openmv-ota", "build", "keys"):
+                     and not e.name.startswith(".#") and not e.is_dir()]
+    for name in (".openmv-ota", "build", "keys", "compliance") + _PACKED:
         found += _links(root / name)
     if found:
         raise error(_MSG % sorted(found)[0])

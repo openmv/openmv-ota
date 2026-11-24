@@ -137,7 +137,9 @@ def test_new_force_warns_key_regeneration(tmp_path, make_firmware, make_sdk, cap
     # update to a fleet that trusts them, and is asked for by name
     rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", "--force", repo=repo)
     assert rc == 0
-    assert "REJECT" not in capsys.readouterr().err
+    said = capsys.readouterr()
+    assert "REJECT" not in said.err and "Kept the project's signing keys" in said.out
+    assert "Provisioned" not in said.out
     assert {p: p.read_bytes() for p in keys} == before
     rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", "--force", "--new-keys", repo=repo)
     assert rc == 0
@@ -147,6 +149,19 @@ def test_new_force_warns_key_regeneration(tmp_path, make_firmware, make_sdk, cap
     (root / "openmv-ota.toml").write_text("")
     rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", "--force", repo=repo)
     assert rc == 1 and "pass --new-keys" in capsys.readouterr().err
+    # another project's keys in place of these is the same replacement, asked for the same way
+    rc, other, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", root="other", repo=repo)
+    assert rc == 0
+    capsys.readouterr()
+    rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", "--force", "--keys-from",
+                    str(other), repo=repo)
+    assert rc == 1 and "already holds signing keys" in capsys.readouterr().err
+    # ...and a project with keys is an OTA project: rewritten without --ota, its config
+    # forgot which key signs
+    rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--force", repo=repo)
+    assert rc == 1 and "pass --ota" in capsys.readouterr().err
+    rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--new-keys", root="plain", repo=repo)
+    assert rc == 1 and "goes with --ota" in capsys.readouterr().err
     (root / "openmv-ota.toml").unlink()                         # ...or no config at all
     rc, _, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", repo=repo)
     assert rc == 1 and "pass --new-keys" in capsys.readouterr().err

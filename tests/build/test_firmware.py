@@ -1487,5 +1487,5 @@ def test_a_linked_device_module_fails_the_firmware_build(make_project, monkeypat
     log = Path(root) / "device" / "openmv_log.py"
     log.unlink()
     log.symlink_to(secret)
-    with pytest.raises(BuildError, match="must be a file inside the project"):
+    with pytest.raises(BuildError, match="is a link"):
         fw.build_firmware(root, firmware=repo, keep_build_dir=True)

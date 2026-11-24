@@ -82,7 +82,7 @@ def _mbedtls_supported(repo: Path, board: str) -> bool:
     mk = repo / "boards" / board / "board_config.mk"
     if not mk.exists():
         return True
-    m = re.search(r"^\s*MICROPY_SSL_MBEDTLS\s*=\s*(\d+)",
+    m = re.search(r"^[ \t]*MICROPY_SSL_MBEDTLS[ \t]*=[ \t]*(\d+)",
                   mk.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
     return not (m and m.group(1) == "0")
 

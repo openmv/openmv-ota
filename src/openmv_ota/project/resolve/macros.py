@@ -21,10 +21,13 @@ def parse_defines(text: str, names: list[str]) -> dict[str, str]:
     wanted = set(names)
     found: dict[str, str] = {}
     for line in text.splitlines():
-        m = re.match(r"\s*#\s*define\s+(\w+)\s+(.+?)\s*$", line)
+        # (bounded: `(.+?)\s*$` on a long line of spaces is quadratic, and this runs on a
+        # firmware tree someone else may have made, at `project status`)
+        m = re.match(r"[ \t]*#[ \t]*define[ \t]+(\w+)[ \t]+(\S.*)", line) \
+            if len(line) <= 4096 else None
         if not m:
             continue
-        name, value = m.group(1), m.group(2)
+        name, value = m.group(1), m.group(2).rstrip()
         if name not in wanted:
             continue
         # Drop a trailing line comment, then unwrap () and quotes.
