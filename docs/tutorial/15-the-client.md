@@ -75,7 +75,7 @@ format's name). Step by step:
    disagrees, a declared delta that didn't arrive, an extra delta the manifest never
    named, a delta whose target size is wrong.
 
-   The artifacts are [encrypted](08-release-artifacts.md#encryption), so what the server
+   The artifacts are encrypted, so what the server
    checks them against is the **ciphertext** digest the signed manifest carries — the
    only one it can, having no key. It also refuses an artifact that could not decrypt at
    all (a length that is not whole blocks, a declared plaintext length that does not fit),
@@ -100,6 +100,10 @@ points at it.
 | `--name NAME` | A display name for the release: a label, renamed any time. |
 | `--allow-republish` | Re-upload a version the server already has (the dev loop). |
 | `--json` | Print the server's response as JSON instead of the summary. |
+
+## See also
+
+- [8 · Release artifacts](08-release-artifacts.md#encryption) — how the artifacts you publish are encrypted.
 
 ---
 

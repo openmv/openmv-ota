@@ -7,7 +7,7 @@
 A camera trusts exactly two **root** public keys baked into its firmware and its boot
 stub — nothing can replace them without re-flashing. Every key that signs an image is
 introduced to the camera by a **certificate** the root signed, carried in the image's
-[trailer](../reference/trailer.md#certificate). So `new --ota` mints the roots and a
+trailer. So `new --ota` mints the roots and a
 signing-key set, certifies every key, and `openmv-ota project keys` manages the set for
 the product's life. The root private keys sign certificates and nothing else; keep them
 offline.
@@ -23,8 +23,7 @@ The signing keys have two roles, on P-256 (ES256 — certified keys carry no oth
 
 The two ranges are well-separated so the pools never collide at realistic counts.
 The current signer is the first OTA key (`0x0100`), recorded as `signing_key_id`
-in `openmv-ota.toml`'s `[ota]` section
-([OTA projects](04-ota-projects.md#files-an-ota-project-adds)).
+in `openmv-ota.toml`'s `[ota]` section.
 `build romfs` signs with that key and puts the key's certificate in the trailer, so
 the device chains it to a root rather than looking it up by id.
 
@@ -230,7 +229,7 @@ encrypted. A `--dev` project is refused — its passphrase is cached beside the
 keys, so a copy would be plaintext in effect.
 
 That archive also carries the project's **payload keys** — the board keys that
-encrypt what a camera downloads ([release artifacts](08-release-artifacts.md#encryption)).
+encrypt what a camera downloads.
 They are minted with the signing keys, encrypted at rest under the same passphrase,
 and they fail the same way: lose the signing key and you cannot sign an update the
 fleet will accept; lose the board key and you cannot encrypt one the fleet can read.
@@ -325,6 +324,8 @@ a handful of times a release, far under any free tier.
 
 - [Integrating as a platform](25-platform-integration.md) — one key set for a fleet that moves between products.
 - [The trailer](../reference/trailer.md#certificate) — the certificate and its epoch, field by field.
+- [4 · OTA projects](04-ota-projects.md#files-an-ota-project-adds) — the `[ota]` section that records `signing_key_id`, and the other files an OTA project adds.
+- [8 · Release artifacts](08-release-artifacts.md#encryption) — how the payload keys encrypt what a camera downloads.
 
 ---
 

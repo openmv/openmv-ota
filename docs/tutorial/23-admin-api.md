@@ -38,8 +38,7 @@ it would drift: it is generated from the running code and served by every deploy
 Open **`/docs`** on your server for the browsable version — every operation, grouped
 and searchable, with its request and response schemas — or fetch **`/openapi.json`**
 for the machine-readable contract, and generate a client from it instead of
-hand-writing one against guesses. The CLI pages ([The client](15-the-client.md)
-onward) walk the same surface in workflow order; `/docs` is wire order, and always
+hand-writing one against guesses. The CLI walks the same surface in workflow order; `/docs` is wire order, and always
 exactly what your server speaks.
 
 ## Paging

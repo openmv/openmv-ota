@@ -9,7 +9,7 @@ you publish, decides which camera is offered what, and records what the fleet di
 it. Two deployment shapes run the **same software**:
 
 - **OpenMV-hosted (the default):** OpenMV runs the server + website — there is nothing
-  to deploy, and everything the earlier pages did happened against it.
+  to deploy, and it is where `client login` points by default.
 - **Self-hosted:** you run your own.
 
 Either way, this page is what the thing actually *does* — worth reading even if you

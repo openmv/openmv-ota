@@ -20,7 +20,7 @@ An OTA partition holds **two slots of equal size, A and B**. Neither is special:
 real, signed, updatable images, and the one that boots is simply the newest valid one. On
 every boot `boot.py` runs after the board's stock `_boot.py` and, **for each slot**:
 
-1. Reads the slot's signed [trailer](../reference/trailer.md) and **verifies two ECDSA
+1. Reads the slot's signed trailer and **verifies two ECDSA
    signatures** (via the on-device mbedtls shim) *before trusting any header field*: a
    baked-in root's over the signing key's certificate, then the signing key's over the
    trailer.
@@ -66,8 +66,7 @@ replay attack — the signature is genuine, just stale). What it compares is
 `payload_version` — unless the camera was built with `product_id = 0`, which turns
 the cross-flash guard off and lets it be moved between product lines; two products'
 versions cannot order each other, so such a camera compares the account's
-`publish_seq` instead (see
-[Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter)).
+`publish_seq` instead.
 One camera only ever uses one of the two, decided by the firmware it was built with,
 so the numbers in its floor can never be a mixture. Flash only
 programs bits 1→0, so a floor that must rise is stored as appended entries past
@@ -141,6 +140,8 @@ devices are exempt: there is no fallback to protect, and waiting would strand th
 ## See also
 
 - [Recovery](14-recovery.md) — what runs when no slot is bootable.
+- [25 · Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter) — cameras built with `product_id = 0`, and the publish counter they compare.
+- [The signed trailer format](../reference/trailer.md) — the trailer `boot.py` verifies, field by field.
 
 ---
 

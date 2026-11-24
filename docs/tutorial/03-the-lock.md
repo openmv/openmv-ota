@@ -76,7 +76,7 @@ and whether the project is OTA). Everything else is resolved into
 `openmv-ota.lock.json`:
 
 - whether the project is OTA (which sets each partition's usable image budget — half of it
-  in A/B mode; see [OTA projects](04-ota-projects.md#what---ota-changes));
+  in A/B mode);
 - the firmware version, git remote, commit, branch, `git describe`, and whether
   the checkout was dirty;
 - the MicroPython version, its commit, and the `.mpy` ABI version;
@@ -120,6 +120,10 @@ p.board("OPENMV_AE3", 1).npu_config   # the second core's NPU type, args, and fi
 
 Pass `load_project("./my-product", verify=False)` to load a project whose firmware has
 drifted — for tooling that reports the drift rather than refusing it.
+
+## See also
+
+- [4 · OTA projects](04-ota-projects.md#what---ota-changes) — what `--ota` changes, including the per-slot image budget.
 
 ---
 

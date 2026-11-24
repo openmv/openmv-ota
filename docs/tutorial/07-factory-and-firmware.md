@@ -11,7 +11,7 @@ partition image written at manufacture, and the firmware that boots it.
 
 `build factory-romfs` produces the **whole partition image flashed at the
 factory**, composed from the signed bundle (body + trailer) that an OTA
-project's [`build romfs`](06-building.md#build-romfs) packs — run internally,
+project's `build romfs` packs — run internally,
 so this is still one command from app source. It requires an OTA project: a
 plain project has nothing to compose — its image is budgeted against the whole
 partition and is flashed as-is at manufacture.
@@ -47,7 +47,7 @@ protected factory copy. Only the install counter tells them apart, so which one
 boots is decided by exactly the rule that decides it after every later update, and
 a device has a real fallback from its very first boot. The slots are equal-sized
 (an OTA image must be installable into either), each ending in the
-[two control sectors](04-ota-projects.md#what---ota-changes) with `0xFF` padding
+two control sectors with `0xFF` padding
 before them; a partition whose half doesn't divide evenly leaves the sub-block
 remainder unused. On a board too small for two slots, the same command writes one
 slot spanning the partition (single-image mode) — everything above holds, minus
@@ -110,7 +110,7 @@ The project's OTA flag steers the build automatically:
   geometry, board/product ids) is frozen alongside it.
 
   It also bakes in this board's **payload keys** — the secret half of
-  [release encryption](08-release-artifacts.md#encryption), which is why an OTA
+  release encryption, which is why an OTA
   firmware build asks for the project passphrase (`--key-passphrase-file`, the
   `OPENMV_OTA_KEY_PASSPHRASE` env var, or a prompt). They go into the firmware and
   never into the romfs: the romfs is the thing being downloaded, so a key inside it
@@ -136,7 +136,7 @@ The project's OTA flag steers the build automatically:
   (`make OMV_BOARD_CONFIG_DIR=<copy>`), so the firmware tree is still not touched. The
   stock firmware for that board keeps them (`find_datamatrices()` aside, which it too ships
   off); an app that calls any of them is
-  refused by [`build romfs`](06-building.md#build-romfs) rather than failing
+  refused by `build romfs` rather than failing
   on the camera. The **OpenMV Cam H7 Plus** (`OPENMV4P`) is one step behind: its stock
   firmware already fills both code regions, so its OTA firmware turns off
   `find_datamatrices()` alone, the same way, and so does the **OpenMV Cam M7**'s
@@ -194,6 +194,9 @@ alone, for a board that has one: the same `<board>-stub.bin`, without the firmwa
 ## See also
 
 - [The client](15-the-client.md) — `client release publish`.
+- [4 · OTA projects](04-ota-projects.md#what---ota-changes) — the two control sectors that end each slot.
+- [6 · Building](06-building.md#build-romfs) — `build romfs`, and its check of the app against what the OTA firmware carries.
+- [8 · Release artifacts](08-release-artifacts.md#encryption) — what the payload keys encrypt.
 
 ---
 

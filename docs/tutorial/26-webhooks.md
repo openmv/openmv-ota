@@ -4,8 +4,7 @@
 
 ---
 
-Everything the server does lands in the audit log, in order, and
-[Integrating as a platform](25-platform-integration.md) shows how to read that log
+Everything the server does lands in the audit log, in order, and that log can be read
 forward with `GET /audit?since=`. Webhooks are the same log, pushed: an HTTPS endpoint
 of yours subscribes to some of the account's events, and every matching entry is
 POSTed to it as it is written. Polling stays available, and is the reconcile path
@@ -166,7 +165,12 @@ so a new receiver can be checked end to end before anything real happens.
 The worker that sends deliveries lives in the server process; set
 `OPENMV_OTA_WEBHOOK_INTERVAL_S` (OpenMV's deployment uses 15) or nothing is sent.
 Deliveries are leased per attempt, so several server processes never send the same
-one twice. See [Self-hosting](21-self-hosting.md).
+one twice.
+
+## See also
+
+- [21 · Self-hosting](21-self-hosting.md) — the server's environment settings, where the delivery interval is set.
+- [25 · Integrating as a platform](25-platform-integration.md) — reading the same audit log forward with `GET /audit?since=`.
 
 ---
 

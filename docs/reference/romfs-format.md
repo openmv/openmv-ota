@@ -2,7 +2,7 @@
 
 A byte-by-byte decode of a real ROMFS image, for anyone verifying an image by hand or
 writing a reader. The tool that makes
-these is on [the tutorial's ROMFS page](../tutorial/01-romfs.md); everything about the
+these is `openmv-ota romfs`; everything about the
 format itself lives here.
 
 ## The format in three ideas
@@ -100,3 +100,7 @@ The record shapes nest from here: the rest of the file is the remaining root ent
 `settings.py`, and a directory record wrapping `models/detector.tflite`, whose data
 payload the writer padded out to offset 128 to satisfy the N6's 32-byte `tflite`
 alignment rule.
+
+## See also
+
+- [1 · The ROMFS](../tutorial/01-romfs.md) — `openmv-ota romfs`, the tool that makes and unpacks these images.

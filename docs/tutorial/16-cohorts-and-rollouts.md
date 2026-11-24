@@ -16,7 +16,7 @@ the rest of your account, top to bottom:
 
 - Your **account** holds everything — devices, releases, rollouts, cohorts, audit.
 - **Each board you build for is its own product**: `project new` derives one product id
-  per board and stamps it into `openmv-ota.toml` ([Projects](02-projects.md)); a release
+  per board and stamps it into `openmv-ota.toml`; a release
   is built and published per board (`publish -b`) — which is what keeps an `OPENMV_N6`
   image from ever being offered to an `OPENMV_RT1060`.
 - **Cohort names are free-form labels on devices** — every device is in exactly one,
@@ -358,6 +358,7 @@ The name rides along in `release list` / `rollout list` rows as `display_name`.
 ## See also
 
 - [Watching the fleet](17-watching-the-fleet.md) — the per-device rows in full.
+- [2 · Projects](02-projects.md) — how `project new` derives each board's product id.
 
 ---
 

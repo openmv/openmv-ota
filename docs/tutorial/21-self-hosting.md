@@ -235,10 +235,7 @@ production.
 
 ## Accounts on a self-host
 
-The account model — the implicit `''` single account, the bootstrap token, scopes, and
-why only the operator can manage accounts — is
-[Accounts and tokens](19-accounts-and-tokens.md).
-What a self-host adds is the **local** spelling of the same operations: the `server`
+A self-host adds the **local** spelling of the account and token operations: the `server`
 verbs act directly on the database, no API round-trip, so they work before the server
 is even running:
 
@@ -282,6 +279,7 @@ The [deploy/](../../src/openmv_ota/server/deploy/) directory ships turnkey artif
 
 - [Device keys](../reference/device-keys.md) — registration, claiming, signed check-ins and
   lockboxes.
+- [19 · Accounts and tokens](19-accounts-and-tokens.md) — the account model — the implicit `''` single account, the bootstrap token, scopes, and why only the operator can manage accounts.
 
 ---
 

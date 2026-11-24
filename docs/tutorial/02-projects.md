@@ -141,7 +141,7 @@ This gives the app **one consistent read path for system state in every build**
 from the lock (firmware / MicroPython / toolchain provenance) and the config
 (per-board `product_id` / `board_name`, and `account_id` under `[product]` — the OTA
 account a camera reports to, empty here). `dev` is true only for an image signed
-with a throwaway `--dev` key ([Signing keys](05-signing-keys.md)). `system.json` is generated into the built image only —
+with a throwaway `--dev` key. `system.json` is generated into the built image only —
 never into your `app/` source — so there is nothing to edit or accidentally commit.
 (The name is reserved; a `system.json` in your `app/` is overwritten.)
 
@@ -213,6 +213,7 @@ the coprocessor partition is suffixed (`OPENMV_AE3-coprocessor-romfs.img`).
 ## See also
 
 - [Integrating as a platform](25-platform-integration.md) — sharing one key set between projects, and the build byte.
+- [5 · Signing keys](05-signing-keys.md) — the throwaway `--dev` key, and the keys a production image is signed with.
 
 ---
 

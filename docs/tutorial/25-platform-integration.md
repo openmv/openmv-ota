@@ -4,11 +4,11 @@
 
 ---
 
-Every page before this one assumed you run your own fleet: one product, your devices,
+The usual case is that you run your own fleet: one product, your devices,
 your releases. This page is about the other case — a **platform**, whose own customers
 run the cameras. Your product has its own accounts, its own UI and its own support, and
 this service is underneath it. Nobody on your side signs into the OpenMV website; your
-server holds the credentials and calls the [admin API](23-admin-api.md), and your
+server holds the credentials and calls the admin API, and your
 customers never learn it is there.
 
 Nothing on this page is a separate mode. It is the same accounts, products, cohorts and
@@ -46,7 +46,7 @@ fleet. With N customers on M boards that is N×M product ids under one account; 
 63 bits precisely so a platform can mint them at that rate.
 
 **One product per board.** One image for everyone, with customers separated by
-[cohort](16-cohorts-and-rollouts.md), and per-customer behaviour arriving as data your
+cohort, and per-customer behaviour arriving as data your
 application fetches at runtime. One build, one publish, one release stream. A cohort is a
 label on a device row, so it groups but does not isolate: there is no per-customer
 credential, and everything your customers do runs through one application you have to
@@ -299,11 +299,10 @@ the device limit; `client device release` frees both.
 
 The build happens on your machines, not ours, because it needs two things the server must
 never hold: the project's **signing key**, which is what the device verifies before it
-installs anything, and its **payload keys**, if you are encrypting published artifacts
-(see [Release artifacts](08-release-artifacts.md)).
+installs anything, and its **payload keys**, if you are encrypting published artifacts.
 
 The signer is pluggable — an encrypted PEM at minimum, and PKCS#11, AWS/GCP/Azure KMS, or
-your own hook ([Signing keys](05-signing-keys.md)). At platform scale, a key in a KMS is
+your own hook. At platform scale, a key in a KMS is
 worth the setup: you will be signing unattended, on a schedule, for a long time.
 
 Publishing is the same verb as anywhere:
@@ -322,7 +321,7 @@ a token's account comes from the token itself, and there is no "act as" header �
 you are ever issued more than one account, you hold a credential for each and choose per
 call.
 
-Scopes are the ladder from [Accounts and tokens](19-accounts-and-tokens.md): `publish` >
+Scopes are a ladder: `publish` >
 `manage` > `observe`. Give a build pipeline `publish`, a dashboard `observe`, and keep
 them separate so a leak from one is not a leak from both.
 
@@ -366,8 +365,7 @@ them. A page of tiles is one call — `POST /api/v1/admin/devices/viewer-grants`
 a hundred ids returns each device's grant, or `null` for one you may not view, so the page
 renders with that tile empty rather than failing because a camera left the fleet.
 
-Device data comes through the same grant, or through a product-wide one — the reads are
-in [Pulling device data](24-pulling-device-data.md). Two shapes, and the difference
+Device data comes through the same grant, or through a product-wide one. Two shapes, and the difference
 matters when you plan a product around it: `logs/{topic}` returns records with a
 `next_before_seq` cursor, so it backfills completely; `series/{topic}` returns aggregated
 buckets (`t`, `n`, `min`, `max`, `avg`) rather than samples. There is no raw-sample export
@@ -375,7 +373,7 @@ for numeric telemetry.
 
 ## Watching a fleet you do not sit in front of
 
-Subscribe an endpoint and the server tells you: [Webhooks](26-webhooks.md) POST every
+Subscribe an endpoint and the server tells you: webhooks POST every
 matching audit entry as it is written — a rollout pausing itself, a camera falling
 back, a new advisory — signed, retried, and deduplicable by the entry's sequence
 number. The same log is also readable forward, which is how you reconcile after an
@@ -446,6 +444,16 @@ Be aware of what this arrangement costs before choosing it: a release belongs to
 account, so one project shipped to fifty customer accounts is fifty publishes of the same
 artifacts, and the assign-by-pin primitive above does not apply — a camera moving between
 accounts is a rebind, not a pin, and it crosses a boundary the device itself enforces.
+
+## See also
+
+- [5 · Signing keys](05-signing-keys.md) — the pluggable signer and how to configure each backend.
+- [8 · Release artifacts](08-release-artifacts.md) — the payload keys and artifact encryption.
+- [16 · Cohorts and rollouts](16-cohorts-and-rollouts.md) — cohorts, the label that separates customers on one product.
+- [19 · Accounts and tokens](19-accounts-and-tokens.md) — the scope ladder, and issuing tokens.
+- [23 · The admin API](23-admin-api.md) — the API your server calls.
+- [24 · Pulling device data](24-pulling-device-data.md) — the log and series reads a viewer grant opens.
+- [26 · Webhooks](26-webhooks.md) — subscribing an endpoint, and verifying what it receives.
 
 ---
 
