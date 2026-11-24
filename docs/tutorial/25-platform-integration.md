@@ -252,7 +252,7 @@ Returning one to stock is a pin to the **current** stock release — a forward s
 the counter, never a downgrade, and an ordinary OTA install rather than a reflash.
 
 The only true as-manufactured reset is `openmv-ota flash factory`, because it is the only
-thing that clears the rollback sectors. That needs the camera in hand, so it is a depot
+thing that clears the anti-rollback floor. That needs the camera in hand, so it is a depot
 or RMA path, not something a customer does.
 
 One consequence to design for: an OTA reset replaces the application, not the filesystem.

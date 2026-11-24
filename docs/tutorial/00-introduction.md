@@ -49,7 +49,7 @@ tutorial covers one verb. Two pieces run somewhere other than your computer:
   **single-image mode** instead.
 - **release / rollout / fleet** — a published image is a **release**; the update
   server offers it to a chosen share of your **fleet** of cameras — a **rollout**
-  — which you widen, pause, or roll back as confidence grows. Rollouts target a
+  — which you widen, pause, or stop as confidence grows. Rollouts target a
   **cohort**, a named group of your devices. Cameras periodically **check in**
   with the server: each check-in reports what the camera is running and is the
   moment it can be offered an update.

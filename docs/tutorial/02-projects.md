@@ -39,7 +39,8 @@ in a non-default location.
 | `--sdk-home PATH` | SDK install directory (default `~/openmv-sdk-<version>`). |
 | `--install-sdk` | Download + install the SDK if it is missing. |
 | `--allow-dirty` | Don't warn when the checkout has uncommitted changes. |
-| `--force` | Re-run `new` over an existing project (refused otherwise). An existing `app/` is never overwritten. |
+| `--force` | Re-run `new` over an existing project (refused otherwise). An existing `app/` is never overwritten, and an OTA project's signing keys are kept. |
+| `--new-keys` | With `--force` on an OTA project: replace its roots and signing keys. Cameras that trust the old ones can then no longer be updated. |
 | `--keys-from PROJECT` | Share another project's signing and payload keys instead of minting a fresh set (OTA projects). A camera trusts only the keys baked into its firmware, so every project a camera can be moved between must sign with the same ones. The passphrase must be the source project's. |
 
 ## Layout

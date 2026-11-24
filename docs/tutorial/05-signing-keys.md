@@ -76,10 +76,11 @@ that creates the keys, so there is never a moment where the only copy lives on
 this machine — **move it off this machine** (a vault, an offline drive). A `--dev`
 project skips it: its keys are disposable.
 
-**One hazard to know:** re-running `new --force` over an existing OTA project
-**regenerates the whole key set**. Devices already in the field trust the *old*
-keys and will reject updates signed by the new ones — you would have to re-flash
-them. `new` warns loudly when this is about to happen; only do it for a fresh
+**Re-running `new --force` over an existing OTA project keeps its keys.** It rewrites
+the project's files and leaves the roots, the signing keys and the payload keys as they
+are. Replacing them is its own flag, `--force --new-keys`, because devices already in
+the field trust the *old* keys and will reject updates signed by the new ones — you
+would have to re-flash them. `new` warns when you ask for it; only do it for a fresh
 fleet, and back up the old keys first.
 
 ### The passphrase

@@ -5,7 +5,7 @@
 ---
 
 You can't steer what you can't see. Four reads cover the whole picture — each prints
-the server's JSON verbatim, so what you see below is exactly what your scripts consume.
+the server's JSON verbatim, so what you see is exactly what your scripts consume.
 
 
 ## The fleet summary

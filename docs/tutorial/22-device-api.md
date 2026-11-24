@@ -45,7 +45,8 @@ time. The server checks it against the identity key in the camera's registration
 it only within five minutes of its own clock, and only in order: a request signed at or before
 the time of the last one it took from that camera counts as stale. A
 camera that has just booted cold has no clock yet and sends its first check-in unsigned; the
-answer's `Date` header sets the clock for the next one. Only a signed check-in gets the full
+answer's `Date` header sets the clock for the next one (on a board that does not verify the
+server's certificate it only moves the clock forward). Only a signed check-in gets the full
 treatment (a fleet row, telemetry, Live and ingest); an unsigned one, or one signed at a stale
 time, gets update offers only, and one whose signature doesn't verify gets nothing.
 

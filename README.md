@@ -63,11 +63,28 @@ firmware too, and two app slots mean a failed update falls back to the release t
 | OpenMV Cam M7 | `OPENMV3` | app, over USB (firmware over USB) | one, 248 KiB | flashed again over USB |
 | OpenMV Cam M4 | `OPENMV2` | app, over USB (firmware over USB) | one, 120 KiB | flashed again over USB |
 
-**Secrecy.** What a camera downloads is encrypted on every board. What it then stores is
+**Features.** What an update can do on each board, and what the OTA firmware leaves out to
+make room for it.
+
+| Camera | Delta updates | Recovers with no app | Server certificate checked | Signed check-ins | Left out of the OTA firmware |
+|---|---|---|---|---|---|
+| OpenMV N6, AE3, Cam RT1062 | yes | yes | yes | yes | nothing |
+| OpenMV Pure Thermal | yes | yes | yes | yes | nothing |
+| OpenMV Cam H7 Plus | yes | yes | yes | yes | `find_datamatrices` |
+| Arduino Portenta H7, Giga, Nicla Vision | yes | yes | yes | yes | nothing |
+| OpenMV Cam H7 | no (one slot) | yes | with your own CA (`[ota].ca`) | yes | `find_datamatrices`, `find_barcodes`, `find_displacement`, `find_lbp`, `linpolar`, `logpolar`, `get_similarity` |
+| OpenMV Cam M7 | updated over USB | updated over USB | updated over USB | updated over USB | `find_datamatrices` |
+| OpenMV Cam M4 | updated over USB | updated over USB | updated over USB | updated over USB | `lens_corr` |
+
+A delta is the difference from the release a camera is running, so it needs a second slot to
+build the new image in. A camera that recovers with no app checks in from its firmware when
+its app is lost or was never installed, and installs the release it is offered.
+
+**Secrecy.** What a release carries is encrypted on every board. What it then stores is
 ciphertext where the chip can decipher flash as it is read, or has the RAM to hold a
 deciphered copy, and the key to it never leaves the chip. A camera's own keys (its identity) are safest in a secure element.
 
-| Camera | Download encrypted | Firmware in flash | App in flash | The flash key | The camera's own keys |
+| Camera | Release encrypted | Firmware in flash | App in flash | The flash key | The camera's own keys |
 |---|---|---|---|---|---|
 | OpenMV N6 | yes | encrypted | encrypted | derived in the chip from the hardware key ST fuses into it | in flash, sealed to the chip |
 | OpenMV Cam RT1062 | yes | encrypted | encrypted | derived in the chip from fuses the camera burns and locks on its first boot | in a secure element (SE050) |
@@ -96,6 +113,10 @@ OpenMV Cloud:
 | OpenMV N6, AE3, Cam RT1062, Cam H7 Plus, Cam H7 | yes | yes | yes (QVGA) |
 | Arduino Portenta H7, Giga, Nicla Vision | yes | yes | yes (QVGA) |
 | OpenMV Pure Thermal, Cam M7, Cam M4 | not offered | not offered | not offered |
+
+The OpenMV Cam H7 has no room for the hosted cloud's trust anchors, so it does not check the
+server's certificate there. What it installs is still signed by your keys and checked on the
+camera.
 
 ## Installation
 

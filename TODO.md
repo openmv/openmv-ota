@@ -63,9 +63,6 @@ budget for now; these are the free/cheap passes to run first, in order.
     proxy wrote; the hosted deployment's hop count has to be measured before it is set.
   - A refused check-in signature is audited when its reason changes, so alternating two bad
     signatures for a known camera id writes one audit row a request.
-  - `keys/backends.json` names code to load (a `custom` signer's module, a PKCS#11 `.so`):
-    building someone else's project runs it. Same trust as `make` in their firmware
-    checkout, but it fires at `build romfs`.
   - A camera names its own `product_id` on every check-in, and the fleet row follows it. On
     an account that models each customer as a product, a customer's camera can report a
     sibling product: it is offered that product's release, shows in its fleet, and a
@@ -100,8 +97,6 @@ budget for now; these are the free/cheap passes to run first, in order.
     error text is printed with control characters.
   - The cloud SDK's `poll_watch` and `_ws_connect` read header lines with an unbounded
     asyncio `readline()`.
-  - The check-in's `Date` header sets the clock with no upper bound; a far-future date
-    fails TLS until NTP corrects it (up to six hours).
   - A `manage` token can admin-bind a camera id nobody registered; the owner's registration
     is then a 404 and no API call undoes it.
   - One sequential webhook worker over a global queue: a tenant with many endpoints that
@@ -126,9 +121,7 @@ budget for now; these are the free/cheap passes to run first, in order.
     check `body_sha256` in the stub.
   - Round 6 (server): a device pin on an
     id that is learned-bound to another account hides the camera from its owner until it
-    registers; a learned binding from an unsigned check-in takes any account string; publish
-    and local-storage downloads read a whole artifact into memory per request with no
-    concurrency bound; a product-limited token can list every cohort label of its account.
+    registers; a learned binding from an unsigned check-in takes any account string.
   - Round 6 (host): `keys retire` re-certifies every entry of `trusted_keys.json` without
     checking that its existing certificate verifies under the root; the keykeeper checks a
     registration's signature but not its freshness, and seals for expired desks; USB serial
@@ -177,7 +170,7 @@ budget for now; these are the free/cheap passes to run first, in order.
     connect and the TLS handshake block: a peer that drips its handshake holds the
     installer, and every check-in, for as long as each wait stays under the socket timeout,
     or until the watchdog's minute where one is armed (nothing in Python can end a blocking
-    handshake, and the WINC cannot do a non-blocking one). `openmv-ota history` prints a
+    handshake, and the WINC cannot do a non-blocking one). `openmv-ota project history` prints a
     file's fields as they are. The N6 stub's flash
     reads and writes have no range checks of their own, a failed re-map leaves the part in
     octal mode, and the prescaler rounds down; the H7 stub retries a dead QSPI part on

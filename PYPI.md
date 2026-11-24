@@ -24,9 +24,10 @@ Requires Python 3.11 or newer. One install gives you every tool, as a single
   and signs its check-ins. A release can be encrypted for each camera alone.
 - **Safe installs.** Updates go to a spare slot and are confirmed only after the
   new version starts; a failed update falls back on its own.
-- **Small updates.** After the first release, cameras download only what changed.
+- **Small updates.** After the first release, cameras with two app slots download only
+  what changed.
 - **Staged rollouts.** Send a release to a percentage of your fleet or a cohort
-  of cameras, then raise, pause, or roll it back.
+  of cameras, then raise, pause, or stop it.
 - **Your keys, where you want them.** On disk (encrypted), in a PKCS#11 HSM, or in
   AWS KMS, Google Cloud KMS, or Azure Key Vault.
 - **Hosted or self-hosted.** Use [OpenMV Cloud](https://cloud.openmv.io), which
@@ -37,8 +38,8 @@ Requires Python 3.11 or newer. One install gives you every tool, as a single
 
 ## Supported cameras
 
-OpenMV AE3, N6, RT1062, H7 Plus and H7; Arduino Nicla Vision, Giga R1 and
-Portenta H7.
+OpenMV AE3, N6, RT1062, H7 Plus, Pure Thermal and H7; Arduino Nicla Vision, Giga R1
+and Portenta H7. The OpenMV Cam M7 and M4 take their app over USB.
 
 ## Quick start
 

@@ -136,7 +136,8 @@ takes longer than ten seconds is a failed delivery, and will be sent again.
 A delivery that does not get a 2xx within ten seconds is retried after 1 minute, then
 5, 30, 2 hours, 12 and 24 — seven attempts over about a day and a half — then marked
 **dead**. Delivery is at least once: a retry after a timeout may repeat an event your
-receiver did in fact store, which is what `id` is for.
+receiver did in fact store, which is what `id` is for. The record of a finished delivery
+is kept for 30 days.
 
 An endpoint that fails fifty attempts in a row is switched off, its pending deliveries
 die, and the account gets a `webhook.disabled` event (to its other endpoints) and an
@@ -166,3 +167,7 @@ The worker that sends deliveries lives in the server process; set
 `OPENMV_OTA_WEBHOOK_INTERVAL_S` (OpenMV's deployment uses 15) or nothing is sent.
 Deliveries are leased per attempt, so several server processes never send the same
 one twice. See [Self-hosting](21-self-hosting.md).
+
+---
+
+*[← 25 · Integrating as a platform](25-platform-integration.md) · [Index](00-introduction.md)*

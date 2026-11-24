@@ -179,7 +179,7 @@ openmv-ota flash register ./my-product -b OPENMV4
 | `--provision` | `factory` only, i.MX only: provision a blank board over the ROM serial download (SBL jumper). |
 | `--no-register` | `factory` only: don't register the camera's keys (a bench with no server). |
 | `--desk LABEL` | `factory`, `register`: the desk key to sign the registration with (default: the newest usable one). |
-| `--server URL` | `factory`, `register`: the server to register with (default: the project's). |
+| `--server URL` | `factory`, `register`: the server to register with (default: the project's). When the project names a server other than the one your saved login is for, the saved token is not sent there: pass `--server` or `--token` to say which is meant. |
 | `--token TOKEN` | `factory`, `register`: a token with the `register` scope (default: your login). |
 | `--key-passphrase-file F` | `factory`, `register`: the project passphrase, which unlocks the desk key. |
 
@@ -199,7 +199,7 @@ OPENMV_RT1060        recovery   system flashloader  -
 
 State is **`running`** (firmware up), **`bootloader`** (the normal DFU the
 flash verbs use), or **`recovery`** (the by-hand ROM/maintenance modes you
-enter to flash a *bootloader* — [next page](10-erase-and-bootloader.md)). A
+enter to flash a *bootloader*). A
 board that looks identical to others in a shared ROM mode is reported under a
 generic label, and each scanner degrades on its own when its tool is missing.
 `--json` prints the same as a machine-readable array. It uses the same SDK

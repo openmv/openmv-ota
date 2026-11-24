@@ -113,7 +113,9 @@ hand it (how that's obtained is out of scope here). It:
    smaller — and opens a second HTTPS GET (or the sibling file) for it. (Single-image devices never take a delta:
    the base would be the very slot about to be erased.)
 4. **Picks its target slot — the one the device is not running** — and erases it, then
-   **streams** the image straight in. For a full image: decompress a chunk → write → **read
+   **streams** the image straight in. A download slower than 1 KB/s is dropped like a dead
+   link (a minute, plus a millisecond for every image byte written; connecting is not
+   counted, up to five minutes an install). For a full image: decompress a chunk → write → **read
    back and compare** → repeat, skipping erased `0xFF` runs. For a delta: stream-decompress
    the patch and reconstruct against the **running** slot (copy a run from it + add the
    patch's per-byte difference; the patch is never held whole in RAM),

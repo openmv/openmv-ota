@@ -77,7 +77,9 @@ interval. In order:
 4. **The signature** — a check-in signed by the camera's registered identity key goes on
    through every step. An unsigned one, or one signed at a stale time, gets update offers
    only: no device row, no telemetry, no grants. One whose signature does not verify gets
-   nothing, and so does a new camera past the account's device limit.
+   nothing, and so does a new camera past the account's device limit. A registered
+   camera that reports a product its account did not send it to is served like any
+   other, and the change is one audit event a day (`device.product_mismatch`).
 5. **The offer decision** — a device **pin** wins, then a **cohort pin**, then the active
    rollout for the device's cohort. Whatever the source, an offer only happens when it's
    an *upgrade* over what the device reports running — by version, or by the account's
@@ -87,8 +89,9 @@ interval. In order:
 6. **Rollout accounting** — the check-in feeds the rollout's counters: newly offered
    devices bump `attempted`, a device now running the offered release bumps `updated`,
    and a device transitioning into a fallback bumps `failures`. When the failure rate
-   among offered devices crosses the rollout's threshold, the rollout **auto-pauses**
-   and the audit log records it.
+   among offered devices crosses the rollout's threshold, over at least five attempts
+   or every camera the rollout can reach, the rollout **auto-pauses** and the audit log
+   records it.
 7. **The device row** — version, publish counter, slot, confirmation state, fallback
    identity, cohort — is upserted; this is what `client fleet` and `client device list`
    summarize.

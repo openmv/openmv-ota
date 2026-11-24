@@ -52,7 +52,7 @@ three 64-bit fields sit together at offsets 40, 48 and 56.
 | Offset | Field | Type | Meaning |
 |---|---|---|---|
 | 0 | `magic` | `4s` | `OMVR` = ROMFS app image. The first cheap reject. |
-| 4 | `header_version` | `uint32` | Layout version of *this fixed header* (`4`). `boot.py` and the boot stub hard-reject any other version rather than mis-parse it — and because the stub is flashed over USB only, the layout is a commitment, not a negotiation. (`3` had no components or certificate and named its key by id.) |
+| 4 | `header_version` | `uint32` | Layout version of *this fixed header* (`4`). `boot.py` and the boot stub hard-reject any other version rather than mis-parse it — and because the stub is flashed over USB only, the layout is a commitment, not a negotiation. |
 | 8 | `body_size` | `uint32` | Length of the ROMFS body before the components; bounds the mount and the body hash. |
 | 12 | `comp_count` | `uint32` | Number of component entries that follow the header (at most 16). |
 | 16 | `meta_size` | `uint32` | Byte length of the JSON metadata blob. |
@@ -60,7 +60,7 @@ three 64-bit fields sit together at offsets 40, 48 and 56.
 | 24 | `payload_version` | `uint32` | The app's `app_version` (from `settings.json`), encoded `(major<<24)\|(minor<<16)\|(patch<<8)\|build` so versions compare as plain integers. It is the **anti-rollback input** for a camera with a real `product_id`: the installer and `boot.py` reject an image below the device's recorded floor, and `confirm()` raises that floor to this value. It never *orders* the slots — the install counter does — which is what keeps reinstalling the same version legal. |
 | 28 | `uart_en` | `uint8` | `1` = the boot stub logs on the debug UART below. |
 | 29 | `uart_id` | `uint8` | That UART, in the firmware's `machine.UART` numbering. |
-| 30 | `wdt_en` | `uint8` | `1` = the boot stub arms the watchdog below before jumping to the firmware. |
+| 30 | `wdt_en` | `uint8` | Reserved for a watchdog the boot stub arms before jumping to the firmware. The stub does not act on it yet. |
 | 31 | `wdt_id` | `uint8` | That watchdog, in the firmware's `machine.WDT` numbering. |
 | 32 | `baud` | `uint32` | The debug UART's baud rate. |
 | 36 | `wdt_timeout_ms` | `uint32` | The watchdog timeout. |

@@ -536,6 +536,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Docs match the code again.** The README gains a per-board table of what an update can
+  do (deltas, recovery, the server certificate, signed check-ins, what the OTA firmware
+  leaves out); the pages on signing keys, rollouts, the update server, recovery, flashing
+  and webhooks say what `--new-keys`, the auto-pause floor, a superseded rollout, the
+  download's rate floor, an unverified `Date`, a token's hash prefix and a delivery
+  record's 30 days now do. The trailer's `wdt_en` is documented as reserved: the boot stub
+  does not arm a watchdog.
+
 - **The OpenMV Cam M4's OTA firmware drops `lens_corr()`.** Its 832 KB code region was 88
   bytes short once the boot script reset the import path. With it off the firmware has
   about 1.7 KB; `build romfs` refuses an M4 app that calls it.

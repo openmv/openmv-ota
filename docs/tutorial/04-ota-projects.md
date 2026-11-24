@@ -209,7 +209,7 @@ firmware too, and the stub installs it before the app runs;
 on a board without one the firmware is flashed over USB and a release carries the app
 alone. Whether a failed update has a fallback depends on the ROMFS partition: two slots
 fit on every board but the three discontinued classics, whose single slot re-downloads
-(or needs USB) instead. None of this is a project setting. It is read off the board
+(or needs USB) instead. It is read off the board
 table, written as a comment above `boards` in the scaffolded `openmv-ota.toml`, said at
 `build` and `publish`, and shown per camera and per release on the cloud (`openmv-ota
 romfs boards <board>` prints the same line).
