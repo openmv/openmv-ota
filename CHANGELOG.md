@@ -188,6 +188,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   could stay active for good.
 - **Erasing a device's data on the server's own account names it as the datalake files
   it** (`default`).
+
+- **NTP cannot rewind the camera's clock past a time it knows.** NTP is not authenticated,
+  and a spoofed answer set the clock anywhere after the build: rewound, a server
+  certificate that had since expired validated again. The clock now has a floor: the
+  build's time, raised by each time a verified server gives.
+
 - **A build does not run an `mpy-cross` the firmware checkout came with.** `build romfs`
   prefers the tree's own compiler, and a fork that commits a program at that path had it
   run. The one this machine built is untracked; a tracked one, or a link, is passed over

@@ -149,14 +149,14 @@ budget for now; these are the free/cheap passes to run first, in order.
   - Round 16 (host): a project with `platform = true` has `build ota-romfs` take a publish
     counter from the server the user is logged in to; `flash bootloader --dry-run` on the
     AE3 writes its key-area file.
-  - Round 15 (device, host): the device's clock is only as good as NTP. A spoofed NTP
-    answer moves it either way on any board, and on a board that does not verify TLS an
-    unverified `Date` moves it forward as far as the trust window: check-ins are then
-    stale at the server until NTP corrects it (minutes to six hours, never where NTP is
-    blocked). Rewound on a verifying board, an expired server certificate validates again.
-    NTP is not made forward-only because a clock pushed forward then never comes back;
-    closing this wants an authenticated time kept on flash as a floor (the newest verified
-    `Date`). Host: `--keys-from` follows links in the source's key files; the ROMFS reader
+  - Round 15 (device, host): NTP cannot rewind the clock past the newest time a verified
+    server gave since boot, or the build's after a reboot; that floor is in RAM. Kept on
+    flash it would survive a reboot, which wants a region of the status sector (a layout
+    the boot stub shares) and not a file on `/flash`. Forward, the clock is anyone's on the
+    path: a spoofed NTP answer, or an unverified `Date` on a board that does not verify
+    TLS, makes check-ins stale at the server until NTP or a verified server corrects it
+    (minutes to six hours, never where NTP is blocked and the server unreachable).
+    Host: `--keys-from` follows links in the source's key files; the ROMFS reader
     copies a slice of the image for each record that points into it; `stage_app` copies a
     FIFO or a device; the Azure signer talks to whatever host a record's `uri` names (the
     SDK checks the challenge from 4.7, now the floor).

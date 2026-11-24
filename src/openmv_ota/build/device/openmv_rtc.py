@@ -75,6 +75,10 @@ try:                                  # the build stamps this into _ota_config
 except ImportError:                   # host, or a non-OTA firmware: no floor
     BUILD_TIME = 0
 
+# The latest time this camera knows it to be at least: the build's, raised by each time a
+# verified server gives (see _ntp_ok). In RAM: after a reboot it is the build's again.
+_floor = BUILD_TIME
+
 # Seconds between the two epochs MicroPython ports use (1970-01-01 -> 2000-01-01).
 _EPOCH_2000 = 946684800
 
@@ -192,7 +196,7 @@ def server_time(unix, verified=True):
     it only ever moves the clock forward and is not a network check (NTP still runs).
 
     Returns True when the time was accepted."""
-    global _source, _net_ms
+    global _source, _net_ms, _floor
     if unix < BUILD_TIME:
         return False
     if not verified:
@@ -202,9 +206,19 @@ def server_time(unix, verified=True):
         return True
     if not trusted() or abs(now() - unix) > _DRIFT_S:
         set_time(unix)
+    if unix > _floor:
+        _floor = unix                 # it is at least this late, whatever NTP says next
     _source = "server"
     _net_ms = _ticks_ms()
     return True
+
+
+def _ntp_ok(unix):
+    """Whether an NTP answer may set the clock. NTP is not authenticated: anyone on the path
+    answers it. It can put the clock anywhere from the latest time this camera KNOWS it to
+    be -- the build's, or the newest a verified server has told it since boot -- and no
+    earlier: rewound past that, a certificate that has since expired is valid again."""
+    return unix >= _floor - _DRIFT_S
 
 
 def timestamp():
@@ -301,7 +315,7 @@ def sync(host=None):  # pragma: no cover  (device: network + RTC)
             unix = _ntp_query(addr, socket, struct)
         except Exception:  # hil-residual: this server timed out / was blocked -> try the next one
             continue  # hil-residual: bare continue
-        if unix < BUILD_TIME:                          # a reply older than the build is bogus (an unset
+        if not _ntp_ok(unix):                          # a reply older than the build is bogus (an unset
             continue  # hil-residual: bare continue    # server clock, or a non-NTP host answering) -> next
         set_time(unix)
         _source = "ntp"
