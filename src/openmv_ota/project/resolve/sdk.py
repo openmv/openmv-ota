@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import gitrepo
 from ..errors import ProjectError
 from .micropython import MICROPYTHON_SUBPATH, MicroPythonInfo
 
@@ -40,11 +41,16 @@ class SdkInfo:
 def read_sdk_version(repo: Path) -> str:
     f = repo / SDK_VERSION_FILE
     try:
-        value = f.read_text(encoding="utf-8").strip()
+        # The tree may be one someone else made. As a link this file is any file of the
+        # user's, and what it holds is printed (and names a URL and a directory): a version
+        # and nothing else, and never quoted back when it is not one.
+        value = "" if f.is_symlink() else f.read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
         raise ProjectError("%s not found at %s" % (SDK_VERSION_FILE, f)) from None
-    if not value:
+    if not value and not f.is_symlink():
         raise ProjectError("%s is empty" % SDK_VERSION_FILE)
+    if not re.fullmatch(r"[0-9]+(\.[0-9A-Za-z]+){1,3}", value):
+        raise ProjectError("%s at %s does not hold a version" % (SDK_VERSION_FILE, f))
     return value
 
 
@@ -121,4 +127,11 @@ def resolve_mpy_cross(repo: Path, mp: MicroPythonInfo) -> ToolInfo:
         base / "build" / "mpy-cross",
         base / "build" / "mpy-cross.exe",
     ])
+    if path is not None and (Path(path).is_symlink() or gitrepo.run_git(
+            Path(path).parent, "ls-files", "--error-unmatch", "--", Path(path).name,
+            check=False) is not None):
+        # A binary the checkout CAME with is not one this machine built: a fork that commits
+        # a program at this path had `build romfs` run it. The built one is untracked. (Asked
+        # of the directory it is in: MicroPython is a submodule, with its own index.)
+        path = None
     return ToolInfo(version=mp.version, found=True, path=path)

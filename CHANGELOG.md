@@ -188,6 +188,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   could stay active for good.
 - **Erasing a device's data on the server's own account names it as the datalake files
   it** (`default`).
+- **A build does not run an `mpy-cross` the firmware checkout came with.** `build romfs`
+  prefers the tree's own compiler, and a fork that commits a program at that path had it
+  run. The one this machine built is untracked; a tracked one, or a link, is passed over
+  for the installed `mpy-cross`.
+- **`SDK_VERSION` is a version, and is not quoted back when it is not one.** As a link it
+  was any file of the user's, printed by `project status` and every drift error.
+- **A project file with another name elsewhere (a hard link) is refused** like a link: the
+  lock, the ledger and the build outputs are written in place.
+- **A command run inside a project checks it,** whether or not it takes one: `client
+  release manifest` and `artifact` write where they are run.
+- **An app version is ASCII digits and dots and nothing around them.** A trailing newline,
+  a space or another script's digits went into file names and the ledger as they were.
 
 - **Every command that names a project checks it for links first.** The check lived where
   the config is loaded, and the desk, issuer and roots commands never load it: they wrote

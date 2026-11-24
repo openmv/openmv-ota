@@ -22,7 +22,9 @@ import re
 
 from .errors import OtaError
 
-_VERSION = re.compile(r"^\s*(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?\s*$")
+# (ASCII digits and nothing around them: the string goes into file names and the ledger as
+# it is, and `\d` takes other scripts' digits, `$` a trailing newline.)
+_VERSION = re.compile(r"\A([0-9]+)\.([0-9]+)\.([0-9]+)(?:\.([0-9]+))?\Z")
 
 
 def parse_semver(version: str) -> tuple[int, int, int, int]:
