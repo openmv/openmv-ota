@@ -175,6 +175,8 @@ def test_a_file_with_another_name_elsewhere_is_refused(tmp_path):
     root = tmp_path / "p"
     (root / "build").mkdir(parents=True)
     check_project(root)
+    from openmv_ota.project.outdir import _shared
+    assert not _shared(root / "gone-between-the-listing-and-the-look")
     os.link(mine, root / "openmv-ota.lock.json")
     with pytest.raises(ProjectError, match="openmv-ota.lock.json is a link"):
         check_project(root)
