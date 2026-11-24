@@ -1321,6 +1321,20 @@ def test_manifest_parse_rejections():
         inst("_manifest_parse")(bytes(bad))
 
 
+def test_connecting_is_not_the_download_s_time_up_to_five_minutes_an_install():
+    """A slow handshake behind a redirect is not charged to the download. All of it free, a
+    server that handed out a few bytes a connection held the install as long as it liked."""
+    slack = [0, 60000, 0]
+    inst("_slack_start")(slack)
+    assert slack[1:] == [60000, 300000]
+    inst("_slack_connect")(20000, slack)
+    assert slack[1:] == [80000, 280000]
+    inst("_slack_connect")(1 << 30, slack)                   # the rest of it, and no more
+    assert slack[1:] == [360000, 0]
+    inst("_slack_connect")(20000, slack)
+    assert slack[1:] == [360000, 0]
+
+
 @pytest.mark.parametrize("body", [[[]] * 70, [0] * 600])
 def test_a_manifest_body_made_of_brackets_or_elements_is_refused_before_it_is_parsed(body,
                                                                                     monkeypatch):

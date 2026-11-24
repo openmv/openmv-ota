@@ -253,12 +253,26 @@ _SLOW_MS = 60000
 # [the tick the count began, the ms allowed since]. Shared by every connection of one install
 # (a reconnect does not start a fresh minute), and never more than two minutes ahead of the
 # clock, so a fast start does not buy an hour of dripping afterwards.
-_SLACK = [0, _SLOW_MS]
+# The third is what is left of the time connecting may take without being charged (see
+# _slack_connect).
+_SLACK = [0, _SLOW_MS, 0]
 
 
 def _slack_start(s=_SLACK):
     s[0] = ticks_ms()
     s[1] = _SLOW_MS
+    s[2] = 5 * _SLOW_MS
+
+
+def _slack_connect(ms, s=_SLACK):
+    """A connect and its TLS handshake took ``ms``: not the download's time, up to five
+    minutes of it an install. Past that it is, or a server that hands out a few bytes a
+    connection and takes its time over each handshake holds the install for as long as it
+    likes."""
+    if ms > s[2]:
+        ms = s[2]
+    s[2] -= ms
+    s[1] += ms
 
 
 def _slack_add(n, s=_SLACK):
@@ -1539,10 +1553,8 @@ def _open(url, ca_pem, socket, ssl, feed=_noop, max_redirects=5, start=0):  # pr
         t0 = ticks_ms()
         sock = _connect(host, port, ca_pem, socket, ssl)
         # The connect and the handshake are not the download: a slow board behind a redirect
-        # or two spent its first minute here. They have their own bound (the socket timeout
-        # on each wait, and relax()'s minute where a watchdog is armed), and a reconnect that
-        # delivers nothing is counted (_RESUME_MAX_STALLS).
-        _slack_add(ticks_diff(ticks_ms(), t0))
+        # or two spent its first minute here.
+        _slack_connect(ticks_diff(ticks_ms(), t0))
         # The handshake left the heap full of its own garbage; collect it NOW, fed, before the
         # allocations below (the GET, the reader's buffer, the header lines) make an automatic
         # collect land in the unfed gap between them (see _collect_fed).

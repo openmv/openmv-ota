@@ -250,12 +250,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   signing keys and the payload keys of a project that had them, after which a fleet in the
   field can no longer be updated. Replacing them is `--new-keys`.
 - **A project's `keys/` is not a link.** As one, it was another project's keys: signed
-  with, and rewritten by `keys rotate`.
+  with, and rewritten by `keys rotate`. `project new --force` and `keys backup`/`restore`
+  check the project for links like every other command.
 - **On a board that does not verify TLS, the server's `Date` only moves the clock
   forward.** It is anyone's on the path there: rewound, a retired certificate was valid
   again. It is no longer taken as a network check either, so NTP still runs.
-- **The connect and the TLS handshake are not charged to the download's allowance.** A slow
-  board behind a redirect spent its first minute there.
+- **The connect and the TLS handshake are not charged to the download's allowance,** up to
+  five minutes of them an install. A slow board behind a redirect spent its first minute
+  there.
 - **`flash register` does not send the saved token to a server the project names.** The
   project's `server_url` came ahead of the saved profile's while the token came from the
   profile; when they differ, `--server` or `--token` says which is meant.

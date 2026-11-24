@@ -78,3 +78,26 @@ def test_a_project_s_own_files_are_not_links(tmp_path):
     (ok / "factory" / "OPENMV_N6-manifest.bin").symlink_to(mine)
     with pytest.raises(BuildError, match="is a link"):
         output_dir(ok, ok / "factory", BuildError)
+
+
+def test_commands_that_do_not_load_a_project_check_it_too(tmp_path, make_firmware, make_sdk):
+    """`project new --force` and `keys backup`/`restore` work on a directory before (or
+    without) reading its config, which is where every other command is stopped."""
+    from openmv_ota.project import project as proj
+    victim = tmp_path / "victim" / "keys"
+    victim.mkdir(parents=True)
+    (victim / "trusted_keys.json").write_text("theirs")
+    root = tmp_path / "p"
+    root.mkdir()
+    (root / "keys").symlink_to(victim)
+    with pytest.raises(ProjectError, match="keys is a link"):
+        proj.create_project(root, firmware=make_firmware(), boards=["OPENMV_N6"], product=None,
+                            vendor=None, sdk_home_override=make_sdk(), install_sdk=False,
+                            allow_dirty=False, force=True, now="t", ota=True, dev=True,
+                            new_keys=True)
+    with pytest.raises(ProjectError, match="keys is a link"):
+        proj.backup_private_keys(root)
+    with pytest.raises(ProjectError, match="keys is a link"):
+        proj.restore_private_keys(root, b"")
+    assert (victim / "trusted_keys.json").read_text() == "theirs"
+    assert sorted(p.name for p in root.iterdir()) == ["keys"]          # and nothing written

@@ -425,6 +425,7 @@ def create_project(
 
     paths = ProjectPaths(root)
     root.mkdir(parents=True, exist_ok=True)
+    check_project(paths.root)        # --force on a directory someone else made: before a write
     keep_keys = False
     if paths.config.exists() and not force:
         raise ProjectError("%s already exists; use --force" % paths.config.name, exit_code=1)
@@ -697,6 +698,7 @@ def backup_private_keys(root: str | Path) -> Path:
     accept, and without the board key you cannot encrypt one the fleet can read."""
     from . import keybackup, passphrase
 
+    check_project(root)              # the keys read, and the archive written, are its own
     if passphrase.dev_passphrase_path(root).exists():
         raise ProjectError(
             "refusing to back up a --dev project's keys: the cached dev passphrase lives "
@@ -721,6 +723,7 @@ def restore_private_keys(root: str | Path, blob: bytes) -> list[str]:
     ``ProjectError`` on a corrupt backup (recovery fails loudly)."""
     from . import keybackup
 
+    check_project(root)              # a linked keys/ is another project's keys, replaced
     pem_dir = ProjectPaths(Path(root)).private_keys_dir
     pems = keybackup.unpack_keys(blob)
     pem_dir.mkdir(parents=True, exist_ok=True)
