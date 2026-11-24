@@ -127,9 +127,8 @@ def resolve_mpy_cross(repo: Path, mp: MicroPythonInfo) -> ToolInfo:
         base / "build" / "mpy-cross",
         base / "build" / "mpy-cross.exe",
     ])
-    if path is not None and (Path(path).is_symlink() or gitrepo.run_git(
-            Path(path).parent, "ls-files", "--error-unmatch", "--", Path(path).name,
-            check=False) is not None):
+    if path is not None and (Path(path).is_symlink()
+                             or gitrepo.untracked(Path(path)) is not True):
         # A binary the checkout CAME with is not one this machine built: a fork that commits
         # a program at this path had `build romfs` run it. The built one is untracked. (Asked
         # of the directory it is in: MicroPython is a submodule, with its own index.)

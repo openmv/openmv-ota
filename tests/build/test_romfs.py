@@ -154,7 +154,7 @@ def test_mpy_cross_via_pip(monkeypatch, make_project):
                         lambda cmd, a, s, o: seen.update(cmd=cmd) or o.write_bytes(b"MPY"))
     root, repo, app = make_project(with_mpy_cross=False)
     build_mod.build_romfs(root, app=app, firmware=repo, convert_models=False)
-    assert seen["cmd"][1:] == ["-m", "mpy_cross"]
+    assert seen["cmd"][1:] == ["-P", "-m", "mpy_cross"]
 
 
 def test_missing_app(make_project, tmp_path):
@@ -2012,5 +2012,10 @@ def test_a_repeatable_build_names_its_own_build_time(monkeypatch):
     """`built` is the wall clock, which no two builds share: SOURCE_DATE_EPOCH names it."""
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "1795000000")
     assert build_mod._built_now() == 1795000000
-    monkeypatch.setenv("SOURCE_DATE_EPOCH", "soon")
+    monkeypatch.delenv("SOURCE_DATE_EPOCH")
     assert abs(build_mod._built_now() - __import__("time").time()) < 5
+    # a camera will not set its clock earlier than this by NTP: not a time yet to come
+    for bad in ("soon", "-5", "0", "4102444800", "\u0661\u0667"):
+        monkeypatch.setenv("SOURCE_DATE_EPOCH", bad)
+        with pytest.raises(BuildError, match="SOURCE_DATE_EPOCH"):
+            build_mod._built_now()

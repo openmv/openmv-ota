@@ -48,7 +48,9 @@ def resolve_mpy_cross(project) -> list[str]:
         if have and not have.startswith(want):
             print("warning: pip mpy-cross %s may not match firmware MicroPython %s "
                   "(.mpy ABI %s required)" % (have, want, abi), file=sys.stderr)
-        return [sys.executable, "-m", "mpy_cross"]
+        # -P: without it `-m` puts the working directory first on the child's import path,
+        # and a `mpy_cross.py` in a project someone else made runs in its place
+        return [sys.executable, "-P", "-m", "mpy_cross"]
 
     raise BuildError(
         "mpy-cross is not available. Run `openmv-ota project setup` to install it, "

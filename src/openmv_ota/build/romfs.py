@@ -61,6 +61,8 @@ class _OtaSigner:
     certificate: bytes = b""
     """The signing key's packed certificate (keys/trusted_keys.json ``cert``): what the trailer
     carries so a camera that embeds only the roots trusts this key."""
+    built: int = 0
+    """When this build is: one time for every trailer it signs (see :func:`_built_now`)."""
 
 
 def _key_backend(p, key_id: int, *, require_role: str, key_passphrase_file=None,
@@ -138,7 +140,7 @@ def _load_signer(p, app_dir: Path, key_id: int, *, require_role: str,
                                        allow_dev_key=allow_dev_key)
     return _OtaSigner(app_version, payload_version,
                       str(settings.get("vendor", "")), key_id, entry.alg, alg, backend,
-                      certificate=backend.certificate)
+                      certificate=backend.certificate, built=_built_now())
 
 
 def _warn_product_id_collisions(config) -> None:
@@ -210,10 +212,16 @@ def _built_now() -> int:
     clock can read. ``SOURCE_DATE_EPOCH`` names it for a build that has to be repeatable."""
     import os
     import time
-    try:
-        return int(os.environ["SOURCE_DATE_EPOCH"]) & 0xFFFFFFFF
-    except (KeyError, ValueError):
-        return int(time.time()) & 0xFFFFFFFF
+    now = int(time.time())
+    named = os.environ.get("SOURCE_DATE_EPOCH")
+    if named is None:
+        return now
+    # A camera will not set its clock earlier than this by NTP: a time that has not come
+    # yet would hold every camera that installs the image ahead of the real one.
+    if not named.isascii() or not named.isdigit() or not 0 < int(named) <= now + 86400:
+        raise BuildError("SOURCE_DATE_EPOCH is %r: not a time up to now (Unix seconds)" % named,
+                         exit_code=1)
+    return int(named)
 
 
 def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict,
@@ -232,7 +240,7 @@ def _build_trailer(signer: _OtaSigner, p, body: bytes, system_info: dict,
         product_id=int(system_info["product_id"]),
         publish_seq=signer.publish_seq,
         payload_version=signer.payload_version,
-        built=_built_now(),
+        built=signer.built,
         body_sha256=hashlib.sha256(body).digest(),
         certificate=signer.certificate,
         components=list(components),

@@ -86,14 +86,14 @@ def test_resolve_mpy_cross_firmware_binary():
 def test_resolve_mpy_cross_pip_match(monkeypatch, capsys):
     monkeypatch.setattr(mpy, "_has_pip_mpy_cross", lambda: True)
     monkeypatch.setattr(mpy, "_pip_mpy_cross_version", lambda: "1.28.0")
-    assert mpy.resolve_mpy_cross(_proj()) == [sys.executable, "-m", "mpy_cross"]
+    assert mpy.resolve_mpy_cross(_proj()) == [sys.executable, "-P", "-m", "mpy_cross"]
     assert capsys.readouterr().err == ""
 
 
 def test_resolve_mpy_cross_pip_unknown_version(monkeypatch, capsys):
     monkeypatch.setattr(mpy, "_has_pip_mpy_cross", lambda: True)
     monkeypatch.setattr(mpy, "_pip_mpy_cross_version", lambda: None)
-    assert mpy.resolve_mpy_cross(_proj()) == [sys.executable, "-m", "mpy_cross"]
+    assert mpy.resolve_mpy_cross(_proj()) == [sys.executable, "-P", "-m", "mpy_cross"]
     assert capsys.readouterr().err == ""
 
 

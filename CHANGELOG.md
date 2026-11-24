@@ -189,6 +189,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Erasing a device's data on the server's own account names it as the datalake files
   it** (`default`).
 
+- **A helper run with `python -m` does not import from the working directory.** `mpremote`,
+  `mpy_cross` and `pip` are run that way, and `-m` puts the working directory first on the
+  import path: a `mpremote.py` at the top of a project someone else made ran in its place.
+  They get `-P`, and the tool drops the working directory from its own import path when it
+  is started as `python -m openmv_ota`.
+- **An `mpy-cross` is the tree's own only when git says it is untracked.** Where git could
+  not say (no repository there), it was taken as untracked.
+- **A verified server's time is the clock's floor, whichever side of it the old floor was,**
+  so an image built on a machine with a fast clock does not hold NTP off for good. A build
+  stamps one time into every trailer it signs, and refuses a `SOURCE_DATE_EPOCH` that is
+  not a time up to now.
+- **A Live grant that is not an object is no grant.** A list there ended the camera's relay
+  task until the next reboot.
+
 - **NTP cannot rewind the camera's clock past a time it knows.** NTP is not authenticated,
   and a spoofed answer set the clock anywhere after the build: rewound, a server
   certificate that had since expired validated again. The clock now has a floor: the

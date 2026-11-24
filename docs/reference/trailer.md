@@ -45,7 +45,7 @@ little-endian:
 
 The fixed header is 96 bytes, in four groups: framing, versions, the resources the
 boot stub uses, identity, then the digest. Every field is naturally aligned; the
-three 64-bit fields sit together at offsets 40, 48 and 56.
+two 64-bit fields sit together at offsets 40 and 48.
 
 | Offset | Field | Type | Meaning |
 |---|---|---|---|
@@ -68,7 +68,7 @@ three 64-bit fields sit together at offsets 40, 48 and 56.
 | 60 | `reserved` | `uint32` | Zero. The headroom the next field comes out of. |
 | 64 | `body_sha256` | `32s` | SHA-256 of the `body_size` body bytes. Verifying the signature + recomputing this hash transitively authenticates the body. |
 
-The struct is `<4sIIIIIIBBBBIIQQQ32s`.
+The struct is `<4sIIIIIIBBBBIIQQII32s`.
 
 ## Components
 

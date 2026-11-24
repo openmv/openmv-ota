@@ -206,8 +206,9 @@ def server_time(unix, verified=True):
         return True
     if not trusted() or abs(now() - unix) > _DRIFT_S:
         set_time(unix)
-    if unix > _floor:
-        _floor = unix                 # it is at least this late, whatever NTP says next
+    if _in_window(unix):
+        _floor = unix                 # it is this late, whatever NTP says next (and whatever
+        #                               an image built on a machine with a wrong clock said)
     _source = "server"
     _net_ms = _ticks_ms()
     return True

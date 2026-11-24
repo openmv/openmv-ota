@@ -523,7 +523,7 @@ def _running(monkeypatch, *cams):
 
 
 def test_mpremote_default_and_override():
-    assert fl._mpremote(None)[1:] == ["-m", "mpremote"]
+    assert fl._mpremote(None)[1:] == ["-P", "-m", "mpremote"]
     assert fl._mpremote("/x/mpremote") == ["/x/mpremote"]
 
 
@@ -561,7 +561,7 @@ def test_flash_resets_then_does_not_pin_dfu_serial(project, monkeypatch):
     artifact("OPENMV4-firmware.bin")
     _running(monkeypatch, _Port(0x37C5, 0x1204, "/dev/ttyACM0", "SN9"))
     fl.flash_firmware(str(root), board="OPENMV4")
-    assert ran[0] == [sys.executable, "-m", "mpremote", "connect", "/dev/ttyACM0",
+    assert ran[0] == [sys.executable, "-P", "-m", "mpremote", "connect", "/dev/ttyACM0",
                       "exec", "import machine; machine.bootloader()"]
     assert "-S" not in ran[1] and "SN9" not in ran[1]   # the dfu flash is NOT serial-pinned
 

@@ -12,7 +12,8 @@ from .errors import ProjectError
 # directory packs that directory, whatever it holds.
 _PACKED = ("app", "app-coprocessor", "device", "certs")
 
-_MSG = "%s is a link: a project's files are its own -- remove it"
+_MSG = ("%s is a link (or a file with another name elsewhere: a hard link): a project's files "
+        "are its own -- replace it with a copy, or remove it")
 
 
 def _shared(path: Path) -> bool:

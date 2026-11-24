@@ -142,6 +142,11 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 18 (host): a firmware tree handed over as a directory (an archive, a copy) brings
+    its untracked `mpy-cross` with it, and a build runs it; trusting only a binary this tool
+    built wants its hash kept somewhere the tree cannot write. A hard link from a package
+    cache (`uv pip install --target app/lib`) is refused like any other. The check of the
+    working directory looks at that directory, not at a project above it.
   - Round 17 (host): a FIFO in `app/` passes the project check; `build` as a file, and a
     directory where a file is written, end in a traceback; on Windows a release's file name
     taken from its URL, and a `C:name` entry in `romfs unpack`, are not contained (not
@@ -197,7 +202,8 @@ budget for now; these are the free/cheap passes to run first, in order.
     (`OPENMV_OTA_TRUSTED_PROXY_HOPS` unset until the platform's hop count is measured), so a
     client names the address it is rate-limited as. The datalake's arrival indexes do not
     lead with the account: a new owner reading back past a camera's transfer scans the old
-    owner's rows for that topic (slow, not a leak).
+    owner's rows for that topic (slow, not a leak). The datalake still keeps `topic_stats`,
+    which nothing reads since `device_stats` replaced it; drop it in its next change.
   - Rounds 13-16 (server): a product a camera was sent to by a pin, and never went to,
     stays noted on its registration, so a later move there by itself reads as sent. A
     webhook test ping has no

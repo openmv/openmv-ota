@@ -300,8 +300,10 @@ def test_ntp_cannot_rewind_past_what_a_verified_server_said(monkeypatch, _clock)
     assert rtc.server_time(t)                                   # verified
     assert not rtc._ntp_ok(t - 3600)
     assert rtc._ntp_ok(t - rtc._DRIFT_S) and rtc._ntp_ok(t + 86400)
-    assert rtc.server_time(t - 500)                             # a verified server may correct it
-    assert not rtc._ntp_ok(t - 3600)                            # ...and the floor does not drop
+    assert rtc.server_time(t - 500)                             # a verified server may correct it,
+    assert rtc._ntp_ok(t - 500) and not rtc._ntp_ok(t - 3600)   # and the floor is what it says
+    rtc.floor(t + 86400 * 30)                                   # an image built on a fast clock
+    assert rtc.server_time(t) and rtc._ntp_ok(t)                # does not outrank the server
     assert rtc.server_time(t + 86400 * 400, verified=False)
     assert rtc._ntp_ok(t)                                       # an unverified time raises nothing
 
