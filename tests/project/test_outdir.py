@@ -162,3 +162,39 @@ def test_the_directories_new_writes_into_hold_no_link(tmp_path):
         (root / place).symlink_to(target)
         with pytest.raises(ProjectError, match="is a link"):
             check_project(root)
+
+
+def test_a_file_with_another_name_elsewhere_is_refused(tmp_path):
+    """The lock, the ledger and the build outputs are written in place. As a hard link to a
+    file of the user's, it is that file that changes."""
+    import os
+
+    from openmv_ota.project.outdir import check_project
+    mine = tmp_path / "mine"
+    mine.write_text("mine")
+    root = tmp_path / "p"
+    (root / "build").mkdir(parents=True)
+    check_project(root)
+    os.link(mine, root / "openmv-ota.lock.json")
+    with pytest.raises(ProjectError, match="openmv-ota.lock.json is a link"):
+        check_project(root)
+    (root / "openmv-ota.lock.json").unlink()
+    os.link(mine, root / "build" / "OPENMV_N6-firmware.bin")
+    with pytest.raises(ProjectError, match="firmware.bin is a link"):
+        check_project(root)
+
+
+def test_a_command_run_inside_a_project_checks_it(tmp_path, monkeypatch, capsys):
+    """`client release manifest` and `artifact` take no project and write where they are
+    run: inside a project someone else made, through a link of its."""
+    from openmv_ota.cli import main
+    from openmv_ota.project import config as config_mod
+    mine = tmp_path / "mine"
+    mine.write_text("mine")
+    root = tmp_path / "p"
+    root.mkdir()
+    (root / config_mod.CONFIG_NAME).write_text("")
+    (root / "manifest.bin").symlink_to(mine)
+    monkeypatch.chdir(root)
+    assert main(["client", "release", "manifest", "--release-id", "rel_0123456789abcdef"]) != 0
+    assert "manifest.bin is a link" in capsys.readouterr().err and mine.read_text() == "mine"

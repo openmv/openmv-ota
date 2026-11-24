@@ -312,3 +312,42 @@ def test_a_macro_line_of_spaces_is_read_in_no_time(tmp_path):
     got = macros.parse_defines(text, ["A", "B", "C"])
     assert time.monotonic() - t0 < 1
     assert got == {"A": "1", "C": "2"}                      # the long line is not a define read
+
+
+def test_an_mpy_cross_the_checkout_came_with_is_not_run(make_firmware, tmp_path):
+    """`build romfs` runs the tree's mpy-cross when there is one. One this machine built is
+    untracked; one a fork COMMITTED at that path is a program its author has the user run."""
+    import subprocess
+    repo = make_firmware(with_mpy_cross=True)
+    mp = mp_res.resolve_micropython(repo)
+    built = repo / "lib" / "micropython" / "mpy-cross" / "build" / "mpy-cross"
+    assert sdk_res.resolve_mpy_cross(repo, mp).path == str(built)
+    for args in (("add", "-f", str(built)),
+                 ("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "ships one")):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    assert sdk_res.resolve_mpy_cross(repo, mp).path is None
+    # ...nor a link there, whatever git says of it
+    other = make_firmware("other", with_mpy_cross=True)
+    linked = other / "lib" / "micropython" / "mpy-cross" / "build" / "mpy-cross"
+    linked.unlink()
+    linked.symlink_to(tmp_path / "program")
+    (tmp_path / "program").write_text("")
+    assert sdk_res.resolve_mpy_cross(other, mp_res.resolve_micropython(other)).path is None
+
+
+def test_sdk_version_is_a_version_and_is_not_quoted_back(make_firmware, tmp_path):
+    """As a link, SDK_VERSION is any file of the user's, and its contents were printed by
+    `project status` and every drift error."""
+    secret = tmp_path / "client.toml"
+    secret.write_text('token = "s3cret"\n')
+    for bad in ("s3cret token", "1.6.0; rm -rf", "../../x"):
+        repo = make_firmware("fw%d" % len(bad), sdk_version=bad)
+        with pytest.raises(ProjectError) as e:
+            sdk_res.read_sdk_version(repo)
+        assert "does not hold a version" in str(e.value) and bad not in str(e.value)
+    repo = make_firmware("linked")
+    (repo / "SDK_VERSION").unlink()
+    (repo / "SDK_VERSION").symlink_to(secret)
+    with pytest.raises(ProjectError) as e:
+        sdk_res.read_sdk_version(repo)
+    assert "s3cret" not in str(e.value)

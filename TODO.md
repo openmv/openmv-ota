@@ -129,7 +129,7 @@ budget for now; these are the free/cheap passes to run first, in order.
     print unfiltered; `flash bootloader -b OPENMV_AE3` runs the project's
     `tools/alif/toolkit/*.py`, and a committed `openmv-ota.local.toml` picks the SDK home
     whose `dfu-util` runs; the SDK archive's `.sha256` comes from the same host as the
-    archive and `SDK_VERSION` is not validated before it names a URL and a directory.
+    archive.
   - Round 6 (device): an unverified offer with a new `release_id` reboots the camera before
     anything is fetched (a hostile server can loop it); the factory window signs any 32
     bytes with the identity key (console access); a `.hilcov_uart` file on a volume turns
@@ -142,6 +142,10 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 17 (host): a FIFO in `app/` passes the project check; `build` as a file, and a
+    directory where a file is written, end in a traceback; on Windows a release's file name
+    taken from its URL, and a `C:name` entry in `romfs unpack`, are not contained (not
+    tested there).
   - Round 16 (host): a project with `platform = true` has `build ota-romfs` take a publish
     counter from the server the user is logged in to; `flash bootloader --dry-run` on the
     AE3 writes its key-area file.

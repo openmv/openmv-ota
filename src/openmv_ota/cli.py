@@ -88,8 +88,9 @@ def main(argv: list[str] | None = None) -> int:
     from openmv_ota.project.config import CONFIG_NAME
     from openmv_ota.project.errors import ProjectError
     from openmv_ota.project.outdir import check_project
-    for name in ("dir", "project"):
-        root = getattr(args, name, None)
+    # ...and so does one run from inside a project: the commands that take no project write
+    # their output where they are run (`client release manifest`, `artifact`, `bases`).
+    for root in [getattr(args, name, None) for name in ("dir", "project")] + ["."]:
         if isinstance(root, str) and os.path.lexists(os.path.join(root, CONFIG_NAME)):
             try:
                 check_project(root)
