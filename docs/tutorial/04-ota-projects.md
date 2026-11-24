@@ -53,7 +53,7 @@ images a camera can download, verify, and fall back from.
   set up front and writes it under `keys/`.
 
 - **The product id is enforced.** Every build stamps the scaffolded `product_id`
-  ([Projects](02-projects.md#product-name-vs-board-name)) into the image; an OTA
+  into the image; an OTA
   device bakes its own copy in and rejects any image whose id doesn't match — the
   **cross-flash guard**. Keep the id once devices ship (a later change would
   reject updates on fielded devices); `build romfs` refuses an id of `0` (guard
@@ -61,8 +61,7 @@ images a camera can download, verify, and fall back from.
   id.
 
 (The starter `app/` — including the `app_version` the build stamps into the image
-— is scaffolded for every project, not just OTA; see
-[The app folder](02-projects.md#the-app-folder).)
+— is scaffolded for every project, not just OTA.)
 
 ### The version and the rollback floor
 
@@ -209,7 +208,7 @@ firmware too, and the stub installs it before the app runs;
 on a board without one the firmware is flashed over USB and a release carries the app
 alone. Whether a failed update has a fallback depends on the ROMFS partition: two slots
 fit on every board but the three discontinued classics, whose single slot re-downloads
-(or needs USB) instead. None of this is a project setting. It is read off the board
+(or needs USB) instead. It is read off the board
 table, written as a comment above `boards` in the scaffolded `openmv-ota.toml`, said at
 `build` and `publish`, and shown per camera and per release on the cloud (`openmv-ota
 romfs boards <board>` prints the same line).
@@ -278,7 +277,7 @@ it as `cloud_level`.
 
 ## Multi-core boards (a coprocessor partition)
 
-On a multi-core board ([Projects](02-projects.md#multi-core-boards)) only the
+On a multi-core board only the
 **main** partition is OTA. It is built from `app/`, OTA-wrapped like any other;
 the coprocessor partition stays a *plain* romfs — the helper core has no mbedtls
 and can't verify signatures, so it is never updated on its own.
@@ -298,6 +297,7 @@ directly at the factory; the nested copy is byte-identical.)
 
 - [Integrating as a platform](25-platform-integration.md) — cameras that move between products, and the publish counter that orders their images.
 - [Building](06-building.md) — what a release carries on a board with a boot stub.
+- [2 · Projects](02-projects.md) — where the scaffolded `product_id` comes from, the starter `app/` folder, and multi-core boards.
 
 ---
 

@@ -16,7 +16,7 @@ the rest of your account, top to bottom:
 
 - Your **account** holds everything — devices, releases, rollouts, cohorts, audit.
 - **Each board you build for is its own product**: `project new` derives one product id
-  per board and stamps it into `openmv-ota.toml` ([Projects](02-projects.md)); a release
+  per board and stamps it into `openmv-ota.toml`; a release
   is built and published per board (`publish -b`) — which is what keeps an `OPENMV_N6`
   image from ever being offered to an `OPENMV_RT1060`.
 - **Cohort names are free-form labels on devices** — every device is in exactly one,
@@ -147,7 +147,8 @@ dial — `rollout status` shows the real numbers.
 
 By default nothing promotes a rollout for you. The only automation in the base loop
 points the other way — the server **pauses** a rollout whose failure rate crosses its
-threshold, but it never widens one: software may stop a rollout on evidence, while
+threshold (judged over at least five attempts, or over every camera the rollout can
+reach where that is fewer), but it never widens one: software may stop a rollout on evidence, while
 widening exposure stays a human reading the score and deciding. A rollout left at 5%
 therefore never finishes on its own; raising to 100 is how one completes (it then stays
 active, satisfying stragglers and newly assigned devices), and the alternative ending is
@@ -184,7 +185,7 @@ same two, from the same definitions.
 | `--percent PERCENT` | The share of the cohort to offer it to, 0-100. Omit with `--stage` or `--ramp`. |
 | `--stage PCT[:SOAK[:ATTEMPTED[:MAXFAIL]]]` | A ramp stage, repeatable: the percent, then optionally the soak in seconds, the devices that must have been offered it, and the failure rate (0-1) it must stay under. |
 | `--ramp {cautious,quick}` | A named ramp instead of `--stage`. |
-| `--failure-threshold RATE` | The fallback rate among offered devices that auto-pauses the rollout (default 0.05). |
+| `--failure-threshold RATE` | The fallback rate among offered devices that auto-pauses the rollout (default 0.05). It is judged over at least five attempts, or over every camera the rollout can reach where that is fewer, so one camera does not pause a rollout by itself. |
 | `--name NAME` | A display name for the rollout: a label, renamed any time. |
 | `--json` | Print the server's response as JSON instead of the summary. |
 
@@ -209,7 +210,7 @@ openmv-ota client rollout stop --rollout-id ro_1c3f88ba90d2e644
 |---|---|
 | `raise N` | widen the staged slice to N percent. Percent is **monotonic** — lowering it is refused, because devices already offered the release can't be un-offered |
 | `pause` | stop offering; resumable. The server also **auto-pauses** a rollout whose fallback rate among offered devices crosses its failure threshold (5% by default) and records an audit event |
-| `resume` | start offering again |
+| `resume` | start offering again. Refused for a rollout a newer one superseded: going back to that release is a new rollout for it |
 | `limit N` | set the auto-pause failure limit to N percent of offered devices (5 by default, or `--failure-threshold` at create). Raise it after diagnosing spurious fallbacks, tighten it for a risky build. It is only the limit: a rollout the old limit paused stays paused until you `resume` |
 | `stop` | stop offering **permanently** (a stopped rollout can't be resumed — create a new one). Devices that already took the release keep it — the server never downgrades a camera; the device's own anti-rollback wouldn't accept one anyway |
 
@@ -357,6 +358,7 @@ The name rides along in `release list` / `rollout list` rows as `display_name`.
 ## See also
 
 - [Watching the fleet](17-watching-the-fleet.md) — the per-device rows in full.
+- [2 · Projects](02-projects.md) — how `project new` derives each board's product id.
 
 ---
 

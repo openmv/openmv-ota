@@ -250,7 +250,9 @@ server's reply (its `Date` header) sets the clock for the next one. Recovery doe
 signs once its clock is set, trying NTP before its first check-in.
 A camera whose clock kept counting while it was off trusts it at boot; if it drifted more
 than five minutes, that first check-in is signed at a **stale** time, and the reply corrects
-the clock the same way.
+the clock the same way. On a board that does not verify the server's certificate the reply is
+anyone's on the path, so there it only ever moves the clock forward; a clock that runs ahead
+is corrected by NTP.
 
 What the server does with a check-in:
 

@@ -6,10 +6,8 @@ SHA-256 of the image body, a table of the **components** the boot stub installs
 image, the targeting and anti-rollback fields a camera checks before mounting the
 body, an ECDSA signature, and a JSON blob of build provenance.
 
-The tutorial covers both ends of its life: [release
-artifacts](../tutorial/08-release-artifacts.md) is the host side (how `build`
-signs it and `inspect`/`verify` read it back), and [boot and
-rollback](../tutorial/11-boot-and-rollback.md) is the camera side (`boot.py`
+Its life has two ends: the host side (`build`
+signs it and `inspect`/`verify` read it back) and the camera side (`boot.py`
 verifying it at every boot). This page is the byte-level on-flash format those
 two sides agree on; the codecs —
 [src/openmv_ota/ota/trailer.py](../../src/openmv_ota/ota/trailer.py) and
@@ -52,7 +50,7 @@ three 64-bit fields sit together at offsets 40, 48 and 56.
 | Offset | Field | Type | Meaning |
 |---|---|---|---|
 | 0 | `magic` | `4s` | `OMVR` = ROMFS app image. The first cheap reject. |
-| 4 | `header_version` | `uint32` | Layout version of *this fixed header* (`4`). `boot.py` and the boot stub hard-reject any other version rather than mis-parse it — and because the stub is flashed over USB only, the layout is a commitment, not a negotiation. (`3` had no components or certificate and named its key by id.) |
+| 4 | `header_version` | `uint32` | Layout version of *this fixed header* (`4`). `boot.py` and the boot stub hard-reject any other version rather than mis-parse it — and because the stub is flashed over USB only, the layout is a commitment, not a negotiation. |
 | 8 | `body_size` | `uint32` | Length of the ROMFS body before the components; bounds the mount and the body hash. |
 | 12 | `comp_count` | `uint32` | Number of component entries that follow the header (at most 16). |
 | 16 | `meta_size` | `uint32` | Byte length of the JSON metadata blob. |
@@ -60,11 +58,11 @@ three 64-bit fields sit together at offsets 40, 48 and 56.
 | 24 | `payload_version` | `uint32` | The app's `app_version` (from `settings.json`), encoded `(major<<24)\|(minor<<16)\|(patch<<8)\|build` so versions compare as plain integers. It is the **anti-rollback input** for a camera with a real `product_id`: the installer and `boot.py` reject an image below the device's recorded floor, and `confirm()` raises that floor to this value. It never *orders* the slots — the install counter does — which is what keeps reinstalling the same version legal. |
 | 28 | `uart_en` | `uint8` | `1` = the boot stub logs on the debug UART below. |
 | 29 | `uart_id` | `uint8` | That UART, in the firmware's `machine.UART` numbering. |
-| 30 | `wdt_en` | `uint8` | `1` = the boot stub arms the watchdog below before jumping to the firmware. |
+| 30 | `wdt_en` | `uint8` | Reserved for a watchdog the boot stub arms before jumping to the firmware. The stub does not act on it yet. |
 | 31 | `wdt_id` | `uint8` | That watchdog, in the firmware's `machine.WDT` numbering. |
 | 32 | `baud` | `uint32` | The debug UART's baud rate. |
 | 36 | `wdt_timeout_ms` | `uint32` | The watchdog timeout. |
-| 40 | `product_id` | `uint64` | Target product id; the cross-flash guard. The build auto-assigns a nonzero id — the low 63 bits of `sha256("<product>:<board>")` — so this is `0` (check skipped) only if the project sets it to `0` on purpose ([Integrating as a platform](../tutorial/25-platform-integration.md)). 32 bits collide at a few thousand products, and two product lines sharing an id means one line's devices accept the other's firmware. |
+| 40 | `product_id` | `uint64` | Target product id; the cross-flash guard. The build auto-assigns a nonzero id — the low 63 bits of `sha256("<product>:<board>")` — so this is `0` (check skipped) only if the project sets it to `0` on purpose. 32 bits collide at a few thousand products, and two product lines sharing an id means one line's devices accept the other's firmware. |
 | 48 | `publish_seq` | `uint64` | The account's **publish counter**: one number per build, taken from the update server, strictly increasing across every product the account publishes. It is the anti-rollback input for a camera built with `product_id = 0` — the only camera that can be moved between products, whose images a per-product version cannot order. `0` for every other project, and ignored by every other camera. |
 | 56 | `reserved` | `uint64` | Zero. The headroom the next field comes out of. |
 | 64 | `body_sha256` | `32s` | SHA-256 of the `body_size` body bytes. Verifying the signature + recomputing this hash transitively authenticates the body. |
@@ -122,8 +120,7 @@ inside the signed region — authenticated — but `boot.py` never parses it: th
 trust path stays a tiny parser-free path.
 
 This blob is a **verbatim copy of the image's `/rom/system.json`** — the same
-board identity + provenance the build packs into the ROMFS body (see
-[the projects page](../tutorial/02-projects.md#systemjson-generated-read-only)). The on-device app reads
+board identity + provenance the build packs into the ROMFS body. The on-device app reads
 its identity from `/rom/system.json` (one read path, OTA or not); the trailer
 carries the copy so **host tools** — the update server, an `inspect` command — and
 the bootloader can read it straight from the signed trailer without mounting the
@@ -188,3 +185,10 @@ The CRC is checked first as a cheap torn-write reject; it is not a trust check.
 Trust starts and ends at the roots the firmware embeds — a key in the trailer is
 trusted only through a certificate one of them signed. (`boot.py` and the mbedtls
 verify shim are the layers above; this page documents the format they consume.)
+
+## See also
+
+- [2 · Projects](../tutorial/02-projects.md#systemjson-generated-read-only) — `system.json`, the file the metadata blob copies.
+- [8 · Release artifacts](../tutorial/08-release-artifacts.md) — the host side — how `build` signs the trailer and `inspect`/`verify` read it back.
+- [11 · Boot and rollback](../tutorial/11-boot-and-rollback.md) — the camera side — `boot.py` verifying the trailer at every boot.
+- [25 · Integrating as a platform](../tutorial/25-platform-integration.md) — projects that set `product_id` to `0` on purpose.

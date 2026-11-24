@@ -4,15 +4,15 @@
 
 ---
 
-The previous page built what a device ships with — the factory image and the
-firmware that boots it. This page is what a camera downloads after that: the
+The factory image and the firmware that boots it are what a device ships with.
+This page is what a camera downloads after that: the
 publishable release set, plus the SBOM that documents a build's dependencies
 and the read-only commands that check any built image.
 
 ## build ota-romfs
 
 `build ota-romfs` produces the complete publishable set for a release, straight
-from app source — it runs the [`build romfs`](06-building.md#build-romfs) engine
+from app source — it runs the `build romfs` engine
 internally (same flags), then renders what a camera actually downloads:
 
 ```bash
@@ -38,15 +38,13 @@ context comes from the project:
   under `[ota]` builds cameras with `product_id = 0`, which order images by the
   account's **publish counter** (`publish_seq` in the trailer) instead. The build
   takes the next number from the server as it starts, so it needs a login and a
-  reachable server — see
-  [Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter).
+  reachable server.
 - **Signed with the current OTA key.** The signer is `[ota].signing_key_id` from
   `openmv-ota.toml`; the trailer carries that key's root-signed certificate, which
   is how the device comes to trust it.
 - **Carries the firmware.** On a board with a boot stub (the N6, the AE3, the RT1062, the H7 Plus, the Pure Thermal and the Arduino boards), the image is
   the filesystem followed by the firmware `build firmware` left in `build/`,
-  LZMA-compressed and listed in the trailer as a component the stub installs
-  ([the trailer format](../reference/trailer.md#components)). Build the firmware
+  LZMA-compressed and listed in the trailer as a component the stub installs. Build the firmware
   before the image; a release is what a camera runs, platform and app together.
 - **Identity + provenance stamped in.** `product_id` / `board_name` come from the
   `[targets.<BOARD>]` tables, versions and commits from the lock — exactly the
@@ -96,9 +94,8 @@ It does not survive someone reading the firmware out of a board: the key is a co
 the firmware, and one firmware image serves a board type. The N6 and the RT1062 store
 their firmware encrypted, so there it takes an open debug port; on the other boards a
 flash dump is enough. That boundary is recorded
-in [the residual-threats register](../compliance/residual-threats.md). Each camera
-also holds keys of its own, made when it is flashed; they are described in
-[device keys](../reference/device-keys.md).
+in the residual-threats register. Each camera
+also holds keys of its own, made when it is flashed.
 
 Two things follow from "the key lives in the firmware":
 
@@ -128,8 +125,7 @@ openmv-ota project keys keykeeper sync .    # fetch and verify keykeeper's keys;
 
 Each release then gets one fresh key, **sealed** to keykeeper together with your account
 and your desk keys. When a camera is offered the release, the update server asks
-keykeeper for a **lockbox**: the release key, wrapped for that camera's own exchange key
-(see [device keys](../reference/device-keys.md)). Keykeeper makes one only for a camera
+keykeeper for a **lockbox**: the release key, wrapped for that camera's own exchange key. Keykeeper makes one only for a camera
 one of your desks registered to your account, checking against what you sealed rather
 than anything the server says. The camera opens it before it erases anything.
 
@@ -164,8 +160,7 @@ With no `--delta-from` at all, the bases are the factory image this project
 recorded when `build factory-romfs` ran, plus the last three releases built in
 this project — each build keeps a copy of its image under `build/releases/` for
 exactly this. A device running an older version takes the full image; to cover
-the versions the fleet is actually running, fetch them from the server
-([Building deltas](18-building-deltas.md)).
+the versions the fleet is actually running, fetch them from the server.
 
 Two properties keep deltas safe:
 
@@ -229,7 +224,7 @@ describes, not only on the build machine.
 
 ## Inspecting and verifying
 
-For an OTA project, the [`build romfs`](06-building.md#build-romfs) engine's
+For an OTA project, the `build romfs` engine's
 output is the `<board>-romfs.zip` **bundle** — body and trailer as separate zip
 entries, and what the download set above is *composed from*:
 
@@ -299,7 +294,11 @@ device, and remain `boot.py`'s job.
 
 - [18 · Building deltas](18-building-deltas.md) — fetching the delta bases a live
   fleet is running (`client release bases --fleet`), and publishing the set.
-- [Trailer format](../reference/trailer.md) — the on-flash layout of the signed trailer.
+- [Trailer format](../reference/trailer.md) — the on-flash layout of the signed trailer, component entries included.
+- [6 · Building](06-building.md#build-romfs) — `build romfs`, the engine `build ota-romfs` runs.
+- [25 · Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter) — the publish counter a platform project's cameras order images by.
+- [Device keys](../reference/device-keys.md) — the keys each camera holds, including the exchange key a lockbox is wrapped for.
+- [Residual threats](../compliance/residual-threats.md) — the register that records what artifact encryption does not cover.
 
 ---
 

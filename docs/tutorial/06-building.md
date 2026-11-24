@@ -24,16 +24,16 @@ For a **non-OTA** project the output is the ROMFS body,
 `<board>-romfs.zip`, instead. A multi-core board also builds its coprocessor
 partition as a plain `<board>-coprocessor-romfs.img`, and an OTA build nests that
 image inside the main one for
-[`openmv_ota.sync()`](04-ota-projects.md#multi-core-boards-a-coprocessor-partition)
+`openmv_ota.sync()`
 to apply on-device. On a board with a boot stub (the N6, the AE3, the RT1062, the H7 Plus, the Pure Thermal and the Arduino boards) an OTA image also carries
 the firmware its stub installs, taken from `build/<board>-firmware.bin`, so run
 `build firmware` first; `build romfs` refuses to sign
 without it.
 
 Every image carries the generated, read-only
-[`/rom/system.json`](02-projects.md#systemjson-generated-read-only) — identity and
+`/rom/system.json` — identity and
 provenance, composed from the config and the lock. Capacity is the whole partition
-for a plain project and the [OTA slot budget](04-ota-projects.md#what---ota-changes)
+for a plain project and the OTA slot budget
 otherwise; the build summary reports usage against whichever bound applies.
 
 The app source defaults to `<project>/app`; pass `--app` for another directory.
@@ -42,8 +42,7 @@ An OTA project's app is also checked against what its board's OTA firmware carri
 the OpenMV Cam H7 the OTA firmware has no `find_barcodes()`, `find_datamatrices()`,
 `find_displacement()`, `find_lbp()`, `linpolar()`, `logpolar()` or `get_similarity()`, and on
 the OpenMV Cam H7 Plus and the OpenMV Cam M7
-it has no `find_datamatrices()`, and on the OpenMV Cam M4 it has no `lens_corr()`
-([Factory & firmware](07-factory-and-firmware.md#build-firmware)), so an app that calls
+it has no `find_datamatrices()`, and on the OpenMV Cam M4 it has no `lens_corr()`, so an app that calls
 any of them is refused here, with the file and line, instead of raising on the camera the
 first time a frame reaches that call. Taking the method without calling it
 (`fix = img.lens_corr`) is refused the same way. A mention in a comment or a string is
@@ -106,7 +105,9 @@ openmv-ota build romfs ./my-product --vela-arg=--verbose-all --mpy-arg=-O2
 
 ## See also
 
-- [Factory and firmware](07-factory-and-firmware.md) — `build firmware`, which a release on a boot-stub board needs first.
+- [Factory and firmware](07-factory-and-firmware.md) — `build firmware`, which a release on a boot-stub board needs first, and why each board's OTA firmware leaves those methods out.
+- [2 · Projects](02-projects.md#systemjson-generated-read-only) — what `system.json` holds.
+- [4 · OTA projects](04-ota-projects.md) — the OTA slot budget, and the coprocessor partition `openmv_ota.sync()` writes.
 
 ---
 

@@ -4,7 +4,7 @@
 
 ---
 
-Everything on the previous pages happened inside one **account**: yours. The account
+Everything the client does happens inside one **account**: yours. The account
 is the tenancy boundary — releases, rollouts, cohorts, devices, and the audit log are
 all namespaced by it, and one tenant can never see or touch another's (a cross-account
 lookup reads as not-found, so probing reveals nothing). This page is the layer itself:
@@ -15,18 +15,18 @@ belonging to an account.
 
 - **OpenMV-hosted (the default):** your account was created at sign-up, and the
   website issues (and revokes) your working tokens. Logging in with one
-  ([The client](15-the-client.md)) is all a hosted maker ever does — everything on this
+  is all a hosted maker ever does — everything on this
   page is the operator machinery behind that button.
 - **Self-hosted:** `server init` prints a **bootstrap token** once at first setup — every scope, acting for the implicit
   single account named `''`. A single-tenant self-host can `login` with it and publish,
-  manage, and observe forever without ever creating an account: the verbs below exist
-  for the **multi-tenant** case, carving real accounts out of one server and issuing
+  manage, and observe forever without ever creating an account: the account and token
+  verbs exist for the **multi-tenant** case, carving real accounts out of one server and issuing
   each its own scoped tokens.
 
 
 ## Managing accounts
 
-Every verb in this section **and** the token section below requires the privileged
+Every account verb **and** every token verb requires the privileged
 `accounts` scope — and only an **operator's** credential carries it: the self-host
 bootstrap token, or a token deliberately issued with that scope. An account's own
 tokens never have it, so a tenant cannot create accounts or mint tokens, *not even
@@ -56,7 +56,7 @@ A brand-new account has no credentials yet, so `create` returns two things: the
 account id, and the account's **first working token** (scopes publish, manage,
 observe — everything a tenant does day to day, and nothing operator-level). It is
 displayed only in this one response — the server stores just its hash — so capture it
-now; every later token for the account comes from `token issue` below:
+now; every later token for the account comes from `token issue`:
 
 ```
 $ openmv-ota client account create --name "DroneCo"
@@ -371,6 +371,7 @@ $ openmv-ota client device registration --device-id OPENMV_N6:30003d000851303436
 - [Residual threats](../compliance/residual-threats.md) — what this layer deliberately
   does *not* guarantee.
 - [The update server](20-update-server.md) and [Self-hosting](21-self-hosting.md) — `server init`, the bootstrap token, and the server's own shell.
+- [15 · The client](15-the-client.md) — `client login`, where a token is used.
 
 ---
 

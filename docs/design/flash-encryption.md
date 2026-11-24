@@ -291,7 +291,7 @@ USB, in the clear: both slots are rejected, no record vouches for a plaintext ar
 stub boots what looks like firmware with the engine off (`no slot: booting the installed
 firmware`). `no_slot_secure` is the same brick with the stub built as on a chip that holds a
 secure boot key (`[ota].secure_boot = "always"`): the stub logs `secure boot: no verified
-slot, nothing boots` and stops, and the golden flash over USB that ends the scenario brings
+slot, nothing boots` and stops, and the factory flash over USB that ends the scenario brings
 the camera back.
 
 ## The ROMFS slots, ciphertext at rest (2026-11-07)

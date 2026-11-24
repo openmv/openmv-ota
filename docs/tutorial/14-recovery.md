@@ -11,14 +11,14 @@ brings up the network, **checks in with your server** the way a running app
 does, and installs the release it is offered, then reboots into its trial. It
 lives in the firmware, where no update can erase it, and reserves no flash of
 its own. The OpenMV Cam M4 has no network, so its firmware carries no recovery:
-a camera that loses both images halts at boot, and you flash it again over USB
-([Erase and the bootloader](10-erase-and-bootloader.md)).
+a camera that loses both images halts at boot, and you flash it again over USB.
 
 The check-in reports the device's id plus the board, product, and account
 stamped into its firmware, with no installed version, so any release in an
 active rollout for that product is newer and is offered. Recovery signs the
 check-in with the camera's identity key once its clock is set — from NTP before
-the first one, or else from the first reply's `Date` — and a signed check-in puts
+the first one, or else from the first reply's `Date` (forward only, on a board that does
+not verify the server's certificate) — and a signed check-in puts
 the camera on the fleet view as recovering. An unsigned one still gets the update
 offer, so a camera with no clock yet is not held back.
 When the server has nothing for it, or refuses it, recovery logs that and asks
@@ -71,8 +71,7 @@ Self-hosting? Replace that file with your server's root (or pass `--ca` at
 `new`). `build firmware` refuses those boards with `[ota].ca` unset, rather
 than ship a recovery with no trust anchors. The OpenMV Cam M7 and H7 are
 the exception: with `[ota].ca` unset their firmware carries no anchors and
-recovery connects unverified, as described in
-[OTA projects](04-ota-projects.md); the image it installs is still signature-checked.
+recovery connects unverified; the image it installs is still signature-checked.
 Setting `[ota].ca` is never wrong on any board: your device talks to one
 server, so its root is all it needs.
 
@@ -126,9 +125,15 @@ plaintext inside an image anyone can pull.
 
 Recovery needs the network. A device with no bootable slot *and* no way online
 — wrong credentials, no cable, no coverage — needs a physical reflash
-([`flash factory`](09-flashing.md)). That is the cost single-image boards
+(`flash factory`). That is the cost single-image boards
 accept in exchange for a whole slot of app room; A/B devices only ever reach
 recovery if both slots are damaged at once.
+
+## See also
+
+- [4 · OTA projects](04-ota-projects.md) — `[ota].ca`, and the boards that connect unverified without it.
+- [9 · Flashing](09-flashing.md) — `flash factory`, the physical reflash.
+- [10 · Erase & bootloader](10-erase-and-bootloader.md) — `flash erase` and `flash bootloader`, for a camera that has to be flashed again over USB.
 
 ---
 

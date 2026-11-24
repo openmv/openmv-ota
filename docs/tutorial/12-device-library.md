@@ -4,7 +4,7 @@
 
 ---
 
-[Boot and rollback](11-boot-and-rollback.md) covered the half that chooses what runs;
+`boot.py` is the half that chooses what runs;
 **`openmv_ota`** is the half your app calls. `project new --ota` scaffolds it into
 `app/lib/openmv_ota/` (plain Python you own and can extend); `build romfs` compiles +
 packs it to `/rom/lib/openmv_ota/`. It exposes:
@@ -18,8 +18,7 @@ packs it to `/rom/lib/openmv_ota/`. It exposes:
   - `payload_version` — the booted image's version,
   - `publish_seq`, `orders_by_seq` — the booted image's account publish counter, and
     whether this camera orders images by it rather than by version (only a camera built
-    with `product_id = 0` does — see
-    [Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter)).
+    with `product_id = 0` does).
     Both ride in the check-in, since the server cannot tell from anything else,
   - `representation` — `'full'` | `'delta'` | `None` — how this image was installed
     (the updater stamps this; `None` for a provisioned image). Lets you see on-device
@@ -60,8 +59,7 @@ packs it to `/rom/lib/openmv_ota/`. It exposes:
 
 - **`se.seal(data, aad=b"")` / `se.unseal(blob, aad=b"")`** — bytes only this camera can open,
   and that fail to open if altered: for a record on `/flash` (host-mountable, so readable from any
-  PC), a token, a setting. Keyed from the camera's own keys, so nothing to store or to guess. See
-  [Sealing data for this camera](../reference/device-keys.md#sealing-data-for-this-camera).
+  PC), a token, a setting. Keyed from the camera's own keys, so nothing to store or to guess.
 
 Both `install()` and `sync()` report their progress, **logged at every 10% step** (`install: 40% (…)`,
 `sync coprocessor: 70% (…)`), so an enabled logger shows movement through the long flash
@@ -100,7 +98,7 @@ hand it (how that's obtained is out of scope here). It:
 1. Opens an **HTTPS** connection (plaintext HTTP is refused), verifying the server
    against `ca` with `CERT_REQUIRED` + SNI — all **before** erasing anything. With no
    trust anchors at all it refuses, except on an M4, M7, or H7 built without `[ota].ca`,
-   which connects unverified ([OTA projects](04-ota-projects.md)). A file
+   which connects unverified. A file
    install opens the manifest file instead: no connection, and `ca` is ignored.
 2. **Fetches + verifies the manifest** (into RAM): checks its ECDSA signature against the
    same frozen trusted keys as an image trailer, then applies the device-relative checks
@@ -113,7 +111,9 @@ hand it (how that's obtained is out of scope here). It:
    smaller — and opens a second HTTPS GET (or the sibling file) for it. (Single-image devices never take a delta:
    the base would be the very slot about to be erased.)
 4. **Picks its target slot — the one the device is not running** — and erases it, then
-   **streams** the image straight in. For a full image: decompress a chunk → write → **read
+   **streams** the image straight in. A download slower than 1 KB/s is dropped like a dead
+   link (a minute, plus a millisecond for every image byte written; connecting is not
+   counted, up to five minutes an install). For a full image: decompress a chunk → write → **read
    back and compare** → repeat, skipping erased `0xFF` runs. For a delta: stream-decompress
    the patch and reconstruct against the **running** slot (copy a run from it + add the
    patch's per-byte difference; the patch is never held whole in RAM),
@@ -173,7 +173,7 @@ the worst it can do is serve a stale signed update, which the anti-rollback floo
 blocks, or deny the download.
 
 **The manifest + image.** `install()` consumes the **signed manifest** that
-[`build ota-romfs`](08-release-artifacts.md#build-ota-romfs) produces beside the
+`build ota-romfs` produces beside the
 image and any deltas: it names the image's size/sha256 and the available
 **representations**, and binds `product_id`/`payload_version`/
 `min_platform_version`/`min_stub` under the same ECDSA key as the image, and carries
@@ -233,8 +233,7 @@ apply(entry, path)
 Today there is one handler, **`partition`**, used for the multi-core case: the helper
 core's romfs is nested into the main image at `data/coprocessor.romfs` with the manifest
 `{"file": "coprocessor.romfs", "handler": "partition", "partition": 1, …}`, and `sync()`
-writes it into partition 1 when it differs (see
-[Multi-core boards](04-ota-projects.md#multi-core-boards-a-coprocessor-partition)). A future
+writes it into partition 1 when it differs. A future
 kind — say writing keys or blowing fuses — is just another `(matches, apply)` pair
 registered under a new `handler` name, plus its data file and manifest entry; `sync()`
 itself doesn't change.
@@ -273,6 +272,14 @@ enforced in the installer with the full reasoning in comments at the point of us
   mapped window hangs forever — and slot B can end flush against the end of the
   flash. Every XIP read is clamped 512 bytes short of the device's end; reads
   are shortened, never moved, and only trailer padding is affected.
+
+## See also
+
+- [4 · OTA projects](04-ota-projects.md) — which boards connect unverified without `[ota].ca`, and the coprocessor partition on multi-core boards.
+- [8 · Release artifacts](08-release-artifacts.md#build-ota-romfs) — `build ota-romfs`, which produces the manifest, image and deltas `install()` consumes.
+- [11 · Boot and rollback](11-boot-and-rollback.md) — `boot.py`, the half that chooses what runs.
+- [25 · Integrating as a platform](25-platform-integration.md#versions-and-the-publish-counter) — cameras that order images by the publish counter.
+- [Device keys](../reference/device-keys.md#sealing-data-for-this-camera) — what `se.seal()` is keyed from and what it protects.
 
 ---
 

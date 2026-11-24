@@ -11,8 +11,7 @@ complete thing a camera runs (platform + app), riding the A/B, delta, trial and
 confirm machinery that exists. The same mechanism hosts at-rest encryption
 ([flash-encryption.md](flash-encryption.md)).
 
-Trailer v4 is a clean break (nothing is shipped yet): every OTA board gets a stub,
-and no board stays on v3.
+Every board whose firmware an update reaches has a stub.
 
 Status: **built on every stub board** (design approved 2026-10-20).
 
@@ -152,7 +151,7 @@ word, digest. Every field is naturally aligned; the u64s sit together.
 | 24 | `payload_version:u32` | app version, anti-rollback input, as today |
 | 28 | `uart_en:u8` | 1 = the stub logs on the debug UART |
 | 29 | `uart_id:u8` | debug UART, in the firmware's `machine.UART` numbering |
-| 30 | `wdt_en:u8` | 1 = the stub arms the watchdog before jumping |
+| 30 | `wdt_en:u8` | reserved: a watchdog the stub arms before jumping (not acted on yet) |
 | 31 | `wdt_id:u8` | watchdog, in the firmware's `machine.WDT` numbering |
 | 32 | `baud:u32` | debug UART baud rate |
 | 36 | `wdt_timeout_ms:u32` | watchdog timeout |
@@ -254,7 +253,7 @@ Last 4 KiB of the firmware area, written after all components are installed.
   160-167 or the `secure_boot` bits in fuse word 18. Ports that cannot tell answer no.
   `[ota].secure_boot = "always"` builds a stub that answers yes on any board, for a bench
   that cannot burn fuses; the fleet's `no_slot_secure` leg runs the N6 that way and ends
-  with that golden flash.
+  with that factory flash.
 - `boot.py` reads `slot` to know which slot to mount, and `reason` for why the
   install happened, instead of a RAM handoff. The record is derived from
   verified bytes and needs no signature. A record is followed whenever the slot
@@ -385,7 +384,8 @@ decodes the footer and `build verify <board>-stub.bin` checks it against
    skipping sectors that already match), write the install record. Then hash the
    installed components as the firmware will read them, through the memory map;
    an area that does not hash is not jumped into, and the next slot is tried.
-4. If the chosen slot's trailer has `wdt_en` set, arm that watchdog.
+4. (Planned: if the chosen slot's trailer has `wdt_en` set, arm that watchdog. The stub
+   does not do this yet.)
 5. Reset peripherals/clocks to reset state, set VTOR, jump.
 
 Failure cases: an ECC fault reading a torn flash word (STM32H7) is caught and

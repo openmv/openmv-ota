@@ -39,7 +39,8 @@ in a non-default location.
 | `--sdk-home PATH` | SDK install directory (default `~/openmv-sdk-<version>`). |
 | `--install-sdk` | Download + install the SDK if it is missing. |
 | `--allow-dirty` | Don't warn when the checkout has uncommitted changes. |
-| `--force` | Re-run `new` over an existing project (refused otherwise). An existing `app/` is never overwritten. |
+| `--force` | Re-run `new` over an existing project (refused otherwise). An existing `app/` is never overwritten, and an OTA project's signing keys are kept. |
+| `--new-keys` | With `--force` on an OTA project: replace its roots and signing keys. Cameras that trust the old ones can then no longer be updated. |
 | `--keys-from PROJECT` | Share another project's signing and payload keys instead of minting a fresh set (OTA projects). A camera trusts only the keys baked into its firmware, so every project a camera can be moved between must sign with the same ones. The passphrase must be the source project's. |
 
 ## Layout
@@ -140,7 +141,7 @@ This gives the app **one consistent read path for system state in every build**
 from the lock (firmware / MicroPython / toolchain provenance) and the config
 (per-board `product_id` / `board_name`, and `account_id` under `[product]` — the OTA
 account a camera reports to, empty here). `dev` is true only for an image signed
-with a throwaway `--dev` key ([Signing keys](05-signing-keys.md)). `system.json` is generated into the built image only —
+with a throwaway `--dev` key. `system.json` is generated into the built image only —
 never into your `app/` source — so there is nothing to edit or accidentally commit.
 (The name is reserved; a `system.json` in your `app/` is overwritten.)
 
@@ -212,6 +213,7 @@ the coprocessor partition is suffixed (`OPENMV_AE3-coprocessor-romfs.img`).
 ## See also
 
 - [Integrating as a platform](25-platform-integration.md) — sharing one key set between projects, and the build byte.
+- [5 · Signing keys](05-signing-keys.md) — the throwaway `--dev` key, and the keys a production image is signed with.
 
 ---
 

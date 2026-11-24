@@ -124,7 +124,8 @@ through the download + write; `sync` through its write *and* the already-applied
 So an OTA install or a `sync()` won't trip an enabled watchdog, yet a genuine stall
 *isn't* masked: if a loop stops or a recv stalls, feeding stops and the watchdog resets the
 board — which lands it back on the previous slot. `install()` also sets a 30 s socket timeout as the same backstop when no watchdog
-is enabled (a stalled download fails cleanly instead of hanging). All a no-op if you
+is enabled (a stalled download fails cleanly instead of hanging), and drops a download slower than
+1 KB/s: an install gets a minute, plus a millisecond for every byte of the image it has written. All a no-op if you
 haven't enabled a watchdog.
 
 ---
