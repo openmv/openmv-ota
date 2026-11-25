@@ -1188,8 +1188,26 @@ def test_viewer_grant_returns_watch_and_read_urls(tmp_path):
     body = r.json()
     assert set(body["streams"]) == {"0", "thermal"}      # persisted at check-in
     assert body["streams"]["0"]["watch_url"].startswith("wss://live.test/watch/dev1/0?token=")
-    assert body["datalake"]["topics_url"] == "https://data.test/api/v1/devices/default/dev1/topics"
+    assert body["datalake"]["topics_url"] == "https://data.test/api/v1/devices/default/*/dev1/topics"
     assert body["token"] and body["datalake"]["token"] != body["token"]
+
+
+def test_a_device_grant_reads_under_the_product_the_camera_is_in(tmp_path):
+    """A camera moved to another product keeps its id: a grant for the id under the account
+    read what it sent under the product it left, to a token limited to the one it is in. A
+    token for the whole account reads all of it (every product's: the account's data)."""
+    app, store = _live_app(tmp_path)
+    _seed_device(store)
+    store.bind_device_account("dev1", "", source="learned")
+    store.add_token(hash_token("limited"), "p8", ["observe"], products=[8])
+    c = TestClient(app)
+    lim = {"Authorization": "Bearer limited"}
+    assert c.post("/api/v1/admin/devices/dev1/viewer-grant", headers=lim).status_code == 404
+    store.upsert_device(device_id="dev1", product_id=8, board="B", account_id="")   # moved
+    lake = c.post("/api/v1/admin/devices/dev1/viewer-grant", headers=lim).json()["datalake"]
+    assert lake["logs_url"] == "https://data.test/api/v1/devices/default/8/dev1/logs"
+    lake = c.post("/api/v1/admin/devices/dev1/viewer-grant", headers=AUTH).json()["datalake"]
+    assert lake["logs_url"] == "https://data.test/api/v1/devices/default/*/dev1/logs"
 
 
 def test_viewer_grants_mint_a_page_in_one_call(tmp_path):

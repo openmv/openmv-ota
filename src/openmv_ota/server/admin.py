@@ -2102,9 +2102,13 @@ def _viewer_grant_for(st, principal, device_id: str):
     owner = bound["account_id"] if bound else device.get("account_id", "")
     if owner != principal.account_id or not principal.may(device.get("product_id")):
         return None
+    # A credential for the whole account reads the camera's whole history, every product it
+    # was in (the account's data); one limited to some products reads only what the camera
+    # filed under the product it is in now, not the one it was moved from.
     grant = live_mod.viewer_grant(
         st.settings, device_id, (device.get("streams") or "").split(","),
-        datalake_url=getattr(st.settings, "datalake_url", "") or "", account_id=owner)
+        datalake_url=getattr(st.settings, "datalake_url", "") or "", account_id=owner,
+        product_id=(device.get("product_id") or 0) if principal.products else None)
     return grant if grant is not None else {}
 
 

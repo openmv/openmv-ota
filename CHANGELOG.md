@@ -195,6 +195,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A grant handed to `poll_watch` that is not one raises `OSError`,** the one error it
   documents, not the `KeyError` that ended a wake loop catching `OSError`.
 
+- **A token limited to some products reads a device's data under the product it is in.**
+  A camera moved to another product keeps its id, and its grant (for the account and the
+  id) read what it sent under the product it left, to a token limited to the product it is
+  in now. The grant names the product in the token and in
+  `/api/v1/devices/{account}/{product}/{device}/...`: the camera's current one for a
+  limited token, `*` (every product, the account's whole history) for one of the whole
+  account; the datalake (openmv-cloud) answers only for that, in lockstep.
 - **A resumed ramp is judged on the cameras its new stage can reach.** The reach was
   remembered without the stage's starting count, so a resume, or a raise to an equal
   percent, was handed the old stage's figure: a floor of one attempt, and its first failure

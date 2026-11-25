@@ -208,7 +208,10 @@ budget for now; these are the free/cheap passes to run first, in order.
     still orders a camera by payload version alone, so a camera built with `PRODUCT_ID` 0 can
     read as behind or ahead on the dashboard (display only; the offer and the auto-pause
     order it by the publish counter). A datalake record holding NaN or Infinity stored before
-    ingest refused them still makes its reads 500; nothing cleans one out.
+    ingest refused them still makes its reads 500; nothing cleans one out. The datalake's
+    `device_stats` table, unread since device reads went by product
+    (`device_product_stats`), goes in its next change; objects it filed before it knew their
+    product (before 2026-09-14) are read by no route and wait for retention.
   - Round 17 (server): the hosted server still takes the leftmost `X-Forwarded-For` entry
     (`OPENMV_OTA_TRUSTED_PROXY_HOPS` unset until the platform's hop count is measured), so a
     client names the address it is rate-limited as. The datalake's arrival indexes do not
