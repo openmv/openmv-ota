@@ -467,6 +467,30 @@ def test_create_rollout_supersedes_active(tmp_path):
     assert any(e["action"] == "rollout.superseded" for e in store.read_audit())
 
 
+def test_create_rollout_supersedes_a_paused_one_too(tmp_path):
+    """A rollout paused (by its failures, or by hand) when a newer one took its cohort stayed
+    resumable: a resume left two active for one product and cohort."""
+    app, store = _app(tmp_path)
+    for rid, pv in (("rel1", 0x02000000), ("rel2", 0x02010000), ("rel3", 0x02020000)):
+        _seed_release(store, rid=rid, pv=pv)
+    c = TestClient(app)
+    failed = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                    json={"release_id": "rel1", "percent": 5}).json()["rollout_id"]
+    store.update_rollout(failed, state="paused", pause_reason="failure_limit")
+    held = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                  json={"release_id": "rel2", "percent": 5, "cohort": "beta"}).json()["rollout_id"]
+    assert c.patch("/api/v1/admin/rollouts/" + held, headers=AUTH,
+                   json={"state": "paused"}).status_code == 200      # another cohort's: untouched
+    newest = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                    json={"release_id": "rel3", "percent": 5}).json()["rollout_id"]
+    assert store.get_rollout(failed)["pause_reason"] == "superseded"
+    assert c.patch("/api/v1/admin/rollouts/" + failed, headers=AUTH,
+                   json={"state": "active"}).status_code == 409
+    assert store.get_rollout(held)["pause_reason"] == "operator"
+    assert [ro["rollout_id"] for ro in store.list_rollouts(state="active")] == [newest]
+    assert store.rollout_successor(store.get_rollout(failed))["rollout_id"] == newest
+
+
 # --- patch / rollback -----------------------------------------------------------------------
 
 def _make_rollout(c, store):

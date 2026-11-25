@@ -49,8 +49,13 @@ def test_rollout_lifecycle():
     assert s.active_rollout(BID, "__default__")["rollout_id"] == "ro1"
     s.update_rollout("ro1", percent=50)
     assert s.get_rollout("ro1")["percent"] == 50
-    s.update_rollout("ro1", state="paused")
+    assert s.update_rollout("ro1", state="paused") is True
     assert s.active_rollout(BID, "__default__") is None
+    # a write decided on a read of an active rollout lands only while it is still active
+    assert s.update_rollout("ro1", if_state="active", pause_reason="failure_limit") is False
+    assert s.get_rollout("ro1")["pause_reason"] is None
+    assert s.update_rollout("ro1", if_state="paused", percent=60) is True
+    assert s.update_rollout("ghost", percent=60) is False
     # the keys become SQL column names: anything off the allow-list is refused, not spliced
     import pytest
     with pytest.raises(ValueError, match="not an updatable column"):

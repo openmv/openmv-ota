@@ -690,17 +690,119 @@ def test_the_reach_counts_the_slice_and_is_remembered(tmp_path):
     for n in range(40):
         camera.check(c, _checkin(dev="e%d" % n, pv=0x01000000))
     ro = dict(store.get_rollout("ro1"), percent=10.0, updated=0, stage_attempted_base=0)
+    rel = store.get_release("rel1")
     want = sum(app_mod.staged_in("ro1", "e%d" % n, 10.0) for n in range(40))
     app_mod._REACH.clear()
-    got = app_mod._rollout_reach(store, ro, 0x02000000, "", BID)
+    got = app_mod._rollout_reach(store, ro, rel, "", BID)
     assert got == min(want, app_mod.AUTOPAUSE_MIN_ATTEMPTED)
     store.execute("DELETE FROM devices")                       # remembered: not counted again
-    assert app_mod._rollout_reach(store, ro, 0x02000000, "", BID) == app_mod._rollout_reach(
-        store, dict(ro), 0x02000000, "", BID)
+    assert app_mod._rollout_reach(store, ro, rel, "", BID) == app_mod._rollout_reach(
+        store, dict(ro), rel, "", BID)
     for n in range(1100):                                      # and bounded
         app_mod._REACH[("x", n, 0, 0)] = 0
-    app_mod._rollout_reach(store, dict(ro, percent=11.0), 0x02000000, "", BID)
+    app_mod._rollout_reach(store, dict(ro, percent=11.0), rel, "", BID)
     assert len(app_mod._REACH) == 1
+
+
+def test_a_resumed_ramp_is_judged_on_what_its_new_stage_can_reach(tmp_path):
+    """A resume starts the stage's window afresh and keeps the percent. The reach was
+    remembered without the window's start, so the resumed stage was handed the old stage's
+    figure, a floor of 1, and its first failure paused it again."""
+    from openmv_ota.server import app as app_mod
+    from openmv_ota.server.app import _ramp_or_autopause
+    from openmv_ota.server.auth import hash_token
+    app, store, storage, v = _app(tmp_path)
+    store.add_token(hash_token("admintok"), "ci", ["manage", "observe"])
+    _seed_ramp(store, [{"percent": 50, "min_soak": 99999, "min_attempted": 999,
+                        "max_failure_rate": 0.1}, {"percent": 100}])
+    for n in range(400):                                      # the fleet, all behind the release
+        store.upsert_device(device_id="c%03d" % n, product_id=BID,
+                            current_payload_version=0x01000000)
+    app_mod._REACH.clear()
+
+    def judge():
+        _ramp_or_autopause(store, "ro1", {"account_id": "", "product_id": BID})
+    store.bump_rollout("ro1", attempted=40, failures=5)       # 12.5% over a 10% ceiling
+    judge()
+    assert store.get_rollout("ro1")["pause_reason"] == "failure_limit"
+    r = TestClient(app).patch("/api/v1/admin/rollouts/ro1", json={"state": "active"},
+                              headers={"Authorization": "Bearer admintok"})
+    assert r.status_code == 200 and r.json()["percent"] == 50
+    store.bump_rollout("ro1", attempted=1, failures=1)        # one failure in one attempt
+    judge()
+    assert store.get_rollout("ro1")["state"] == "active"
+    store.bump_rollout("ro1", attempted=4, failures=4)        # five: a rate
+    judge()
+    assert store.get_rollout("ro1")["pause_reason"] == "failure_limit"
+
+
+def test_one_camera_ordered_by_the_publish_counter_does_not_pause_a_rollout(tmp_path):
+    """A camera built with PRODUCT_ID 0 is offered a release by the account's publish
+    counter. The reach counted cameras behind it by payload version alone, so a fleet of
+    them, every one offered the release, counted as none: a floor of 1."""
+    app, store, storage, v = _app(tmp_path)
+    store.add_release(release_id="rel1", product_id=0, product="P", version="2.0.0",
+                      payload_version=0x01000000, publish_seq=5, min_platform_version=0,
+                      image_sha256="ab" * 32, image_size=3,
+                      representations=[{"format": "full", "url": "OPENMV_N6-ota.img.gz",
+                                        "size": 3}],
+                      manifest_key="manifest/rel1", image_key="image/rel1")
+    store.add_rollout(rollout_id="ro1", release_id="rel1", product_id=0, cohort="__default__",
+                      percent=100, state="paused")
+    c = TestClient(app)
+    moved = dict(product_id=0, pv=0x03000000, publish_seq=1, orders_by_seq=True)
+    for n in range(6):                    # moved in from a product line with higher versions
+        camera.check(c, _checkin(dev="s%d" % n, **moved))
+    store.update_rollout("ro1", state="active")
+    assert camera.check(c, _checkin(dev="s0", **moved)).json()["update"] is True
+    camera.check(c, _checkin(dev="s0", fallback_reason="crc", **moved))
+    ro = store.get_rollout("ro1")
+    assert (ro["attempted"], ro["failures"], ro["state"]) == (1, 1, "active")
+    for n in range(1, 5):
+        camera.check(c, _checkin(dev="s%d" % n, **moved))
+    ro = store.get_rollout("ro1")
+    assert (ro["attempted"], ro["failures"], ro["state"]) == (5, 1, "paused")
+
+
+def test_a_rollout_superseded_while_it_is_judged_stays_superseded(tmp_path):
+    """The auto-pause and the auto-raise decide on a read of the rollout. A supersede that
+    landed before the write was overwritten: "superseded" became "failure_limit", which a
+    resume lets through, and two rollouts were then active for one cohort."""
+    from openmv_ota.server.app import _ramp_or_autopause
+    from openmv_ota.server.auth import hash_token
+
+    class Raced:
+        """The store, with a supersede landing between the evaluator's read and its write."""
+        def __getattr__(self, name):
+            return getattr(store, name)
+
+        def get_rollout(self, rid):
+            seen = store.get_rollout(rid)
+            store.update_rollout(rid, state="paused", pause_reason="superseded")
+            return seen
+
+    def judge():
+        _ramp_or_autopause(Raced(), "ro1", {"account_id": "", "product_id": BID})
+        ro = store.get_rollout("ro1")
+        assert (ro["state"], ro["pause_reason"]) == ("paused", "superseded")
+        assert not [e for e in store.read_audit() if e["action"].startswith("rollout.auto")]
+        return ro
+
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, pv=0x02000000, percent=100)
+    store.bump_rollout("ro1", attempted=10, failures=10)      # every camera failed: a pause
+    judge()
+    store.add_token(hash_token("admintok"), "ci", ["manage"])
+    r = TestClient(app).patch("/api/v1/admin/rollouts/ro1", json={"state": "active"},
+                              headers={"Authorization": "Bearer admintok"})
+    assert r.status_code == 409                               # and it cannot be resumed
+
+    (tmp_path / "ramp").mkdir()
+    app, store, storage, v = _app(tmp_path / "ramp")
+    _seed_ramp(store, [{"percent": 5, "min_soak": 0, "min_attempted": 1}, {"percent": 50}])
+    store.bump_rollout("ro1", attempted=1)                    # the stage's gates: a raise
+    ro = judge()
+    assert (ro["stage_index"], ro["percent"]) == (0, 5)
 
 
 def test_one_camera_does_not_pause_a_rollout_by_itself(tmp_path):
@@ -1193,3 +1295,33 @@ def test_the_client_is_the_address_the_outermost_proxy_wrote(tmp_path):
                     headers={"X-Forwarded-For": "6.6.6.%d, 1.1.1.1, 10.0.0.1" % n}).status_code
              for n in range(4)]
     assert codes[:2] == [codes[0]] * 2 and codes[0] != 429 and codes[2:] == [429, 429]
+
+
+def test_one_client_is_one_address_however_it_writes_it(tmp_path):
+    """An IPv6 zone is any text the sender likes, and an IPv4 client can write its address
+    as IPv6. Both were kept, so one client had as many rate-limit keys as spellings (one of
+    them 300 characters long)."""
+    from openmv_ota.server.app import _client_host
+    for raw in ("1.2.3.4", "::ffff:1.2.3.4", "[::FFFF:102:304]:443"):
+        assert _client_host(raw) == "1.2.3.4", raw
+    for raw in ("fe80::1", "fe80::1%eth0", "fe80::1%" + "x" * 300, "[fe80::1%2]:443"):
+        assert _client_host(raw) == "fe80::1", raw
+    widest = ":".join(["ffff"] * 8)
+    assert _client_host(widest) == widest                     # the longest there is, whole
+    for raw in ("1.2.3.4%eth0", "fe80::1%", "%eth0"):
+        assert _client_host(raw) == "-", raw
+    # ...and the rate limit sees one client
+    store = SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    store.set_meta("capability_secret", SECRET)
+    app = create_app(ServerSettings(base_url="https://ota.test", checkin_rate_per_min=2,
+                                    trusted_proxy_hops=1, poll_jitter=0,
+                                    swd_ids_verify_url="u", swd_ids_verify_token="t"),
+                     storage=LocalArtifactStorage(str(tmp_path / "blobs")),
+                     metastore=store, verifier=_Verifier(True))
+    c = TestClient(app)
+    codes = [c.post("/api/v1/check", json=_checkin(dev="d%d" % n),
+                    headers={"X-Forwarded-For": raw}).status_code
+             for n, raw in enumerate(("1.2.3.4", "::ffff:1.2.3.4", "[::ffff:1.2.3.4]:9",
+                                      "fe80::1%a", "fe80::1%b", "fe80::1%c"))]
+    assert codes[0] != 429 and codes == [codes[0], codes[0], 429] * 2

@@ -670,9 +670,10 @@ def create_rollout(body: RolloutCreate, request: Request,
         start_percent = body.percent
     else:
         raise HTTPException(status_code=400, detail="provide percent, stages or ramp")
-    prior = ms.active_rollout(product_id, body.cohort, account_id=account_id)   # one active per (account, product, cohort)
     rid = new_id("ro")
-    if prior is not None:
+    # One active per (account, product, cohort): the active one is superseded, and so is any
+    # paused one, which a resume would otherwise have put back beside this one -- two active.
+    for prior in ms.live_rollouts(product_id, body.cohort, account_id=account_id):
         ms.update_rollout(prior["rollout_id"], state="paused", pause_reason="superseded")
         ms.append_audit(actor=principal.name, action="rollout.superseded", entity_type="rollout",
                         entity_id=prior["rollout_id"], data={"by": rid}, account_id=account_id,

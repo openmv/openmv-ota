@@ -195,6 +195,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A grant handed to `poll_watch` that is not one raises `OSError`,** the one error it
   documents, not the `KeyError` that ended a wake loop catching `OSError`.
 
+- **A resumed ramp is judged on the cameras its new stage can reach.** The reach was
+  remembered without the stage's starting count, so a resume, or a raise to an equal
+  percent, was handed the old stage's figure: a floor of one attempt, and its first failure
+  paused it again.
+- **The auto-pause floor counts cameras built with `PRODUCT_ID` 0.** They are offered a
+  release by the account's publish counter, and the floor counted the cameras behind it by
+  payload version, so a fleet of them, every one offered the release, counted as none.
+- **An auto-pause or auto-raise lands only on a rollout that is still active.** A supersede
+  between its read and its write was overwritten: the rollout became `failure_limit`, which
+  a resume lets through, leaving two active for one product and cohort.
+- **A new rollout supersedes a paused one for its cohort too.** Only the active one was:
+  one paused by its failures or by hand stayed resumable, and a resume left two active.
+- **One client is one rate-limit key however it writes its address.** An IPv6 zone (any
+  text, of any length) and an IPv4 address written as `::ffff:a.b.c.d` were kept, each a
+  key of its own.
+
 - **A device's data is read under the account that owns it.** The datalake viewer grant
   named the device alone, so after a camera changed owner the new owner's grant paged back
   through the previous owner's console, telemetry and topics. The grant's token is now for

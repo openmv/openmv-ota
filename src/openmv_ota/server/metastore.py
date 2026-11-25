@@ -934,6 +934,15 @@ class SqlMetadataStore:
             "SELECT * FROM rollouts WHERE account_id = ? AND product_id = ? AND cohort = ? "
             "AND state = 'active' ORDER BY created_at DESC LIMIT 1", (account_id, product_id, cohort)))
 
+    def live_rollouts(self, product_id: int, cohort: str, account_id: str = "") -> list[dict]:
+        """The cohort's rollouts that could offer their release: the active one, and any paused
+        but not superseded (a resume puts it back)."""
+        return [_d(r) for r in self.query_all(
+            "SELECT * FROM rollouts WHERE account_id = ? AND product_id = ? AND cohort = ? "
+            "AND (state = 'active' OR (state = 'paused' "
+            "AND COALESCE(pause_reason, '') != 'superseded'))",
+            (account_id, product_id, cohort))]
+
     ROLLOUT_SORTS = {"created": "r.created_at", "percent": "r.percent", "state": "r.state",
                      "cohort": "r.cohort", "product": "r.product_id", "name": "LOWER(r.display_name)",
                      "devices": "cohort_devices", "rollout": "r.rollout_id"}
@@ -1072,12 +1081,19 @@ class SqlMetadataStore:
         if bad:
             raise ValueError("not an updatable column: %s" % ", ".join(sorted(bad)))
 
-    def update_rollout(self, rollout_id: str, **fields) -> None:
+    def update_rollout(self, rollout_id: str, *, if_state: str | None = None, **fields) -> bool:
+        """Write ``fields`` to the rollout; True when a row was written. With ``if_state``,
+        only while the rollout is still in that state: a decision made on a read of it must
+        not land on a rollout that changed state since (an auto-pause written over a
+        superseded rollout made it resumable, and left two active for one cohort)."""
         self._updatable(fields, self._ROLLOUT_UPDATABLE)
         fields = {**fields, "updated_at": _now_iso()}
         assigns = ", ".join(k + " = ?" for k in fields)
-        self.execute("UPDATE rollouts SET " + assigns + " WHERE rollout_id = ?",
-                     (*fields.values(), rollout_id))
+        where, params = " WHERE rollout_id = ?", (rollout_id,)
+        if if_state is not None:
+            where, params = where + " AND state = ?", (*params, if_state)
+        return self.execute("UPDATE rollouts SET " + assigns + where,
+                            (*fields.values(), *params)).rowcount == 1
 
     def count_once(self, rollout_id: str, device_id: str, what: str) -> bool:
         """Count ``what`` (``attempted``, ``updated`` or ``failures``) for this camera in this
@@ -1253,7 +1269,7 @@ class SqlMetadataStore:
                        version=None, older_than_pv=None, fell_back=None, unconfirmed=None,
                        not_seen_since=None, products=None, seen_since=None,
                        behind=None, up_to_date=None, installed_on=None,
-                       failed_on=None) -> tuple[str, tuple]:
+                       failed_on=None, before_release=None) -> tuple[str, tuple]:
         where, params = _scope(account_id, product_id, products)
         if cohort is not None:
             where, params = _and(where, "cohort = ?"), (*params, cohort)
@@ -1296,6 +1312,14 @@ class SqlMetadataStore:
         if older_than_pv is not None:                # "not yet on (or past) this release"
             where = _and(where, "(current_payload_version IS NULL OR current_payload_version < ?)")
             params = (*params, older_than_pv)
+        if before_release is not None:
+            # (payload_version, publish_seq): the cameras a release is an upgrade for, each
+            # compared in the order the offer compares it -- a camera built with PRODUCT_ID 0
+            # by the account's publish counter, which its payload version says nothing about
+            where = _and(where, "((orders_by_seq = 0 AND (current_payload_version IS NULL "
+                                "OR current_payload_version < ?)) "
+                                "OR (orders_by_seq != 0 AND publish_seq < ?))")
+            params = (*params, *before_release)
         if cohort_not is not None:                   # a picker: everything NOT yet in it
             where, params = _and(where, "cohort != ?"), (*params, cohort_not)
         if q:                                        # name-or-id substring, case-insensitive
@@ -1308,18 +1332,19 @@ class SqlMetadataStore:
                       cohort_not=None, version=None, older_than_pv=None, fell_back=None,
                       unconfirmed=None, not_seen_since=None, products=None,
                       seen_since=None, behind=None, up_to_date=None,
-                      installed_on=None, failed_on=None) -> int:
+                      installed_on=None, failed_on=None, before_release=None) -> int:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
                                             version, older_than_pv, fell_back, unconfirmed,
                                             not_seen_since, products, seen_since,
-                                            behind, up_to_date, installed_on, failed_on)
+                                            behind, up_to_date, installed_on, failed_on,
+                                            before_release)
         return self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
 
-    def device_ids(self, product_id=None, account_id=None, cohort=None, older_than_pv=None,
+    def device_ids(self, product_id=None, account_id=None, cohort=None, before_release=None,
                    page=500):
         """The ids of the devices the filters select, ``page`` at a time (an iterator)."""
         where, params = self._devices_where(account_id, product_id, cohort, None, None,
-                                            None, older_than_pv)
+                                            before_release=before_release)
         after = ""
         while True:
             rows = self.query_all("SELECT device_id FROM devices " + _and(where, "device_id > ?")

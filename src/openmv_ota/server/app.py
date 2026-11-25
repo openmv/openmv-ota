@@ -701,23 +701,31 @@ def _soak_elapsed_s(entered_at: str | None) -> float:
     return soak_elapsed_s(entered_at, datetime.now(timezone.utc))
 
 
-_REACH: dict = {}        # (rollout, percent, cameras behind it) -> reach; see _rollout_reach
+_REACH: dict = {}        # every figure the count reads -> reach; see _rollout_reach
 
 
-def _rollout_reach(ms, ro, release_pv, account_id, product_id) -> int:
+def _rollout_reach(ms, ro, rel, account_id, product_id) -> int:
     """How many cameras this rollout can reach at its percent, up to the most the auto-pause
     floor asks for above what it has already counted: those it brought to the release, and
     those still behind it that fall in its slice. Counted one camera at a time (the slice is
-    a hash), so it is remembered until the rollout's percent or the number of cameras behind
-    it changes -- and asked for only when a pause is in question."""
+    a hash), so it is remembered until a figure it was counted from changes -- and asked for
+    only when a pause is in question.
+
+    "Behind" is in each camera's own order, the one the offer uses: by payload version, or
+    by the account's publish counter for a camera built with PRODUCT_ID 0. By payload
+    version alone, a fleet of those that the rollout was offered to counted as none."""
+    before = (int(rel.get("payload_version", 0) or 0), int(rel.get("publish_seq", 0) or 0))
     behind = ms.count_devices(product_id=product_id, account_id=account_id,
-                              cohort=ro["cohort"], older_than_pv=release_pv)
-    key = (ro["rollout_id"], ro["percent"], behind, ro["updated"])
+                              cohort=ro["cohort"], before_release=before)
+    base = ro.get("stage_attempted_base", 0)
+    # The base is in the key: a resume or a raise to an equal percent moves it and keeps
+    # everything else, and a reach counted for the old base gave the new stage a floor of 1.
+    key = (ro["rollout_id"], before, ro["percent"], base, ro["updated"], behind)
     if key not in _REACH:
-        want = AUTOPAUSE_MIN_ATTEMPTED + ro.get("stage_attempted_base", 0)
+        want = AUTOPAUSE_MIN_ATTEMPTED + base
         reach = ro["updated"]
         for device_id in ms.device_ids(product_id=product_id, account_id=account_id,
-                                       cohort=ro["cohort"], older_than_pv=release_pv):
+                                       cohort=ro["cohort"], before_release=before):
             if reach >= want:
                 break
             reach += staged_in(ro["rollout_id"], device_id, ro["percent"])
@@ -746,8 +754,7 @@ def _ramp_or_autopause(ms, rid, ro):
         # reach (a ramp: in this stage), not the whole cohort -- one already on the release,
         # or outside the staged slice, never attempts, and counting it held a rollout whose
         # every camera failed from ever pausing
-        rel = ms.get_release(fresh["release_id"]) or {}
-        reach = _rollout_reach(ms, fresh, rel.get("payload_version", 0), acct, pid)
+        reach = _rollout_reach(ms, fresh, ms.get_release(fresh["release_id"]) or {}, acct, pid)
         return autopause_floor(reach - (fresh["stage_attempted_base"] if stages else 0))
     if stages:
         idx = fresh["stage_index"]
@@ -758,30 +765,35 @@ def _ramp_or_autopause(ms, rid, ro):
         action, nxt = ramp_action(*args)
         if action == "pause":
             action, nxt = ramp_action(*args, floor())
+        # The raise, like the pause, is written only while the rollout is still active: a
+        # supersede or a pause by hand can land between the read above and the write.
         if action == "raise":
             # never lower the dial: an operator may have raised past the next stage by hand
             nxt = max(nxt, fresh["percent"])
-            ms.update_rollout(rid, percent=nxt, stage_index=idx + 1,
-                              stage_entered_at=datetime.now(timezone.utc).isoformat(),
-                              stage_attempted_base=fresh["attempted"],
-                              stage_failures_base=fresh["failures"])
-            ms.append_audit(actor="system", action="rollout.autoraise", entity_type="rollout",
-                            entity_id=rid, account_id=acct,
-                            data={"stage": idx + 1, "percent": nxt}, product_id=pid)
+            if ms.update_rollout(rid, if_state="active", percent=nxt, stage_index=idx + 1,
+                                 stage_entered_at=datetime.now(timezone.utc).isoformat(),
+                                 stage_attempted_base=fresh["attempted"],
+                                 stage_failures_base=fresh["failures"]):
+                ms.append_audit(actor="system", action="rollout.autoraise",
+                                entity_type="rollout", entity_id=rid, account_id=acct,
+                                data={"stage": idx + 1, "percent": nxt}, product_id=pid)
         elif action == "pause":
-            ms.update_rollout(rid, state="paused", pause_reason="failure_limit")
-            ms.append_audit(actor="system", action="rollout.autopause", entity_type="rollout",
-                            entity_id=rid, account_id=acct,
-                            data={"stage": idx, "failures": stage_failures,
-                                  "attempted": stage_attempted}, product_id=pid)
+            _autopause(ms, rid, acct, pid, {"stage": idx, "failures": stage_failures,
+                                            "attempted": stage_attempted})
     elif should_autopause(fresh["failures"], fresh["attempted"], fresh["failure_threshold"]) \
             and should_autopause(fresh["failures"], fresh["attempted"],
                                  fresh["failure_threshold"], floor()):
-        ms.update_rollout(rid, state="paused", pause_reason="failure_limit")
+        _autopause(ms, rid, acct, pid, {"failures": fresh["failures"],
+                                        "attempted": fresh["attempted"]})
+
+
+def _autopause(ms, rid, acct, pid, data) -> None:
+    """Pause a rollout for its failures, and audit it, if it is still active. The decision
+    was made on an earlier read, and a rollout superseded since then was otherwise turned
+    into a "failure_limit" pause, which a resume lets through."""
+    if ms.update_rollout(rid, if_state="active", state="paused", pause_reason="failure_limit"):
         ms.append_audit(actor="system", action="rollout.autopause", entity_type="rollout",
-                        entity_id=rid, account_id=acct,
-                        data={"failures": fresh["failures"], "attempted": fresh["attempted"]},
-                        product_id=pid)
+                        entity_id=rid, account_id=acct, data=data, product_id=pid)
 
 
 _BOARD_RE = re.compile(r"[A-Z][A-Z0-9_]{0,39}")
@@ -1322,6 +1334,7 @@ _DEVICE_BODY_MAX = 64 * 1024       # a check-in is a few hundred bytes; slots an
 _ADMIN_BODY_MAX = 1024 * 1024      # the admin API's JSON: device id lists, a registration record
 _PUBLISH_PATH = "/api/v1/admin/releases"
 _PUBLISH_DELTAS_MAX = 1          # delta parts are small beside an image: room for one image's worth
+_HOST_MAX = 39                   # the longest address there is, written out in full (IPv6)
 
 
 def _client_host(raw) -> str:
@@ -1330,7 +1343,9 @@ def _client_host(raw) -> str:
     The client's host is the rate limiters' key and is written into audit rows, and behind a
     proxy that is trusted for it, it is whatever a client put in ``X-Forwarded-For``: as
     text, ``acct:<id>`` was another account's registration budget, and a port or a spelling
-    of its own a fresh key on every request."""
+    of its own a fresh key on every request. An IPv6 zone (``%eth0``, any text the sender
+    likes) is dropped and an IPv4-mapped address (``::ffff:1.2.3.4``) is the IPv4 one:
+    kept, each was another key for the same client."""
     if not isinstance(raw, str):
         return "-"
     s = raw.strip()
@@ -1339,9 +1354,13 @@ def _client_host(raw) -> str:
     elif s.count(":") == 1:                                 # v4:port
         s = s.split(":", 1)[0]
     try:
-        return str(ipaddress.ip_address(s))
+        addr = ipaddress.ip_address(s)
     except ValueError:
         return "-"
+    if addr.version == 6:
+        # rebuilt from its number, which carries no zone
+        addr = addr.ipv4_mapped or ipaddress.IPv6Address(int(addr))
+    return str(addr)[:_HOST_MAX]
 
 
 class _ClientAddress:
