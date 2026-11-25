@@ -96,8 +96,12 @@ import json
 import os
 import struct
 
-from ._lib import _UA, _level, _open, _read_capped, _split_url, limits
+from ._lib import _UA, _json_values, _level, _open, _read_capped, _split_url, limits
 
+# The relay's own messages are a handful of values ({"type": "start"}, {"watch": true,
+# "viewers": 3}); a frame or /poll body of more is not one, and is refused before the parser
+# builds an object for each value of it.
+_RELAY_VALUES = 32
 
 try:
     from openmv_log import log
@@ -470,6 +474,8 @@ class _Session:
     def on_text(self, payload):
         """Apply one relay control message; returns its type (or None if the
         message is unparseable -- tolerated, the relay may grow new ones)."""
+        if _json_values(payload) > _RELAY_VALUES:
+            return None
         try:
             kind = json.loads(payload)["type"]
         except (ValueError, KeyError, TypeError):
@@ -761,6 +767,8 @@ def parse_poll_response(body):
     Raises ``OSError`` on a body that is not the relay's answer, which is the one failure
     :func:`poll_watch` documents: a wake cycle that catches OSError ("sleep, retry next wake")
     must not be killed by a captive portal's HTML, a truncated body, or ``[]``."""
+    if _json_values(body) > _RELAY_VALUES:
+        raise OSError("poll: malformed reply")
     try:
         obj = json.loads(body)
         return bool(obj["watch"]), int(obj.get("viewers", 0))
@@ -774,11 +782,15 @@ async def poll_watch(stream=_DEFAULT_STREAM, grant=None):  # pragma: no cover  (
     answer is almost always "no, sleep". Returns ``(watch, viewers)``; raises
     OSError on network failure (wake logic should treat that as "sleep, retry
     next wake")."""
-    entry = ((grant or {}).get("streams") or {}).get(stream) if grant \
-        else _stream_grant(stream)
-    if not entry:
-        return False, 0
-    tls, host, port, path = _split_url(entry["poll_url"])
+    try:
+        # a grant handed in is the caller's, unchecked: any shape that is not one is the
+        # documented OSError, not a KeyError that ends a wake loop catching OSError
+        entry = (grant.get("streams") or {}).get(stream) if grant else _stream_grant(stream)
+        if not entry:
+            return False, 0
+        tls, host, port, path = _split_url(entry["poll_url"])
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        raise OSError("poll: malformed grant")
     reader, writer = await _open(host, port, tls)
     try:
         # HTTP/1.0 so no proxy can chunk the reply (see openmv_ota's check-in)

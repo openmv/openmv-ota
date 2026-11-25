@@ -105,7 +105,7 @@ def catcher_argv(python3: str, pidvid: str, mode: str = "claim",
     """Argv for the resident-SBL catcher (see ``_CATCHER_SCRIPT``). Arm it, wait for it to print
     READY, THEN reset the board; it prints CLAIMED (mode 'claim', holds the SBL) or FOUND (mode
     'wait') once the SBL enumerates. Run with the SDK python (where spsdk lives)."""
-    return [python3, "-c", _CATCHER_SCRIPT, mode, pidvid, "%g" % timeout_s, str(version)]
+    return [python3, "-P", "-c", _CATCHER_SCRIPT, mode, pidvid, "%g" % timeout_s, str(version)]
 
 # One process that scans (once) for each spsdk USB id and prints ``FOUND <id>`` for those
 # present -- the read-only counterpart of the wait script, for ``flash list``. Run with the
@@ -121,7 +121,7 @@ _SCAN_SCRIPT = (
 
 def scan_argv(python3: str, specs: list[tuple[str, str, str]]) -> list[str]:
     """Argv to scan for each ``(module, class, device_id)`` spsdk USB device in one process."""
-    return [python3, "-c", _SCAN_SCRIPT] + ["|".join(s) for s in specs]
+    return [python3, "-P", "-c", _SCAN_SCRIPT] + ["|".join(s) for s in specs]
 
 
 # The ops that go through the i.MX ROM's serial download (SDP) -- they need the SBL boot jumper.
@@ -149,7 +149,7 @@ def _blhost(blhost: str, usb: str, *sub: str, timeout: int | None = None) -> lis
 def _wait_argv(python3: str, usb: str, *, sdp: bool = False) -> list[str]:
     mod, cls = _SDP_IF if sdp else _MBOOT_IF
     timeout = SDP_WAIT_TIMEOUT_S if sdp else WAIT_TIMEOUT_S
-    return [python3, "-c", _WAIT_SCRIPT, mod, cls, usb, "%g" % timeout]
+    return [python3, "-P", "-c", _WAIT_SCRIPT, mod, cls, usb, "%g" % timeout]
 
 
 def erase_timeout_ms(length) -> int:

@@ -682,12 +682,49 @@ _ALG_SIG_SIZE = {-7: 64, -35: 96, -36: 132}
 # Image trailer header (mirror of openmv_ota.ota.trailer v4) -- only payload_version and
 # body_sha256 are read here.
 _TRAILER_MAGIC = b"OMVR"
-# framing | versions | stub resources | identity (three u64 at 40/48/56) | body_sha256 at 64
+# framing | versions | stub resources | identity (two u64 at 40/48; at 56 the u32 `built` and a
+# reserved u32, read here as one u64 and unused) | body_sha256 at 64
 _TRAILER_HEADER_STRUCT = "<4sIIIIIIBBBBIIQQQ32s"
 _TRAILER_PAYLOAD_VERSION = 6                      # field index of payload_version
 _TRAILER_COMP_SIZE = 80                           # one component entry: dest, offset, size, ...
 _CRYPT_GRAIN = 4096                               # the slot cipher's reach is rounded up to it
 _TRAILER_BODY_SHA = 16                            # field index of body_sha256 (the last field)
+
+
+def _json_values(b):
+    """The values ``json.loads`` builds from ``b`` -- strings, numbers, literals, containers --
+    counted outside strings (never fewer; an exponent counts twice). The device's parser takes
+    ``,`` and ``:`` for blanks, ``[1 1 1]`` is three elements, so counting commas bounds
+    nothing. A mirror of openmv_ota.ota.manifest's, which refuses at pack what this refuses."""
+    n = 0
+    i = 0
+    end = len(b)
+    num = False
+    while i < end:
+        c = b[i]
+        i += 1
+        if c == 34:                                  # '"': one value, skipped to its close
+            n += 1
+            num = False
+            while True:
+                j = b.find(b'"', i)
+                if j < 0:
+                    return n                         # unterminated: the parser refuses it
+                k = j
+                while k > i and b[k - 1] == 92:      # the backslashes just before this quote
+                    k -= 1
+                i = j + 1
+                if not (j - k) & 1:                  # an even run: this quote ends it
+                    break
+        elif 48 <= c <= 57 or c == 45 or c == 46:    # digits, '-', '.': one number a run
+            if not num:
+                n += 1
+                num = True
+        else:
+            num = False
+            if c == 91 or c == 123 or c == 116 or c == 102 or c == 110:   # [ { t f n
+                n += 1
+    return n
 
 
 def _manifest_parse(data):
@@ -725,12 +762,12 @@ def _manifest_parse(data):
         raise ValueError("bad manifest certificate")
     region = bytes(data[:_MANIFEST_BODY_OFFSET + body_size])
     body = bytes(data[_MANIFEST_BODY_OFFSET:_MANIFEST_BODY_OFFSET + body_size])
-    if body.count(b"[") + body.count(b"{") > 64 or body.count(b",") > 512:
+    if body.count(b"[") + body.count(b"{") > 64 or _json_values(body) > 512:
         # Nobody has signed for these bytes yet (the caller checks that next), and the parser
-        # builds an object for each bracket and each element of them. Refused here and not
+        # builds an object for each bracket and each value of them. Refused here and not
         # parsed after the signatures: on the smallest boards the body parsed that late left
         # the heap with no room for the install's first buffer (the M7's file install).
-        raise ValueError("manifest body nests too deep")
+        raise ValueError("manifest body nests too deep or holds too many values")
     body = json.loads(body)
     if not isinstance(body, dict):
         # Vetting reads it with body.get(...): a list or a number would surface as an

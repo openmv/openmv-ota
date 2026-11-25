@@ -48,22 +48,40 @@ def test_firmware_plan_uses_resident_sbl_no_sdphost_no_config(tmp_path):
 
 
 def test_wait_argv_runs_the_spsdk_scan_in_one_process():
+    # -P: `-c` puts the working directory first on the import path, and a `spsdk/` in the
+    # project (or wherever this runs) would be the one imported
     argv = imx._wait_argv("python3", "0x15A2,0x0073")
-    assert argv[:2] == ["python3", "-c"] and "scan(device_id=dev)" in argv[2]
-    assert argv[3:] == ["spsdk.mboot.interfaces.usb", "MbootUSBInterface", "0x15A2,0x0073", "30"]
+    assert argv[:3] == ["python3", "-P", "-c"] and "scan(device_id=dev)" in argv[3]
+    assert argv[4:] == ["spsdk.mboot.interfaces.usb", "MbootUSBInterface", "0x15A2,0x0073", "30"]
     sdp = imx._wait_argv("python3", "0x1FC9,0x0135", sdp=True)
-    assert sdp[3:] == ["spsdk.sdp.interfaces.usb", "SdpUSBInterface", "0x1FC9,0x0135", "120"]
+    assert sdp[4:] == ["spsdk.sdp.interfaces.usb", "SdpUSBInterface", "0x1FC9,0x0135", "120"]
+
+
+def test_the_spsdk_helpers_do_not_import_from_the_working_directory(tmp_path):
+    """Run from a directory that holds a `spsdk/` package (a project someone else made: `flash
+    factory` and `flash list` run where the user stands), the helpers import the SDK's, never
+    that one."""
+    import subprocess
+    import sys
+
+    (tmp_path / "spsdk").mkdir()
+    (tmp_path / "spsdk" / "__init__.py").write_text("open('ran', 'w').close()\n")
+    for argv in (imx.scan_argv(sys.executable, [("spsdk.x", "Y", "z")]),
+                 imx._wait_argv(sys.executable, "0x15A2,0x0073"),
+                 imx.catcher_argv(sys.executable, "0x15A2,0x0073", timeout_s=0)):
+        subprocess.run(argv, cwd=tmp_path, capture_output=True, timeout=60)
+        assert not (tmp_path / "ran").exists(), argv[:3]
 
 
 def test_catcher_argv_arms_the_claim_script():
     # the resident-SBL catcher: arm it, wait for READY, THEN reset -> it CLAIMS the SBL (holds it
     # against the idle timeout). Direct UsbDevice.scan (no spsdk device-DB FileLock stall).
     argv = imx.catcher_argv("python3", "0x15A2,0x0073")
-    assert argv[:2] == ["python3", "-c"]
-    assert "print('READY'" in argv[2] and "get_property(1)" in argv[2]
-    assert "UsbDevice.scan(device_id=dev)" in argv[2]
-    assert argv[3:] == ["claim", "0x15A2,0x0073", "30", str(imx.SBL_EXPECTED_VERSION)]
-    assert imx.catcher_argv("python3", "0x15A2,0x0073", mode="wait", timeout_s=5)[3:5] == ["wait", "0x15A2,0x0073"]
+    assert argv[:3] == ["python3", "-P", "-c"]
+    assert "print('READY'" in argv[3] and "get_property(1)" in argv[3]
+    assert "UsbDevice.scan(device_id=dev)" in argv[3]
+    assert argv[4:] == ["claim", "0x15A2,0x0073", "30", str(imx.SBL_EXPECTED_VERSION)]
+    assert imx.catcher_argv("python3", "0x15A2,0x0073", mode="wait", timeout_s=5)[4:6] == ["wait", "0x15A2,0x0073"]
 
 
 def test_bootloader_plan_waits_for_rom_then_writes_fcb_and_sbl(tmp_path):
@@ -71,7 +89,7 @@ def test_bootloader_plan_waits_for_rom_then_writes_fcb_and_sbl(tmp_path):
     steps = _plan("bootloader", files)
     argvs = [s.argv for s in steps]
     # the ROM (SDP) wait comes first (manual SBL entry), then sdphost
-    assert argvs[0][3:5] == ["spsdk.sdp.interfaces.usb", "SdpUSBInterface"]
+    assert argvs[0][4:6] == ["spsdk.sdp.interfaces.usb", "SdpUSBInterface"]
     assert argvs[1][4] == "write-file"
     flat = " ".join(" ".join(a) for a in argvs)
     assert "flash-erase-region 0x60000000 0x1000" in flat            # FCB

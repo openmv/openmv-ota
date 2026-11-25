@@ -69,10 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _drop_cwd_from_path() -> None:
-    """Started as ``python -m openmv_ota`` the working directory is first on the import
+    """Started as ``python -m openmv_ota.cli`` the working directory is first on the import
     path, and every import made later (a signer's SDK, mpy_cross) would take a file of that
     name from a project someone else made. Dropped, unless this package itself is run from
-    there."""
+    there. This module's own imports came before it: ``python -m openmv_ota`` (``__main__``)
+    drops the directory before any of them."""
     here = os.getcwd()
     if sys.path and sys.path[0] in ("", here) and \
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))) != here:

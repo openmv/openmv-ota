@@ -80,6 +80,35 @@ def test_every_documented_verb_exists():
         "was renamed without updating them." % broken)
 
 
+def test_python_m_openmv_ota_imports_nothing_from_the_working_directory(tmp_path):
+    """`python -m openmv_ota` run inside a project that holds an `argparse.py`: the CLI's own
+    imports come from the standard library, not from the project."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import openmv_ota
+    (tmp_path / "argparse.py").write_text("open('ran', 'w').close()\n")
+    env = dict(os.environ, PYTHONPATH=str(Path(openmv_ota.__file__).parents[1]))
+    r = subprocess.run([sys.executable, "-m", "openmv_ota", "--version"], cwd=tmp_path, env=env,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and r.stdout.strip() == openmv_ota.__version__, r.stderr
+    assert not (tmp_path / "ran").exists()
+
+
+def test_main_module_drops_the_working_directory(tmp_path, monkeypatch):
+    import runpy
+    import sys
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "path", [str(tmp_path), *sys.path])
+    monkeypatch.setattr(sys, "argv", ["openmv-ota", "--version"])
+    with pytest.raises(SystemExit) as e:
+        runpy.run_module("openmv_ota", run_name="__main__")
+    assert e.value.code == 0 and str(tmp_path) not in sys.path
+
+
 def test_the_working_directory_is_not_on_the_import_path(tmp_path, monkeypatch):
     """Started as `python -m openmv_ota`, the working directory was first on the import
     path: a `boto3.py` or `mpy_cross.py` in a project someone else made was the one

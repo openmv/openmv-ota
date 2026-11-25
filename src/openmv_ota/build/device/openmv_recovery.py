@@ -172,12 +172,48 @@ def http_date(value):
     return days * 86400 + hh * 3600 + mm * 60 + ss
 
 
+def _json_values(b):
+    """The values ``json.loads`` builds from ``b``, counted outside strings: the runtime's
+    ``openmv_ota._json_values``, duplicated rather than imported because recovery runs when
+    the runtime is the thing that is broken (test_recovery pins the two together)."""
+    n = 0
+    i = 0
+    end = len(b)
+    num = False
+    while i < end:
+        c = b[i]
+        i += 1
+        if c == 34:                                  # '"': one value, skipped to its close
+            n += 1
+            num = False
+            while True:
+                j = b.find(b'"', i)
+                if j < 0:
+                    return n                         # unterminated: the parser refuses it
+                k = j
+                while k > i and b[k - 1] == 92:      # the backslashes just before this quote
+                    k -= 1
+                i = j + 1
+                if not (j - k) & 1:                  # an even run: this quote ends it
+                    break
+        elif 48 <= c <= 57 or c == 45 or c == 46:    # digits, '-', '.': one number a run
+            if not num:
+                n += 1
+                num = True
+        else:
+            num = False
+            if c == 91 or c == 123 or c == 116 or c == 102 or c == 110:   # [ { t f n
+                n += 1
+    return n
+
+
 def _answer(raw):
     """The check-in answer, parsed. It is unsigned, and the parser builds an object for each
-    bracket and each element: an answer made of them is refused, as the runtime refuses it."""
+    bracket and each value (it takes commas for blanks, so they bound nothing): an answer
+    made of them is refused, as the runtime refuses it."""
     import json
-    if raw.count(b"[") + raw.count(b"{") > 64 or raw.count(b",") > 256:
-        raise OSError("check-in answer nests too deep")
+    if raw.count(b"[") + raw.count(b"{") > 64 or _json_values(raw) > 512:
+        raise OSError("check-in answer nests too deep or holds too many values")
     resp = json.loads(raw)
     if not isinstance(resp, dict):
         raise OSError("check-in answer is not an object")

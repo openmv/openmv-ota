@@ -142,6 +142,12 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 19 (host): Windows is not a supported host (CI runs Linux and macOS): there,
+    `CreateProcess` and `shutil.which` look in the working directory before `PATH`, so a
+    `git.exe` or `dfu-util.exe` at a project's top runs; every tool wants resolving to an
+    absolute path outside the project before Windows is. On a board that does not verify TLS
+    no server time is verified, so an image stamped by a build machine whose clock ran fast
+    holds NTP off until a release built with the right time.
   - Round 18 (host): a firmware tree handed over as a directory (an archive, a copy) brings
     its untracked `mpy-cross` with it, and a build runs it; trusting only a binary this tool
     built wants its hash kept somewhere the tree cannot write. A hard link from a package

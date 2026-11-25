@@ -142,6 +142,41 @@ class _Budget:
 budget = _Budget(_Limits.budget_bytes)
 
 
+def _json_values(b):
+    """The values ``json.loads`` builds from the bytes ``b``, counted outside strings: the
+    runtime's ``openmv_ota._json_values``, here so this library stands without it. The
+    device's parser takes ``,`` and ``:`` for blanks, so counting commas bounds nothing."""
+    n = 0
+    i = 0
+    end = len(b)
+    num = False
+    while i < end:
+        c = b[i]
+        i += 1
+        if c == 34:                                  # '"': one value, skipped to its close
+            n += 1
+            num = False
+            while True:
+                j = b.find(b'"', i)
+                if j < 0:
+                    return n                         # unterminated: the parser refuses it
+                k = j
+                while k > i and b[k - 1] == 92:      # the backslashes just before this quote
+                    k -= 1
+                i = j + 1
+                if not (j - k) & 1:                  # an even run: this quote ends it
+                    break
+        elif 48 <= c <= 57 or c == 45 or c == 46:    # digits, '-', '.': one number a run
+            if not num:
+                n += 1
+                num = True
+        else:
+            num = False
+            if c == 91 or c == 123 or c == 116 or c == 102 or c == 110:   # [ { t f n
+                n += 1
+    return n
+
+
 # --- URL handling (pure) -----------------------------------------------------
 
 def _split_url(url):
@@ -660,7 +695,13 @@ class _Conn:  # pragma: no cover  (device network)
         buf, mv, got = self._resp, self._resp_mv, 0
         while True:
             if got >= len(buf):
-                return True, False                   # bigger than we read in place: resync
+                # bigger than we read in place: resync. Delivered only if it says 200 -- a
+                # proxy's error page is kilobytes of HTML, and taken as delivered the caller
+                # drops the batch it was answering.
+                if not (buf[9] == 50 and buf[10] == 48 and buf[11] == 48):
+                    raise OSError("datalake HTTP %s"
+                                  % bytes(mv[:64]).split(b"\r\n", 1)[0])
+                return True, False
             yield core._io_queue.queue_read(s)
             r = s.readinto(mv[got:])
             if r is None:
