@@ -9,7 +9,6 @@ rollout isn't systematically the canary in the next.
 from __future__ import annotations
 
 import hashlib
-import math
 from datetime import datetime
 
 
@@ -119,10 +118,9 @@ def offers_update(*, current_payload_version: int, release_payload_version: int,
 AUTOPAUSE_MIN_ATTEMPTED = 5
 
 
-def autopause_floor(fleet: int, percent: float) -> int:
-    """How many attempts a failure rate needs before it can pause a rollout offered to
-    ``percent`` of a ``fleet`` of cameras: never more than it can reach, never fewer than 1."""
-    reach = math.ceil(fleet * percent / 100)
+def autopause_floor(reach: int) -> int:
+    """How many attempts a failure rate needs before it can pause a rollout that can reach
+    ``reach`` cameras: never more than it can reach, never fewer than 1."""
     return max(1, min(AUTOPAUSE_MIN_ATTEMPTED, reach))
 
 

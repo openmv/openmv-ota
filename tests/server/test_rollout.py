@@ -121,10 +121,9 @@ def test_should_autopause():
 
 def test_autopause_floor_is_five_or_what_the_rollout_can_reach():
     from openmv_ota.server.rollout import autopause_floor
-    assert autopause_floor(100, 100) == 5
-    assert autopause_floor(3, 100) == 3                  # a fleet of three: all three
-    assert autopause_floor(20, 10) == 2                  # ten percent of twenty
-    assert autopause_floor(0, 100) == 1 and autopause_floor(1000, 0) == 1
+    assert autopause_floor(100) == 5
+    assert autopause_floor(3) == 3                       # three cameras it can reach: all three
+    assert autopause_floor(0) == 1 and autopause_floor(-4) == 1
 
 
 def test_running_body_sha256_reads_the_running_slot():

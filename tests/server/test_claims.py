@@ -217,6 +217,19 @@ def test_registering_is_rate_limited(tmp_path):
     assert _register(c, B, signer_b, account="acctB", device="ARDUINO_GIGA:b").status_code == 429
 
 
+def test_one_account_cannot_spend_another_s_registration_budget(tmp_path):
+    """An account's budget and an address's are counted in one limiter. Behind a proxy that
+    passes a client's X-Forwarded-For on, the address is the client's to name: named
+    `acct:acctB`, a tenant's junk requests were acctB's registrations."""
+    c, _store = _server(tmp_path, rate=2)
+    signer_b = _desk(c, B)
+    hostile = TestClient(c.app, client=("acct:acctB", 1))
+    for _ in range(3):
+        hostile.post("/api/v1/admin/registrations", headers=A, json={"record": "x", "signature": "y"})
+    own = TestClient(c.app, client=("10.0.0.2", 1))
+    assert _register(own, B, signer_b, account="acctB", device="ARDUINO_GIGA:b").status_code == 200
+
+
 def test_an_account_releases_a_camera_it_holds(tmp_path):
     c, store = _server(tmp_path)
     _register(c, A, _desk(c, A))

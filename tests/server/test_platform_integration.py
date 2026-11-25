@@ -459,6 +459,8 @@ def test_the_datalake_admin_client_speaks_to_the_purge_route(tmp_path):
     assert lake.configured
     assert lake.purge_device("a1", "d") == {"deleted": 2, "bytes": 10}
     assert seen[-1] == ("DELETE", "https://lake.test/api/v1/admin/accounts/a1/devices/d", "Bearer lake-admin")
+    lake.purge_device("", "d")                     # the server's own account, as the lake files it
+    assert seen[-1][1] == "https://lake.test/api/v1/admin/accounts/default/devices/d"
     import pytest
     with pytest.raises(DatalakeError, match="HTTP 503"):
         lake.purge_device("a1", "boom")

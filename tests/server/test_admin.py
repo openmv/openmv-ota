@@ -1164,7 +1164,7 @@ def test_viewer_grant_returns_watch_and_read_urls(tmp_path):
     body = r.json()
     assert set(body["streams"]) == {"0", "thermal"}      # persisted at check-in
     assert body["streams"]["0"]["watch_url"].startswith("wss://live.test/watch/dev1/0?token=")
-    assert body["datalake"]["topics_url"] == "https://data.test/api/v1/topics/dev1"
+    assert body["datalake"]["topics_url"] == "https://data.test/api/v1/devices/default/dev1/topics"
     assert body["token"] and body["datalake"]["token"] != body["token"]
 
 
@@ -1745,6 +1745,10 @@ def test_a_superseded_rollout_names_the_one_that_took_its_cohort(tmp_path):
     r = c.patch("/api/v1/admin/rollouts/%s" % first, headers=AUTH, json={"state": "active"})
     assert r.status_code == 409 and "superseded" in r.json()["detail"]
     assert store.get_rollout(first)["state"] == "paused"
+    # ...nor paused by hand first: that rewrote why it was paused, and the resume went through
+    r = c.patch("/api/v1/admin/rollouts/%s" % first, headers=AUTH, json={"state": "paused"})
+    assert r.status_code == 409
+    assert store.get_rollout(first)["pause_reason"] == "superseded"
     assert c.get("/api/v1/admin/rollouts/%s/status" % second, headers=AUTH).json()["superseded_by"] is None
     ev = [e for e in c.get("/api/v1/admin/audit", headers=AUTH).json()["events"]
           if e["action"] == "rollout.superseded"]

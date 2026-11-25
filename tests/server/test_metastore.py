@@ -665,3 +665,16 @@ def test_deleting_an_account_takes_its_roots_and_its_unclaimed_boards(tmp_path):
     for table in ("account_roots", "unclaimed_devices"):
         assert [r["account_id"] for r in store.query_all(
             "SELECT account_id FROM %s" % table)] == ["kept"]
+
+
+def test_device_ids_pages_through_every_device(tmp_path):
+    store = ms.SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    for n in range(5):
+        store.upsert_device(device_id="d%d" % n, product_id=7, current_payload_version=n,
+                            account_id="a")
+    assert list(store.device_ids(product_id=7, account_id="a", page=2)) == \
+        ["d0", "d1", "d2", "d3", "d4"]
+    assert list(store.device_ids(product_id=7, account_id="a", older_than_pv=2, page=2)) == \
+        ["d0", "d1"]
+    assert list(store.device_ids(product_id=8, account_id="a")) == []

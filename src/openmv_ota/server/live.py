@@ -48,7 +48,8 @@ def _clean_streams(streams) -> list[str]:
     return good or list(_DEFAULT_STREAMS)
 
 
-def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "") -> dict | None:
+def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "",
+                 account_id: str = "") -> dict | None:
     """The grant a DASHBOARD needs to read one device: a ``viewer``-role token
     plus ready-made URLs. None when Live is not configured.
 
@@ -84,14 +85,21 @@ def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "")
         }
     if lake_on:
         # The read side: topics for the pane list, logs/{topic} for backscroll --
-        # bearer-authed with the DATALAKE's own viewer token, not the relay's.
+        # bearer-authed with the DATALAKE's own viewer token, not the relay's. The ACCOUNT
+        # is in the token and the URL: a camera that changes owner keeps its id, and a
+        # grant for the id alone read back through the previous owner's history.
+        from .datalog import account_key
         dl = datalake_url.rstrip("/")
+        account = account_key(account_id)
+        base = "%s/api/v1/devices/%s/%s" % (dl, account, device_id)
         grant["datalake"] = {
-            "token": mint_token(settings.datalake_token_secret, "viewer", device_id,
-                                settings.viewer_token_ttl),
-            "topics_url": "%s/api/v1/topics/%s" % (dl, device_id),
-            "logs_url": "%s/api/v1/logs/%s" % (dl, device_id),      # + /{topic}
-            "series_url": "%s/api/v1/series/%s" % (dl, device_id),  # + /{topic}
+            # (`device/` first: a product's viewer token is "{account}/{product}", two parts,
+            # and this one can never be the same string)
+            "token": mint_token(settings.datalake_token_secret, "viewer",
+                                "device/%s/%s" % (account, device_id), settings.viewer_token_ttl),
+            "topics_url": base + "/topics",
+            "logs_url": base + "/logs",                     # + /{topic}
+            "series_url": base + "/series",                 # + /{topic}
             "expires_in_s": settings.viewer_token_ttl,
         }
     return grant

@@ -18,6 +18,7 @@ hints under ``from __future__ import annotations``; per-request collaborators co
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
@@ -49,8 +50,9 @@ from .errors import ServerError
 from .metastore import build_metastore
 from .ratelimit import RateLimiter, SharedRateLimiter
 from .schemas import CheckAnswer, Health, KeykeeperChain, Ok
-from .rollout import (autopause_floor, fallback_payload_version, offers_update, ramp_action,
-                      stub_meets, running_body_sha256, settled, should_autopause, soak_elapsed_s)
+from .rollout import (AUTOPAUSE_MIN_ATTEMPTED, autopause_floor, fallback_payload_version,
+                      offers_update, ramp_action, running_body_sha256, settled,
+                      should_autopause, soak_elapsed_s, staged_in, stub_meets)
 from .storage import build_storage
 from .verify import Registration, build_verifier
 
@@ -699,6 +701,32 @@ def _soak_elapsed_s(entered_at: str | None) -> float:
     return soak_elapsed_s(entered_at, datetime.now(timezone.utc))
 
 
+_REACH: dict = {}        # (rollout, percent, cameras behind it) -> reach; see _rollout_reach
+
+
+def _rollout_reach(ms, ro, release_pv, account_id, product_id) -> int:
+    """How many cameras this rollout can reach at its percent, up to the most the auto-pause
+    floor asks for above what it has already counted: those it brought to the release, and
+    those still behind it that fall in its slice. Counted one camera at a time (the slice is
+    a hash), so it is remembered until the rollout's percent or the number of cameras behind
+    it changes -- and asked for only when a pause is in question."""
+    behind = ms.count_devices(product_id=product_id, account_id=account_id,
+                              cohort=ro["cohort"], older_than_pv=release_pv)
+    key = (ro["rollout_id"], ro["percent"], behind, ro["updated"])
+    if key not in _REACH:
+        want = AUTOPAUSE_MIN_ATTEMPTED + ro.get("stage_attempted_base", 0)
+        reach = ro["updated"]
+        for device_id in ms.device_ids(product_id=product_id, account_id=account_id,
+                                       cohort=ro["cohort"], older_than_pv=release_pv):
+            if reach >= want:
+                break
+            reach += staged_in(ro["rollout_id"], device_id, ro["percent"])
+        if len(_REACH) >= 1024:
+            _REACH.clear()
+        _REACH[key] = reach
+    return _REACH[key]
+
+
 def _ramp_or_autopause(ms, rid, ro):
     """Advance a ramping rollout to its next stage, or pause it, from the rollout's fresh numbers.
 
@@ -714,9 +742,13 @@ def _ramp_or_autopause(ms, rid, ro):
     stages = json.loads(fresh["stages"]) if fresh.get("stages") else None
 
     def floor():
-        # counted only when a pause is in question: the cameras this rollout can reach
-        return autopause_floor(ms.count_devices(product_id=pid, account_id=acct,
-                                                cohort=fresh["cohort"]), fresh["percent"])
+        # counted only when a pause is in question: the cameras this rollout can still
+        # reach (a ramp: in this stage), not the whole cohort -- one already on the release,
+        # or outside the staged slice, never attempts, and counting it held a rollout whose
+        # every camera failed from ever pausing
+        rel = ms.get_release(fresh["release_id"]) or {}
+        reach = _rollout_reach(ms, fresh, rel.get("payload_version", 0), acct, pid)
+        return autopause_floor(reach - (fresh["stage_attempted_base"] if stages else 0))
     if stages:
         idx = fresh["stage_index"]
         stage_attempted = fresh["attempted"] - fresh["stage_attempted_base"]
@@ -1292,22 +1324,47 @@ _PUBLISH_PATH = "/api/v1/admin/releases"
 _PUBLISH_DELTAS_MAX = 1          # delta parts are small beside an image: room for one image's worth
 
 
-class _ClientFromHops:
-    """The client's address, from the proxies' own entries in ``X-Forwarded-For``.
+def _client_host(raw) -> str:
+    """``raw`` as an address -- ``1.2.3.4``, ``1.2.3.4:5678``, ``2001:db8::1`` or
+    ``[2001:db8::1]:443`` -- in its one canonical spelling, or ``"-"`` when it is none.
+    The client's host is the rate limiters' key and is written into audit rows, and behind a
+    proxy that is trusted for it, it is whatever a client put in ``X-Forwarded-For``: as
+    text, ``acct:<id>`` was another account's registration budget, and a port or a spelling
+    of its own a fresh key on every request."""
+    if not isinstance(raw, str):
+        return "-"
+    s = raw.strip()
+    if s.startswith("["):                                   # [v6]:port
+        s = s[1:].split("]", 1)[0] if "]" in s else ""
+    elif s.count(":") == 1:                                 # v4:port
+        s = s.split(":", 1)[0]
+    try:
+        return str(ipaddress.ip_address(s))
+    except ValueError:
+        return "-"
 
-    Each proxy in front of the server appends the address it heard from, so with ``hops`` of
-    them the entry that many from the right is what the outermost one saw. Everything to the
-    left of it is what the client sent, and is not read. A request with fewer entries did not
-    come through them all: it has no address anyone vouches for, and shares one ("-")."""
 
-    def __init__(self, app, hops: int):
+class _ClientAddress:
+    """The client's address, as an address (see :func:`_client_host`). With ``hops``, from
+    the proxies' own entries in ``X-Forwarded-For``: each proxy in front of the server
+    appends the address it heard from, so with ``hops`` of them the entry that many from the
+    right is what the outermost one saw. Everything to the left of it is what the client
+    sent, and is not read. A request with fewer entries did not come through them all: it
+    has no address anyone vouches for, and shares one ("-")."""
+
+    def __init__(self, app, hops: int = 0):
         self.app, self.hops = app, hops
 
     async def __call__(self, scope, receive, send):
         if scope["type"] in ("http", "websocket"):
-            seen = b",".join(v for k, v in scope.get("headers") or () if k == b"x-forwarded-for")
-            hop = [e.strip() for e in seen.decode("latin-1").split(",") if e.strip()]
-            scope["client"] = (hop[-self.hops][:64] if len(hop) >= self.hops else "-", 0)
+            if self.hops:
+                seen = b",".join(v for k, v in scope.get("headers") or ()
+                                 if k == b"x-forwarded-for")
+                hop = [e.strip() for e in seen.decode("latin-1").split(",") if e.strip()]
+                raw = hop[-self.hops] if len(hop) >= self.hops else None
+            else:
+                raw = (scope.get("client") or (None,))[0]
+            scope["client"] = (_client_host(raw), 0)
         return await self.app(scope, receive, send)
 
 
@@ -1419,8 +1476,7 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
                   description=_API_DESCRIPTION, openapi_tags=_OPENAPI_TAGS,
                   docs_url=None, redoc_url=None)  # /docs is our self-hosted ReDoc page
     app.add_middleware(_BodyLimit)
-    if settings.trusted_proxy_hops:
-        app.add_middleware(_ClientFromHops, hops=settings.trusted_proxy_hops)
+    app.add_middleware(_ClientAddress, hops=settings.trusted_proxy_hops)
     app.state.settings = settings
     app.state.keykeeper = (keykeeper if keykeeper is not None
                            else keykeeper_mod.build_keykeeper(settings))

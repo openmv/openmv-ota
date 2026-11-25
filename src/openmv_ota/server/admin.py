@@ -724,9 +724,11 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
             # stop is TERMINAL -- the docs promise it, and a resume here would silently
             # re-offer a release the operator decided nobody else should get
             raise HTTPException(status_code=409, detail="rollout is stopped -- create a new one")
-        if body.state == "active" and ro.get("pause_reason") == "superseded":
+        if ro.get("pause_reason") == "superseded":
             # a newer rollout took its cohort: resumed, there were two active for one product
-            # and cohort, and this one's release was offered again whenever the newer paused
+            # and cohort, and this one's release was offered again whenever the newer paused.
+            # Nor paused by hand: that rewrote why it was paused, and the resume then went
+            # through.
             raise HTTPException(status_code=409, detail="rollout was superseded by a newer one "
                                 "-- create a new rollout for this release to go back to it")
         changes["state"] = body.state
@@ -1326,7 +1328,9 @@ def register_device(body: RegistrationIn, request: Request,
     ms = request.app.state.metastore
     limiter = request.app.state.reg_ratelimit
     ip = request.client.host if request.client else "-"
-    if not limiter.allow("acct:" + principal.account_id) or not limiter.allow(ip):
+    # (two kinds of key in one limiter, each in its own name space: an address is the
+    # client's to name behind a proxy that passes its X-Forwarded-For on)
+    if not limiter.allow("acct:" + principal.account_id) or not limiter.allow("ip:" + ip):
         raise HTTPException(status_code=429, detail="too many registrations, try again shortly")
     record = body.record.encode("utf-8")
     keys = [reg.DeskKey(k["key_id"], k["pubkey"], k["expires"], k["revoked"])
@@ -2099,7 +2103,7 @@ def _viewer_grant_for(st, principal, device_id: str):
         return None
     grant = live_mod.viewer_grant(
         st.settings, device_id, (device.get("streams") or "").split(","),
-        datalake_url=getattr(st.settings, "datalake_url", "") or "")
+        datalake_url=getattr(st.settings, "datalake_url", "") or "", account_id=owner)
     return grant if grant is not None else {}
 
 
