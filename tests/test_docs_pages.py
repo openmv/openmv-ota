@@ -126,8 +126,9 @@ def test_every_server_path_named_is_a_route(routes):
             path = m.group(1).rstrip(".").split("?")[0]
             if "..." in path or "{" in path.split("/")[-1] and "}" not in path:
                 continue
-            # the datalake and the relay serve their own /api/v1 paths
-            if any(s in path for s in ("/topics/", "/logs/", "/series/", "/products/")):
+            # the datalake serves its own /api/v1 paths: a device's reads under its account,
+            # a product's
+            if re.match(r"/api/v1/(devices/[^/]+/[^/]+/(topics|logs|series)|products/)", path):
                 continue
             if not _served(path, routes):
                 bad.append("%s: %s" % (p.name, path))

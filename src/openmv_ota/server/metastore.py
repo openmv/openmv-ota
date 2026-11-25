@@ -1315,6 +1315,20 @@ class SqlMetadataStore:
                                             behind, up_to_date, installed_on, failed_on)
         return self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
 
+    def device_ids(self, product_id=None, account_id=None, cohort=None, older_than_pv=None):
+        """The ids of the devices the filters select, a page at a time (an iterator)."""
+        where, params = self._devices_where(account_id, product_id, cohort, None, None,
+                                            None, older_than_pv)
+        after = ""
+        while True:
+            rows = self.query_all("SELECT device_id FROM devices " + _and(where, "device_id > ?")
+                                  + " ORDER BY device_id LIMIT 500", (*params, after))
+            for r in rows:
+                yield r["device_id"]
+            if len(rows) < 500:
+                return
+            after = rows[-1]["device_id"]
+
     def list_devices(self, product_id: int | None = None, limit: int = 100, account_id=None,
                      cohort=None, offset: int = 0, sort=None, direction=None, q=None,
                      cohort_not=None, version=None, older_than_pv=None,

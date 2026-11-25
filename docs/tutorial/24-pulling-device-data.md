@@ -371,16 +371,19 @@ $ curl -s -X POST -H "Authorization: Bearer $OPENMV_OTA_TOKEN" \
   "expires_in_s": 300,
   "datalake": {
     "token": "...",                     # THIS one opens the datalake
-    "topics_url": "https://data.cloud.openmv.io/api/v1/topics/OPENMV_N6:30003d000851303436313832",
-    "logs_url":   "https://data.cloud.openmv.io/api/v1/logs/OPENMV_N6:30003d000851303436313832",
-    "series_url": "https://data.cloud.openmv.io/api/v1/series/OPENMV_N6:30003d000851303436313832",
+    "topics_url": "https://data.cloud.openmv.io/api/v1/devices/acct_7bd21c50e83a94f1/OPENMV_N6:30003d000851303436313832/topics",
+    "logs_url":   "https://data.cloud.openmv.io/api/v1/devices/acct_7bd21c50e83a94f1/OPENMV_N6:30003d000851303436313832/logs",
+    "series_url": "https://data.cloud.openmv.io/api/v1/devices/acct_7bd21c50e83a94f1/OPENMV_N6:30003d000851303436313832/series",
     "expires_in_s": 300
   }
 }
 ```
 
-A server with a datalake but no live relay answers the same way with an empty
-`token` and `streams`; only a server with neither configured refuses (503).
+The account is in the URLs and in what the token is for: a camera that changes owner
+keeps its id, and its new owner's grant reads what the camera sent from then on, not what
+it sent its previous owner. A server with a datalake but no live relay answers the same
+way with an empty `token` and `streams`; only a server with neither configured refuses
+(503).
 
 For many devices at once, `POST .../admin/devices/viewer-grants` with
 `{"device_ids": [...]}` (up to 100) answers with the same grant per id under `grants`,
@@ -391,7 +394,7 @@ Then the read, under the datalake token, at the URL the grant named (`logs_url` 
 
 ```
 $ curl -s -H "Authorization: Bearer $LAKE_TOKEN" \
-      "https://data.cloud.openmv.io/api/v1/series/OPENMV_N6:30003d000851303436313832/telemetry?field=fps&buckets=50"
+      "https://data.cloud.openmv.io/api/v1/devices/acct_7bd21c50e83a94f1/OPENMV_N6:30003d000851303436313832/series/telemetry?field=fps&buckets=50"
 ```
 
 A product's grant is `POST .../admin/products/{product_id}/viewer-grant`: its `datalake`

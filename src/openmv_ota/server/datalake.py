@@ -41,7 +41,10 @@ class DatalakeAdmin:
     def purge_device(self, account_id: str, device_id: str) -> dict:
         """``{"deleted": n, "bytes": b}`` once the datalake has removed everything the
         device stored under the account. Raises DatalakeError on any failure."""
-        body = self._call("DELETE", f"/api/v1/admin/accounts/{account_id}/devices/{device_id}")
+        from .datalog import account_key
+        # (as the datalake files it: the server's own account is "default" there)
+        body = self._call("DELETE",
+                          f"/api/v1/admin/accounts/{account_key(account_id)}/devices/{device_id}")
         return {"deleted": int(body.get("deleted") or 0), "bytes": int(body.get("bytes") or 0)}
 
     def account_usage(self, account: str) -> dict:

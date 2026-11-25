@@ -663,6 +663,46 @@ def test_rate_limited(tmp_path):
     assert r.json() == {"update": False, "poll_after_s": retry}
 
 
+def test_a_rollout_every_camera_fails_pauses_however_few_it_reaches(tmp_path):
+    """The floor counted the whole cohort, cameras already on the release among them: two
+    cameras that could take it both failed, the floor said five, and it never paused."""
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, pv=0x02000000, percent=100)
+    store.update_rollout("ro1", state="paused")
+    c = TestClient(app)
+    for n in range(6):
+        camera.check(c, _checkin(dev="d%d" % n, pv=0x03000000 if n < 4 else 0x01000000))
+    store.update_rollout("ro1", state="active")
+    for n in (4, 5):                                          # the two behind it: offered...
+        camera.check(c, _checkin(dev="d%d" % n, pv=0x01000000))
+    camera.check(c, _checkin(dev="d4", pv=0x01000000, fallback_reason="crc"))
+    ro = store.get_rollout("ro1")                             # one of the two it can reach
+    assert (ro["attempted"], ro["failures"], ro["state"]) == (2, 1, "paused")
+
+
+def test_the_reach_counts_the_slice_and_is_remembered(tmp_path):
+    """Only cameras in the staged slice can be reached; counting them is a hash each, so the
+    answer is kept until the percent or the number of cameras behind the release changes."""
+    from openmv_ota.server import app as app_mod
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, pv=0x02000000, percent=100)
+    c = TestClient(app)
+    for n in range(40):
+        camera.check(c, _checkin(dev="e%d" % n, pv=0x01000000))
+    ro = dict(store.get_rollout("ro1"), percent=10.0, updated=0, stage_attempted_base=0)
+    want = sum(app_mod.staged_in("ro1", "e%d" % n, 10.0) for n in range(40))
+    app_mod._REACH.clear()
+    got = app_mod._rollout_reach(store, ro, 0x02000000, "", BID)
+    assert got == min(want, app_mod.AUTOPAUSE_MIN_ATTEMPTED)
+    store.execute("DELETE FROM devices")                       # remembered: not counted again
+    assert app_mod._rollout_reach(store, ro, 0x02000000, "", BID) == app_mod._rollout_reach(
+        store, dict(ro), 0x02000000, "", BID)
+    for n in range(1100):                                      # and bounded
+        app_mod._REACH[("x", n, 0, 0)] = 0
+    app_mod._rollout_reach(store, dict(ro, percent=11.0), 0x02000000, "", BID)
+    assert len(app_mod._REACH) == 1
+
+
 def test_one_camera_does_not_pause_a_rollout_by_itself(tmp_path):
     """One failure in one attempt is not a rate. A fleet of six pauses at five attempts."""
     app, store, storage, v = _app(tmp_path)
@@ -1105,14 +1145,17 @@ def test_the_client_is_the_address_the_outermost_proxy_wrote(tmp_path):
     what the outermost proxy saw."""
     import asyncio
 
-    from openmv_ota.server.app import _ClientFromHops
+    from openmv_ota.server.app import _ClientAddress
     seen = []
 
     async def inner(scope, receive, send):
         seen.append(scope.get("client"))
 
-    def client(headers, kind="http", hops=2):
-        asyncio.run(_ClientFromHops(inner, hops)({"type": kind, "headers": headers}, None, None))
+    def client(headers, kind="http", hops=2, peer=None):
+        scope = {"type": kind, "headers": headers}
+        if peer is not None:
+            scope["client"] = (peer, 1234)
+        asyncio.run(_ClientAddress(inner, hops)(scope, None, None))
         return seen[-1]
 
     xff = b"x-forwarded-for"
@@ -1123,7 +1166,18 @@ def test_the_client_is_the_address_the_outermost_proxy_wrote(tmp_path):
     assert client([]) == ("-", 0)
     assert client([(xff, b"1.1.1.1, 10.0.0.1")], kind="websocket") == ("1.1.1.1", 0)
     assert client([(xff, b"x")], kind="lifespan") is None     # not a request: left alone
-    assert client([(xff, b"a" * 200)], hops=1) == ("a" * 64, 0)
+    # an address, in its one spelling, or "-": the host is the limiters' key and goes into
+    # audit rows, and a port or a spelling of its own was a fresh key on every request
+    for raw, want in ((b"1.2.3.4:5678", "1.2.3.4"), (b"[2001:DB8::1]:443", "2001:db8::1"),
+                      (b"2001:db8:0::1", "2001:db8::1"), (b"a" * 200, "-"),
+                      (b"acct:acctB", "-"), (b"for=1.2.3.4", "-"), (b"[2001:db8::1", "-")):
+        assert client([(xff, raw)], hops=1) == (want, 0), raw
+    # ...with no proxy hops set, the address the connection came from (or uvicorn's
+    # reading of X-Forwarded-For), the same way
+    assert client([], hops=0, peer="10.0.0.9") == ("10.0.0.9", 0)
+    assert client([], hops=0, peer="acct:acctB") == ("-", 0)
+    assert client([], hops=0, peer="testclient") == ("-", 0)
+    assert client([], hops=0) == ("-", 0)
 
     # ...and it is what the rate limit keys on
     store = SqliteMetadataStore(str(tmp_path / "ota.db"))

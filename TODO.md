@@ -189,6 +189,11 @@ budget for now; these are the free/cheap passes to run first, in order.
     call; a token in account `''` reads every account's `/fleet/bases`.
   - Rounds 8-10 (server): journal entries the audit budget dropped are not audited later; a
     `stale` refusal uses the day's refusal-audit slot.
+  - Round 17 (server): the hosted server still takes the leftmost `X-Forwarded-For` entry
+    (`OPENMV_OTA_TRUSTED_PROXY_HOPS` unset until the platform's hop count is measured), so a
+    client names the address it is rate-limited as. The datalake's arrival indexes do not
+    lead with the account: a new owner reading back past a camera's transfer scans the old
+    owner's rows for that topic (slow, not a leak).
   - Rounds 13-16 (server): a product a camera was sent to by a pin, and never went to,
     stays noted on its registration, so a later move there by itself reads as sent. A
     webhook test ping has no

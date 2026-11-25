@@ -170,6 +170,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A device's data is read under the account that owns it.** The datalake viewer grant
+  named the device alone, so after a camera changed owner the new owner's grant paged back
+  through the previous owner's console, telemetry and topics. The grant's token is now for
+  `device/{account}/{device}` and its URLs are `/api/v1/devices/{account}/{device}/...`;
+  the datalake (openmv-cloud) answers only for that account, in lockstep.
+- **One account cannot spend another's registration budget.** Account and address keys
+  shared one limiter, and behind a proxy that passes a client's `X-Forwarded-For` on, an
+  address named `acct:<id>` was that account's budget.
+- **The client's address is an address.** A port, another spelling of the same address, or
+  text that is no address at all was a rate-limit key of its own and went into audit rows;
+  it is now the address in one spelling, or `-`.
+- **A superseded rollout cannot be paused by hand either.** That rewrote why it was paused,
+  and a resume then went through, leaving two active for one product and cohort.
+- **The auto-pause floor counts the cameras a rollout can reach.** It counted the whole
+  cohort, cameras already on the release among them, so a rollout every camera failed
+  could stay active for good.
+- **Erasing a device's data on the server's own account names it as the datalake files
+  it** (`default`).
+
 - **Every command that names a project checks it for links first.** The check lived where
   the config is loaded, and the desk, issuer and roots commands never load it: they wrote
   `keys/issuer.json` and `keys/desk_keys.json` through a link. The directories `project new`

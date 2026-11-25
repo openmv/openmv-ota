@@ -210,16 +210,20 @@ def test_viewer_grant_includes_the_datalake_half_with_its_own_token():
     """The datalake read endpoints verify against the DATALAKE's secret, so the grant
     carries a second viewer token under `datalake` -- decoupled from the relay's."""
     s = _settings(datalake_token_secret="dl-secret")
-    grant = live.viewer_grant(s, "dev1", datalake_url="https://data.test/")
+    grant = live.viewer_grant(s, "dev1", datalake_url="https://data.test/", account_id="acctA")
     dl = grant["datalake"]
-    assert dl["topics_url"] == "https://data.test/api/v1/topics/dev1"
-    assert dl["logs_url"] == "https://data.test/api/v1/logs/dev1"
-    assert dl["series_url"] == "https://data.test/api/v1/series/dev1"
+    assert dl["topics_url"] == "https://data.test/api/v1/devices/acctA/dev1/topics"
+    assert dl["logs_url"] == "https://data.test/api/v1/devices/acctA/dev1/logs"
+    assert dl["series_url"] == "https://data.test/api/v1/devices/acctA/dev1/series"
     assert dl["token"] != grant["token"]          # separate secrets, separate tokens
     exp, mac = dl["token"].split(".", 1)
-    want = hmac.new(b"dl-secret", b"viewer:dev1:%d" % int(exp),
+    # the account is in what the token is for: a camera that changes owner keeps its id,
+    # and a token for the id alone read back through the previous owner's history
+    want = hmac.new(b"dl-secret", b"viewer:device/acctA/dev1:%d" % int(exp),
                     hashlib.sha256).hexdigest()
     assert mac == want                            # signed with the DATALAKE's secret
+    own = live.viewer_grant(s, "dev1", datalake_url="https://data.test/")["datalake"]
+    assert own["topics_url"] == "https://data.test/api/v1/devices/default/dev1/topics"
 
 
 def test_viewer_grant_lives_minutes_whatever_the_device_grants_do():
@@ -260,5 +264,5 @@ def test_viewer_grant_opens_the_datalake_without_a_relay():
     s = ServerSettings(base_url="https://ota.test", datalake_token_secret="dl-secret")
     g = live.viewer_grant(s, "dev1", ["0"], datalake_url="https://data.test")
     assert g["token"] == "" and g["streams"] == {}
-    assert g["datalake"]["topics_url"] == "https://data.test/api/v1/topics/dev1"
+    assert g["datalake"]["topics_url"] == "https://data.test/api/v1/devices/default/dev1/topics"
     assert g["expires_in_s"] == g["datalake"]["expires_in_s"] == 300
