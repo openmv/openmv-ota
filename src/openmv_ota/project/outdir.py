@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
 from .errors import ProjectError
@@ -11,7 +12,18 @@ from .errors import ProjectError
 # directory packs that directory, whatever it holds.
 _PACKED = ("app", "app-coprocessor", "device", "certs")
 
-_MSG = "%s is a link: a project's files are its own -- remove it"
+_MSG = ("%s is a link (or a file with another name elsewhere: a hard link): a project's files "
+        "are its own -- replace it with a copy, or remove it")
+
+
+def _shared(path: Path) -> bool:
+    """A link, or a file with another name somewhere (a hard link): written in place, as the
+    lock, the ledger and the build outputs are, it is that other file that changes."""
+    try:
+        st = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISLNK(st.st_mode) or (stat.S_ISREG(st.st_mode) and st.st_nlink > 1)
 
 
 def _links(top: Path):
@@ -20,7 +32,7 @@ def _links(top: Path):
         yield top
     for base, dirs, files in os.walk(top):
         for name in sorted(dirs + files):
-            if (Path(base) / name).is_symlink():
+            if _shared(Path(base) / name):
                 yield Path(base) / name
 
 
@@ -39,7 +51,7 @@ def check_project(root: str | Path, error: type = ProjectError) -> None:
     if root.is_dir():
         with os.scandir(root) as entries:
             # (an editor's lock beside a file it has open is a link that names no file)
-            found = [Path(e.path) for e in entries if e.is_symlink()
+            found = [Path(e.path) for e in entries if _shared(Path(e.path))
                      and not e.name.startswith(".#") and not e.is_dir()]
     for name in (".openmv-ota", "build", "keys", "compliance") + _PACKED:
         found += _links(root / name)

@@ -125,6 +125,21 @@ def run_git(repo: Path, *args: str, check: bool = True) -> str | None:
     return proc.stdout.strip()
 
 
+def untracked(path: Path) -> bool | None:
+    """Whether git knows ``path`` as a file it does NOT track: True only when the repository
+    the file is in says so, False when it tracks it, None when git could not say (no
+    repository there, one it refuses to read)."""
+    try:
+        proc = subprocess.run([GIT, *_QUIET, "-C", str(path.parent), "ls-files",
+                               "--error-unmatch", "--", path.name],
+                              capture_output=True, text=True, env={**os.environ, **_NO_FETCH})
+    except FileNotFoundError:
+        return None
+    if proc.returncode == 0:
+        return False
+    return True if proc.returncode == 1 and "did not match" in proc.stderr else None
+
+
 def is_git_repo(path: Path) -> bool:
     try:
         return run_git(path, "rev-parse", "--git-dir", check=False) is not None
@@ -240,6 +255,8 @@ def submodule_update(repo: Path) -> None:
 
 def pip_install(spec: str) -> None:
     try:
-        subprocess.run([sys.executable, "-m", "pip", "install", spec], check=True)
+        # (-P: the working directory is not on the child's import path, where a `pip.py`
+        # in a project someone else made would run in its place)
+        subprocess.run([sys.executable, "-P", "-m", "pip", "install", spec], check=True)
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         raise ProjectError("pip install %s failed: %s" % (spec, e), exit_code=1) from None

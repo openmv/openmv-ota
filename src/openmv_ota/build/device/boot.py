@@ -71,7 +71,7 @@ except ImportError:                    # host / tests / a build without logging 
 
 MAGIC = b"OMVR"                         # ROMFS application image
 HEADER_VERSION = 4
-_HEADER_STRUCT = "<4sIIIIIIBBBBIIQQQ32s"
+_HEADER_STRUCT = "<4sIIIIIIBBBBIIQQII32s"
 _HEADER_SIZE = struct.calcsize(_HEADER_STRUCT)   # 96
 _COMP_STRUCT = "<IIII32s32s"              # dest offset size installed_size sha256 installed_sha256
 _COMP_SIZE = struct.calcsize(_COMP_STRUCT)       # 80
@@ -228,7 +228,7 @@ def parse_trailer(data):
         raise OtaReject("trunc")
     (magic, header_version, body_size, comp_count, meta_size, min_stub, payload_version,
      uart_en, uart_id, wdt_en, wdt_id, baud, wdt_timeout_ms, product_id, publish_seq,
-     _reserved, body_sha256) = struct.unpack_from(_HEADER_STRUCT, data, 0)
+     built, _reserved, body_sha256) = struct.unpack_from(_HEADER_STRUCT, data, 0)
     if magic != MAGIC:
         raise OtaReject("magic")
     if header_version != HEADER_VERSION:
@@ -258,6 +258,7 @@ def parse_trailer(data):
     t.product_id = product_id
     t.publish_seq = publish_seq
     t.payload_version = payload_version
+    t.built = built
     t.min_stub = min_stub
     t.uart_en, t.uart_id, t.baud = uart_en, uart_id, baud
     t.wdt_en, t.wdt_id, t.wdt_timeout_ms = wdt_en, wdt_id, wdt_timeout_ms
@@ -933,6 +934,13 @@ def _main(cfg):  # pragma: no cover  (hardware / QEMU only)
     cfg.last_epoch = trailer.epoch
     cfg.last_failure_reason = reject_reason
     cfg.last_stub = ob.stub                        # (stub_version, reason), or None
+    try:  # hil-residual: an import guard around a pure call (openmv_rtc.floor is host-tested)
+        # The image is signed, and says when it was built: it is at least that late. The
+        # clock's own floor is the FIRMWARE's build, which an app update never moves.
+        import openmv_rtc  # hil-residual: frozen beside boot.py on every OTA firmware
+        openmv_rtc.floor(trailer.built)  # hil-residual: pure; host-tested in test_device_rtc
+    except Exception:  # hil-residual: no clock module (a firmware without it): nothing to tell
+        pass  # hil-residual: bare pass
 
     os.chdir("/rom")
     sys.path[:] = ["/rom", "/rom/lib", ".frozen"]

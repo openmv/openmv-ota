@@ -189,6 +189,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Erasing a device's data on the server's own account names it as the datalake files
   it** (`default`).
 
+- **A helper run with `python -m` does not import from the working directory.** `mpremote`,
+  `mpy_cross` and `pip` are run that way, and `-m` puts the working directory first on the
+  import path: a `mpremote.py` at the top of a project someone else made ran in its place.
+  They get `-P`, and the tool drops the working directory from its own import path when it
+  is started as `python -m openmv_ota`.
+- **An `mpy-cross` is the tree's own only when git says it is untracked.** Where git could
+  not say (no repository there), it was taken as untracked.
+- **A verified server's time is the clock's floor, whichever side of it the old floor was,**
+  so an image built on a machine with a fast clock does not hold NTP off for good. A build
+  stamps one time into every trailer it signs, and refuses a `SOURCE_DATE_EPOCH` that is
+  not a time up to now.
+- **A Live grant that is not an object is no grant.** A list there ended the camera's relay
+  task until the next reboot.
+
+- **NTP cannot rewind the camera's clock past a time it knows.** NTP is not authenticated,
+  and a spoofed answer set the clock anywhere after the build: rewound, a server
+  certificate that had since expired validated again. The clock now has a floor: the
+  build's time, raised by each time a verified server gives.
+- **An image says when it was built, and the clock is never set earlier.** The trailer's
+  `built` (Unix seconds, four of the header's eight reserved bytes: the layout is the one
+  it was, and an image from before the field reads as 0) is signed with the rest, and
+  `boot.py` raises the clock's floor to it. The firmware's own build time, the only floor
+  until now, never moves on an app update. `SOURCE_DATE_EPOCH` names it for a repeatable
+  build.
+
+- **A build does not run an `mpy-cross` the firmware checkout came with.** `build romfs`
+  prefers the tree's own compiler, and a fork that commits a program at that path had it
+  run. The one this machine built is untracked; a tracked one, or a link, is passed over
+  for the installed `mpy-cross`.
+- **`SDK_VERSION` is a version, and is not quoted back when it is not one.** As a link it
+  was any file of the user's, printed by `project status` and every drift error.
+- **A project file with another name elsewhere (a hard link) is refused** like a link: the
+  lock, the ledger and the build outputs are written in place.
+- **A command run inside a project checks it,** whether or not it takes one: `client
+  release manifest` and `artifact` write where they are run.
+- **An app version is ASCII digits and dots and nothing around them.** A trailing newline,
+  a space or another script's digits went into file names and the ledger as they were.
+
 - **Every command that names a project checks it for links first.** The check lived where
   the config is loaded, and the desk, issuer and roots commands never load it: they wrote
   `keys/issuer.json` and `keys/desk_keys.json` through a link. The directories `project new`

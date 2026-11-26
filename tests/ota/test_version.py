@@ -10,7 +10,10 @@ from openmv_ota.ota.version import decode_app_version, encode_app_version, parse
 
 def test_parse_semver():
     assert parse_semver("1.2.3") == (1, 2, 3, 0)
-    assert parse_semver("  10.0.255 ") == (10, 0, 255, 0)
+    assert parse_semver("10.0.255") == (10, 0, 255, 0)
+    for odd in ("  10.0.255 ", "1.0.0\n", "\u0661.0.0"):       # a file name and a ledger key
+        with pytest.raises(OtaError):
+            parse_semver(odd)
 
 
 def test_the_build_byte_is_a_fourth_component():

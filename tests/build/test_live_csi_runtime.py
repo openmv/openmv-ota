@@ -181,6 +181,11 @@ def test_grant_per_stream_lookup():
     assert rt._stream_grant("tele") is None      # server didn't grant this name
     rt.set_grant({})                              # falsy -> stored as None
     assert rt._stream_grant("0") is None
+    # the answer is the server's (anyone's, where TLS is not verified): a grant that is not
+    # an object of objects is no grant, and used to end the relay task for good
+    for odd in ([1], "x", {"streams": [1]}, {"streams": "x"}, {"streams": {"0": [1]}}):
+        rt.set_grant(odd)
+        assert rt._stream_grant("0") is None, odd
     rt.set_grant({"streams": {"0": {}}})
     rt.clear_grant()
     assert rt._stream_grant("0") is None

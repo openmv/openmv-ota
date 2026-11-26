@@ -129,7 +129,7 @@ budget for now; these are the free/cheap passes to run first, in order.
     print unfiltered; `flash bootloader -b OPENMV_AE3` runs the project's
     `tools/alif/toolkit/*.py`, and a committed `openmv-ota.local.toml` picks the SDK home
     whose `dfu-util` runs; the SDK archive's `.sha256` comes from the same host as the
-    archive and `SDK_VERSION` is not validated before it names a URL and a directory.
+    archive.
   - Round 6 (device): an unverified offer with a new `release_id` reboots the camera before
     anything is fetched (a hostile server can loop it); the factory window signs any 32
     bytes with the identity key (console access); a `.hilcov_uart` file on a volume turns
@@ -142,17 +142,26 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 18 (host): a firmware tree handed over as a directory (an archive, a copy) brings
+    its untracked `mpy-cross` with it, and a build runs it; trusting only a binary this tool
+    built wants its hash kept somewhere the tree cannot write. A hard link from a package
+    cache (`uv pip install --target app/lib`) is refused like any other. The check of the
+    working directory looks at that directory, not at a project above it.
+  - Round 17 (host): a FIFO in `app/` passes the project check; `build` as a file, and a
+    directory where a file is written, end in a traceback; on Windows a release's file name
+    taken from its URL, and a `C:name` entry in `romfs unpack`, are not contained (not
+    tested there).
   - Round 16 (host): a project with `platform = true` has `build ota-romfs` take a publish
     counter from the server the user is logged in to; `flash bootloader --dry-run` on the
     AE3 writes its key-area file.
-  - Round 15 (device, host): the device's clock is only as good as NTP. A spoofed NTP
-    answer moves it either way on any board, and on a board that does not verify TLS an
-    unverified `Date` moves it forward as far as the trust window: check-ins are then
-    stale at the server until NTP corrects it (minutes to six hours, never where NTP is
-    blocked). Rewound on a verifying board, an expired server certificate validates again.
-    NTP is not made forward-only because a clock pushed forward then never comes back;
-    closing this wants an authenticated time kept on flash as a floor (the newest verified
-    `Date`). Host: `--keys-from` follows links in the source's key files; the ROMFS reader
+  - Round 15 (device, host): NTP cannot rewind the clock past the newest time a verified
+    server gave since boot, or, after a reboot, past when the image it runs was built (the
+    trailer's `built`). Between a release and a reboot that floor is as old as the release.
+    Forward, the clock is anyone's on the
+    path: a spoofed NTP answer, or an unverified `Date` on a board that does not verify
+    TLS, makes check-ins stale at the server until NTP or a verified server corrects it
+    (minutes to six hours, never where NTP is blocked and the server unreachable).
+    Host: `--keys-from` follows links in the source's key files; the ROMFS reader
     copies a slice of the image for each record that points into it; `stage_app` copies a
     FIFO or a device; the Azure signer talks to whatever host a record's `uri` names (the
     SDK checks the challenge from 4.7, now the floor).
@@ -193,7 +202,8 @@ budget for now; these are the free/cheap passes to run first, in order.
     (`OPENMV_OTA_TRUSTED_PROXY_HOPS` unset until the platform's hop count is measured), so a
     client names the address it is rate-limited as. The datalake's arrival indexes do not
     lead with the account: a new owner reading back past a camera's transfer scans the old
-    owner's rows for that topic (slow, not a leak).
+    owner's rows for that topic (slow, not a leak). The datalake still keeps `topic_stats`,
+    which nothing reads since `device_stats` replaced it; drop it in its next change.
   - Rounds 13-16 (server): a product a camera was sent to by a pin, and never went to,
     stays noted on its registration, so a later move there by itself reads as sent. A
     webhook test ping has no

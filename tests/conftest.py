@@ -137,8 +137,8 @@ def make_firmware(tmp_path):
     """Create a real temp git repo mimicking an openmv checkout.
 
     ``omit`` drops a file to exercise error branches; ``with_remote`` toggles the
-    origin; ``with_mpy_cross`` commits a stub mpy-cross binary so the project
-    resolves a path for it.
+    origin; ``with_mpy_cross`` leaves a stub mpy-cross binary, built and ignored, so the
+    project resolves a path for it.
     """
     def _make(name="fw", *, sdk_version="1.6.0", with_remote=True, with_mpy_cross=False, omit=()):
         repo = tmp_path / name
@@ -201,9 +201,11 @@ def make_firmware(tmp_path):
                     "#define IMLIB_ENABLE_LAB_LUT\n#define IMLIB_ENABLE_QRCODES\n"
                     "#define IMLIB_ENABLE_DATAMATRICES\n#endif\n")
         if with_mpy_cross:
+            # as the firmware's build leaves it: a file git ignores, not one it tracks
             mc = repo / "lib" / "micropython" / "mpy-cross" / "build"
             mc.mkdir(parents=True)
             (mc / "mpy-cross").write_text("")
+            (repo / ".gitignore").write_text("lib/micropython/mpy-cross/build/\n")
         git(repo, "init", "-q", "-b", "main")
         git(repo, "config", "user.email", "t@t")
         git(repo, "config", "user.name", "t")

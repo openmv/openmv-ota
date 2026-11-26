@@ -75,6 +75,10 @@ try:                                  # the build stamps this into _ota_config
 except ImportError:                   # host, or a non-OTA firmware: no floor
     BUILD_TIME = 0
 
+# The latest time this camera knows it to be at least: the firmware build's, raised at boot
+# to when the mounted image was built (floor) and by each time a verified server gives.
+_floor = BUILD_TIME
+
 # Seconds between the two epochs MicroPython ports use (1970-01-01 -> 2000-01-01).
 _EPOCH_2000 = 946684800
 
@@ -192,7 +196,7 @@ def server_time(unix, verified=True):
     it only ever moves the clock forward and is not a network check (NTP still runs).
 
     Returns True when the time was accepted."""
-    global _source, _net_ms
+    global _source, _net_ms, _floor
     if unix < BUILD_TIME:
         return False
     if not verified:
@@ -202,9 +206,28 @@ def server_time(unix, verified=True):
         return True
     if not trusted() or abs(now() - unix) > _DRIFT_S:
         set_time(unix)
+    if _in_window(unix):
+        _floor = unix                 # it is this late, whatever NTP says next (and whatever
+        #                               an image built on a machine with a wrong clock said)
     _source = "server"
     _net_ms = _ticks_ms()
     return True
+
+
+def floor(unix):
+    """It is at least ``unix`` (boot.py: when the image it mounted was built, which the
+    image's signature covers). Raises the floor; a time outside the window is not one."""
+    global _floor
+    if unix > _floor and _in_window(unix):
+        _floor = unix
+
+
+def _ntp_ok(unix):
+    """Whether an NTP answer may set the clock. NTP is not authenticated: anyone on the path
+    answers it. It can put the clock anywhere from the latest time this camera KNOWS it to
+    be -- the build of what it runs, or the newest a verified server has told it -- and no
+    earlier: rewound past that, a certificate that has since expired is valid again."""
+    return unix >= _floor - _DRIFT_S
 
 
 def timestamp():
@@ -301,7 +324,7 @@ def sync(host=None):  # pragma: no cover  (device: network + RTC)
             unix = _ntp_query(addr, socket, struct)
         except Exception:  # hil-residual: this server timed out / was blocked -> try the next one
             continue  # hil-residual: bare continue
-        if unix < BUILD_TIME:                          # a reply older than the build is bogus (an unset
+        if not _ntp_ok(unix):                          # a reply older than the build is bogus (an unset
             continue  # hil-residual: bare continue    # server clock, or a non-NTP host answering) -> next
         set_time(unix)
         _source = "ntp"

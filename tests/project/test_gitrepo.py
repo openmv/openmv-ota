@@ -198,7 +198,7 @@ def test_pip_install(monkeypatch):
     fake = _FakeRun()
     monkeypatch.setattr(gitrepo.subprocess, "run", fake)
     gitrepo.pip_install("mpy-cross==1.28.0")
-    assert fake.calls[0][0][1:] == ["-m", "pip", "install", "mpy-cross==1.28.0"]
+    assert fake.calls[0][0][1:] == ["-P", "-m", "pip", "install", "mpy-cross==1.28.0"]
 
 
 def test_pip_install_failure(monkeypatch):
@@ -359,3 +359,19 @@ def test_config_the_caller_s_environment_carries_is_kept(make_firmware, tmp_path
     assert env["GIT_CONFIG_COUNT"] == "5" and env["GIT_CONFIG_KEY_1"] == "filter.x.clean"
     monkeypatch.setenv("GIT_CONFIG_COUNT", "many")
     assert gitrepo._no_filters(repo)["GIT_CONFIG_COUNT"] == "4"
+
+
+def test_a_file_git_cannot_vouch_for_is_not_untracked(make_firmware, tmp_path, monkeypatch):
+    """`untracked` is True only when the repository the file is in says so: where there is
+    none, or git cannot be run, it has not said."""
+    repo = make_firmware(with_mpy_cross=True)
+    built = repo / "lib" / "micropython" / "mpy-cross" / "build" / "mpy-cross"
+    assert gitrepo.untracked(built) is True
+    assert gitrepo.untracked(repo / "SDK_VERSION") is False
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    (loose / "mpy-cross").write_text("")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    assert gitrepo.untracked(loose / "mpy-cross") is None
+    monkeypatch.setattr(gitrepo, "GIT", str(tmp_path / "no-such-git"))
+    assert gitrepo.untracked(built) is None

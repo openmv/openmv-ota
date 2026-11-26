@@ -45,7 +45,8 @@ from .targets import FlashConfig, flash_config
 
 def _mpremote(override: str | None) -> list[str]:
     """The argv prefix to run mpremote (a console script, also `python -m mpremote`)."""
-    return [override] if override else [sys.executable, "-m", "mpremote"]
+    # (-P: the working directory is not on the child's import path -- see compile/mpy.py)
+    return [override] if override else [sys.executable, "-P", "-m", "mpremote"]
 
 
 # What the bootloader-entry reset printed when it exited non-zero -- normally just the expected

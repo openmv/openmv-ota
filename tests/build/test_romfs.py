@@ -154,7 +154,7 @@ def test_mpy_cross_via_pip(monkeypatch, make_project):
                         lambda cmd, a, s, o: seen.update(cmd=cmd) or o.write_bytes(b"MPY"))
     root, repo, app = make_project(with_mpy_cross=False)
     build_mod.build_romfs(root, app=app, firmware=repo, convert_models=False)
-    assert seen["cmd"][1:] == ["-m", "mpy_cross"]
+    assert seen["cmd"][1:] == ["-P", "-m", "mpy_cross"]
 
 
 def test_missing_app(make_project, tmp_path):
@@ -375,6 +375,8 @@ def test_ota_build_signs_and_verifies(make_project):
     t = parse_trailer(trailer_bytes)
     assert t.payload_version == encode_app_version("1.2.3")
     assert t.product_id == 999
+    import time
+    assert abs(t.built - time.time()) < 3600                   # says when it was built
     assert t.body_sha256 == hashlib.sha256(body[:t.body_size]).digest()   # the filesystem only
     assert t.meta["vendor"] == "Acme" and t.meta["app_version"] == "1.2.3"
     assert t.meta["firmware"]["version"] == "5.0.0"
@@ -2004,3 +2006,16 @@ def test_a_platform_factory_image_carries_the_counter_and_seeds_its_floor(make_p
     image = r.output.read_bytes()
     for end in (target.front_size, 2 * target.front_size):          # slot A, slot B
         assert parse_trailer(image[end - block:end]).publish_seq == 4242
+
+
+def test_a_repeatable_build_names_its_own_build_time(monkeypatch):
+    """`built` is the wall clock, which no two builds share: SOURCE_DATE_EPOCH names it."""
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1795000000")
+    assert build_mod._built_now() == 1795000000
+    monkeypatch.delenv("SOURCE_DATE_EPOCH")
+    assert abs(build_mod._built_now() - __import__("time").time()) < 5
+    # a camera will not set its clock earlier than this by NTP: not a time yet to come
+    for bad in ("soon", "-5", "0", "4102444800", "\u0661\u0667"):
+        monkeypatch.setenv("SOURCE_DATE_EPOCH", bad)
+        with pytest.raises(BuildError, match="SOURCE_DATE_EPOCH"):
+            build_mod._built_now()

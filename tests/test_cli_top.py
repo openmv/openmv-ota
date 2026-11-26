@@ -78,3 +78,27 @@ def test_every_documented_verb_exists():
     assert not broken, (
         "documented verb paths that do not exist: %r. Either the docs are stale or the verb "
         "was renamed without updating them." % broken)
+
+
+def test_the_working_directory_is_not_on_the_import_path(tmp_path, monkeypatch):
+    """Started as `python -m openmv_ota`, the working directory was first on the import
+    path: a `boto3.py` or `mpy_cross.py` in a project someone else made was the one
+    imported. The helpers this runs with `-m` get `-P` for the same reason."""
+    import sys
+
+    from openmv_ota import cli
+    monkeypatch.chdir(tmp_path)
+    for first in ("", str(tmp_path)):
+        monkeypatch.setattr(sys, "path", [first, "/usr/lib/python3"])
+        cli._drop_cwd_from_path()
+        assert sys.path == ["/usr/lib/python3"]
+    monkeypatch.setattr(sys, "path", ["/usr/bin", "/usr/lib/python3"])       # a console script
+    cli._drop_cwd_from_path()
+    assert sys.path == ["/usr/bin", "/usr/lib/python3"]
+    # ...run from the directory this package itself is in, it stays
+    import os
+    src = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+    monkeypatch.chdir(src)
+    monkeypatch.setattr(sys, "path", [src, "/usr/lib/python3"])
+    cli._drop_cwd_from_path()
+    assert sys.path[0] == src

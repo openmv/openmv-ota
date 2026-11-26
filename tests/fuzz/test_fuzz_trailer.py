@@ -59,7 +59,8 @@ def framed_trailers(draw):
         draw(st.integers(0, 255)), draw(st.integers(0, 255)),
         draw(st.integers(0, (1 << 32) - 1)), draw(st.integers(0, (1 << 32) - 1)),
         draw(st.integers(0, (1 << 64) - 1)), draw(st.integers(0, (1 << 64) - 1)),
-        draw(st.integers(0, (1 << 64) - 1)), draw(st.binary(min_size=32, max_size=32)))
+        draw(st.integers(0, (1 << 32) - 1)), draw(st.integers(0, (1 << 32) - 1)),
+        draw(st.binary(min_size=32, max_size=32)))
     comps = draw(st.binary(min_size=48 * n_comps, max_size=48 * n_comps))
     cert = draw(st.just(_CERT) | st.binary(min_size=160, max_size=160))
     body = header + comps + cert + meta + draw(st.binary(min_size=64, max_size=64))
@@ -108,7 +109,8 @@ _components = st.lists(st.builds(T.Component, dest=_u32, offset=_u32, size=_u32,
     components=_components,
     uart_en=st.integers(0, 255), uart_id=st.integers(0, 255), wdt_en=st.integers(0, 255),
     wdt_id=st.integers(0, 255), baud=_u32, wdt_timeout_ms=_u32,
-    publish_seq=st.integers(0, (1 << 64) - 1), reserved=st.integers(0, (1 << 64) - 1)),
+    publish_seq=st.integers(0, (1 << 64) - 1), built=st.integers(0, (1 << 32) - 1),
+    reserved=st.integers(0, (1 << 32) - 1)),
     st.data())
 def test_pack_then_parse_round_trips(t, data):
     t.signature = data.draw(st.binary(min_size=64, max_size=64))

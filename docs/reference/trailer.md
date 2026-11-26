@@ -45,7 +45,7 @@ little-endian:
 
 The fixed header is 96 bytes, in four groups: framing, versions, the resources the
 boot stub uses, identity, then the digest. Every field is naturally aligned; the
-three 64-bit fields sit together at offsets 40, 48 and 56.
+two 64-bit fields sit together at offsets 40 and 48.
 
 | Offset | Field | Type | Meaning |
 |---|---|---|---|
@@ -64,10 +64,11 @@ three 64-bit fields sit together at offsets 40, 48 and 56.
 | 36 | `wdt_timeout_ms` | `uint32` | The watchdog timeout. |
 | 40 | `product_id` | `uint64` | Target product id; the cross-flash guard. The build auto-assigns a nonzero id — the low 63 bits of `sha256("<product>:<board>")` — so this is `0` (check skipped) only if the project sets it to `0` on purpose. 32 bits collide at a few thousand products, and two product lines sharing an id means one line's devices accept the other's firmware. |
 | 48 | `publish_seq` | `uint64` | The account's **publish counter**: one number per build, taken from the update server, strictly increasing across every product the account publishes. It is the anti-rollback input for a camera built with `product_id = 0` — the only camera that can be moved between products, whose images a per-product version cannot order. `0` for every other project, and ignored by every other camera. |
-| 56 | `reserved` | `uint64` | Zero. The headroom the next field comes out of. |
+| 56 | `built` | `uint32` | When the image was built, in Unix seconds (`0` in an image that does not say). The camera's clock is never set earlier than the image it runs was built. |
+| 60 | `reserved` | `uint32` | Zero. The headroom the next field comes out of. |
 | 64 | `body_sha256` | `32s` | SHA-256 of the `body_size` body bytes. Verifying the signature + recomputing this hash transitively authenticates the body. |
 
-The struct is `<4sIIIIIIBBBBIIQQQ32s`.
+The struct is `<4sIIIIIIBBBBIIQQII32s`.
 
 ## Components
 

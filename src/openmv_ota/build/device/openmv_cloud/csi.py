@@ -148,7 +148,9 @@ def set_grant(grant):
     the OTA loop can call it directly. Streams pick the new grant up on their
     next connect -- an in-flight connection keeps its (still valid) token."""
     global _grant
-    _grant = grant if grant else None
+    # (an object, with an object of streams: the answer is the server's, or on a board that
+    # does not verify TLS anyone's, and a list here ended the relay task for good)
+    _grant = grant if isinstance(grant, dict) and isinstance(grant.get("streams"), dict) else None
 
 
 def clear_grant():
@@ -160,7 +162,8 @@ def _stream_grant(name):
     None (no grant yet / the server didn't grant this stream name)."""
     if not _grant:
         return None
-    return (_grant.get("streams") or {}).get(name)
+    got = _grant["streams"].get(name)
+    return got if isinstance(got, dict) else None
 
 
 # --- the stream registry (what the OTA client reports at check-in) -------------
