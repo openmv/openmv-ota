@@ -319,3 +319,93 @@ def test_the_mounted_image_s_build_time_is_a_floor(monkeypatch, _clock):
     rtc.floor(0)                                                # one that does not say
     rtc.floor(BUILD + rtc._MAX_AHEAD + 1)                       # outside the window: not a time
     assert rtc._floor == BUILD + 86400 * 90
+
+
+# --- an NTP reply is checked before it sets anything ---------------------------
+
+class _Ntp:
+    """A socket module whose one server answers each request with ``answer(request)``, from
+    ``src`` (default: the address the request went to)."""
+
+    AF_INET = SOCK_DGRAM = 0
+
+    def __init__(self, answer, src=None):
+        self.answer, self.src, self.sent = answer, src, []
+
+    def socket(self, *a):
+        return self
+
+    def settimeout(self, t):
+        pass
+
+    def sendto(self, q, addr):
+        self.sent.append((bytes(q), addr))
+
+    def recvfrom(self, n):
+        q, addr = self.sent[-1]
+        return self.answer(q)[:n], self.src or addr
+
+    def close(self):
+        pass
+
+
+_NOW = 1_800_000_000           # 2027-01: an NTP count past the 2024 wrap floor
+
+
+def _reply(q, li=0, stratum=2, mode=4, origin=None, xmt=_NOW + 2_208_988_800):
+    """A server's reply to the request ``q``: LI, mode, stratum, the origin (the request's
+    transmit timestamp unless given) and the transmit seconds."""
+    import struct
+    p = bytearray(48)
+    p[0] = (li << 6) | (4 << 3) | mode
+    p[1] = stratum
+    p[24:32] = q[40:48] if origin is None else origin
+    struct.pack_into("!I", p, 40, xmt)
+    return bytes(p)
+
+
+def _query(answer, src=None):
+    import struct
+    return rtc._ntp_query(("1.2.3.4", 123), _Ntp(answer, src), struct)
+
+
+def test_a_good_ntp_reply_is_the_time():
+    assert _query(_reply) == _NOW
+
+
+def test_an_ntp_request_carries_a_transmit_time_of_its_own():
+    """The reply must echo it; a fixed one (ntptime's is 0) is what a stray or kiss-o'-death
+    packet already carries."""
+    sock = _Ntp(_reply)
+    import struct
+    rtc._ntp_query(("1.2.3.4", 123), sock, struct)
+    rtc._ntp_query(("1.2.3.4", 123), sock, struct)
+    (a, _), (b, _) = sock.sent
+    assert a[0] == 0x1B and a[40:] != bytes(8) and a[40:] != b[40:]
+
+
+@pytest.mark.parametrize("answer", [
+    # ntpd's rate-limit kiss-o'-death: stratum 0, LI 3, the request's transmit time echoed
+    lambda q: _reply(q, li=3, stratum=0, xmt=int.from_bytes(q[40:44], "big")),
+    lambda q: _reply(q, stratum=0),                     # a kiss of any other code
+    lambda q: _reply(q, li=3, stratum=16),              # a server that has no time itself
+    lambda q: _reply(q, stratum=17),
+    lambda q: _reply(q, li=3),                          # an alarm, whatever its stratum says
+    lambda q: _reply(q, mode=3),                        # the request itself, reflected
+    lambda q: _reply(q, origin=bytes(8)),               # an answer to another request
+    lambda q: _reply(q, xmt=0),                         # no time: 2036 after the wrap fix
+], ids=["kiss", "stratum-0", "stratum-16", "stratum-17", "li-3", "mode-3", "origin", "xmt-0"])
+def test_an_ntp_reply_that_is_not_a_server_s_time_is_refused(answer):
+    """One such reply set the clock to 2036-02-07: a time the build floor trusts, and one no
+    certificate is valid at."""
+    with pytest.raises(OSError):
+        _query(answer)
+
+
+def test_an_ntp_reply_from_another_address_is_refused():
+    with pytest.raises(OSError):
+        _query(_reply, src=("6.6.6.6", 123))
+
+
+def test_leap_second_warnings_are_still_a_time():
+    assert _query(lambda q: _reply(q, li=1)) == _query(lambda q: _reply(q, li=2)) == _NOW

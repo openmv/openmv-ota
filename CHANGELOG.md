@@ -170,6 +170,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **NTP sets the camera's clock only from a server's answer to the request it sent.** The
+  request carried a transmit timestamp of 0 and nothing in the reply was checked: ntpd's
+  rate-limit kiss-o'-death echoes that 0, as could any packet reaching the port, and 0 reads
+  as 2036-02-07, a time the build floor trusts and no certificate is valid at. The request's
+  timestamp is random and the reply must carry it as its origin, from the address it went to,
+  as a server with the time (not stratum 0 or 16, nor LI 3, nor a transmit timestamp of 0).
+- **Recovery asks NTP again on each attempt until a verified server has given the time.** It
+  asked only while the clock was untrusted, so a clock NTP put years ahead read as trusted,
+  failed every check-in's TLS, and never got the `Date` that would correct it: a camera with
+  no bootable slot stayed where it was.
+- **A firmware tree passes as clean and as the locked commit only when it is.** In a tree
+  handed over with `--firmware`, `git replace` had the pinned commit read as another, with the
+  other's files; a skip-worktree or assume-unchanged bit, `info/exclude`, `core.excludesFile`,
+  an untracked `.gitignore`, `status.showUntrackedFiles=no`, a submodule's `ignore = all` (in
+  the superproject, or in a submodule for its own), `diff.ignoreSubmodules` and
+  `core.checkStat=minimal` each kept a change out of `git status`, in the tree or in a
+  submodule. Git reads no replaced object, every repository in the tree is asked itself, and
+  a file git ignores is a change unless a build leaves it (`build/`, mpy-cross's `build/`,
+  `__pycache__/`).
+- **`build firmware` refuses a link where it writes in the firmware tree.** The generated
+  `_ota_config.py`, with the payload keys, and the frozen modules make compiles it into went
+  through a `build` link wherever it pointed, and the tree's `build/` is git-ignored.
+- **`project setup` clones over https, ssh or a local path, and updates submodules over https
+  or ssh, with the other git calls' settings.** A lock's remote of the form `helper::url` ran
+  `git-remote-<helper>` from `PATH`, and the clone and update took none of the settings that
+  keep hooks and a filesystem monitor from running.
+- **`client data export --out` writes its file as every download is.** It opened the name in
+  place, so it followed a link planted there and made the file under the umask.
+- **`client release bases` refuses a link on the way to its output inside the working
+  directory.** Its default, `build/bases`, is relative to it, and a `build` link in a
+  directory someone else made sent the decrypted bases wherever it pointed.
+
 - **The camera's JSON caps count a `\u` escape as its parser reads one.** The parser takes the
   four bytes after `\u` unread, a quote or a backslash among them, and the count did not:
   `["\uabc\" 1. 1. ...]` (8 KB) counted as two values and built 2,702, past the manifest,

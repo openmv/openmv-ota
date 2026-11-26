@@ -27,7 +27,7 @@ from pathlib import Path
 
 from openmv_ota.server.scopes import ALL_SCOPES, SCOPES
 
-from openmv_ota.project.outdir import output_dir
+from openmv_ota.project.outdir import check_path, output_dir
 
 from . import config
 from .errors import ClientError
@@ -930,6 +930,9 @@ def cmd_bases(args: argparse.Namespace) -> int:
         cfg = config.resolve(args.server, args.token)
         api = _make_api(cfg)
         out = Path(args.output)
+        # build/bases by default, in a directory someone else may have made: a link on the
+        # way there takes the decrypted bases wherever it points
+        check_path(".", out, ClientError)
         out.mkdir(parents=True, exist_ok=True)
         plain = _BaseDecryptor(args.project, args.board, args.key_passphrase_file)
         if args.fleet:
@@ -1545,23 +1548,23 @@ def cmd_data_export(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(win, indent=2))
         return 0
-    out = args.out.open("w", newline="", encoding="utf-8") if args.out else sys.stdout
-    try:
-        if args.format == "ndjson":
-            for r in win["records"]:
-                out.write(json.dumps(r) + "\n")
-        else:
-            w = csv.writer(out)
-            w.writerow(["time_utc", "session", "seq", "line"])
-            for r in win["records"]:
-                ts = r.get("ts")
-                w.writerow(_cells([_utc(ts) if isinstance(ts, (int, float)) else "",
-                                   r.get("sid") or "", r.get("seq"),
-                                   _STAMP.sub("", str(r.get("text") or "").rstrip("\n"), count=1)]))
-    finally:
-        if args.out:
-            out.close()
+    import io
+    # The window is in memory already (--limit bounds it), so a file is written as every
+    # download is: opened in place it followed a link at the name and was made under the umask.
+    out = io.StringIO() if args.out else sys.stdout
+    if args.format == "ndjson":
+        for r in win["records"]:
+            out.write(json.dumps(r) + "\n")
+    else:
+        w = csv.writer(out)
+        w.writerow(["time_utc", "session", "seq", "line"])
+        for r in win["records"]:
+            ts = r.get("ts")
+            w.writerow(_cells([_utc(ts) if isinstance(ts, (int, float)) else "",
+                               r.get("sid") or "", r.get("seq"),
+                               _STAMP.sub("", str(r.get("text") or "").rstrip("\n"), count=1)]))
     if args.out:
+        config.write_private(args.out, out.getvalue().encode("utf-8"))
         print("%d record(s) -> %s" % (len(win["records"]), args.out), file=sys.stderr)
     if win.get("truncated"):
         print("note: the window held more than %d records; these are its newest (narrow "

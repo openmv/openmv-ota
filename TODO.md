@@ -142,6 +142,20 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 21 (host): the camera's JSON caps bound values, not heap. On the M4 (OPENMV2,
+    a 44 KB GC heap) a hostile check-in answer inside the caps (about 455 strings of 16
+    characters, some 24 KB parsed) runs the heap out and the runtime reboots, and the
+    installer holds three copies of a manifest of up to 8 KB (raw, region, body) before it
+    parses one: give each value a byte budget, and parse from memoryviews. `poll_watch` can
+    still raise `MemoryError` from `_read_capped`. In the app, a TLS failure on a clock NTP
+    set does not end the six-hour hold on NTP (Round 15's "minutes to six hours"): a failed
+    check-in does not say whether TLS or the network failed, and dropping the hold on every
+    one would put NTP on the wire every five minutes of an outage. The ignored files a build
+    leaves in the firmware tree (`build/`, mpy-cross's `build/`, `__pycache__/`) are not looked
+    into: a tree handed over with planted objects (`--incremental`) or a byte-code cache whose
+    source's mtime and size it matches runs them, as Round 18's mpy-cross does. Two hosts in
+    separate PID namespaces writing one download name in a shared directory can collide on
+    its temporary name.
   - Round 19 (host): Windows is not a supported host (CI runs Linux and macOS): there,
     `CreateProcess` and `shutil.which` look in the working directory before `PATH`, so a
     `git.exe` or `dfu-util.exe` at a project's top runs; every tool wants resolving to an

@@ -277,17 +277,26 @@ def _ntp_query(addr, socket, struct):  # pragma: no cover  (device: network)  # 
     timeout/error. Mirrors the ntptime lib's query (48-byte client packet, transmit timestamp at
     bytes 40:44 as seconds-since-1900, Y2036 wrap fix) with ONE change: ``recvfrom`` instead of
     ``recv``. A bare ``recv`` on an unconnected UDP socket faults on the WINC1500 (and ``connect``
-    is TCP-only there); ``recvfrom`` is the portable UDP-client read and works on every stack."""
+    is TCP-only there); ``recvfrom`` is the portable UDP-client read and works on every stack.
+
+    Unlike ntptime it checks the reply. A transmit timestamp of 0 reads as 2036 after the wrap
+    fix, and ntpd's rate-limit kiss-o'-death (stratum 0, LI 3) echoes the request's own, which
+    ntptime sends as 0. So the request's is random and the reply must give it back as its
+    origin, from the address it went to, as a server (mode 4) that has the time; anything else
+    raises like a timeout."""
+    import os
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.settimeout(4)                               # a bit above ntptime's 1 s -> tolerate the WINC
-        q = bytearray(48)
-        q[0] = 0x1b                                    # LI=0, VN=3, Mode=3 (client)
-        s.sendto(q, addr)
-        msg = s.recvfrom(48)[0]                        # recvfrom, NOT recv (WINC); bounded 48-byte reply
+        r = os.urandom(8)
+        s.sendto(b"\x1b" + bytes(39) + r, addr)       # LI=0, VN=3, Mode=3 (client), transmit r
+        msg, src = s.recvfrom(48)                      # recvfrom, NOT recv (WINC); bounded 48-byte reply
     finally:
         s.close()
     val = struct.unpack("!I", msg[40:44])[0]          # transmit timestamp, seconds since 1900
+    if (src != addr or msg[24:32] != r or msg[0] & 7 != 4 or msg[0] > 191   # origin, mode, LI 3
+            or not 0 < msg[1] < 16 or not val):        # stratum 0 (a kiss) or 16 (no time); transmit 0
+        raise OSError
     if val < _NTP_WRAP_FLOOR:                          # below 2024 -> the 2036 32-bit counter wrapped
         val += 0x100000000                             # (ntptime's Y2036 fix)
     return val - _NTP_DELTA_1900_1970                  # NTP (1900) -> Unix (1970)

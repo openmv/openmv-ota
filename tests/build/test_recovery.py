@@ -348,3 +348,88 @@ def test_recovery_takes_an_offer_that_is_an_https_url_and_no_other():
         raw = __import__("json").dumps({"update": True, "manifest_url": url}).encode()
         assert rec.offered(200, raw) is None, url
     assert rec.offered(200, b'{"update": true, "manifest_url": "https://h/m.bin"}') == "https://h/m.bin"
+
+
+# --- the clock a recovering camera signs with -----------------------------------
+
+_BUILT = 1_795_000_000                        # 2026-11
+_DEAD = 946_684_800                           # a dead RTC: 2000-01-01
+
+
+def _ntp_answer(q, unix, stratum=2, li=0):
+    """A server's reply to the NTP request ``q`` saying ``unix``."""
+    import struct
+    p = bytearray(48)
+    p[0], p[1] = (li << 6) | (4 << 3) | 4, stratum
+    p[24:32] = q[40:48]
+    struct.pack_into("!I", p, 40, (unix + 2_208_988_800) % 2 ** 32)
+    return bytes(p)
+
+
+def _recovering_clock(monkeypatch, answer):
+    """openmv_rtc as recovery imports it, on a dead RTC, with every NTP server answering
+    ``answer(request)``. Returns the module, the clock, and the list of syncs asked for."""
+    import sys
+    import types
+
+    from openmv_ota.build.device import openmv_rtc as rtc
+    clock, syncs = [_DEAD], []
+
+    def set_time(unix):
+        clock[0] = int(unix)
+        rtc._bad = False
+
+    class Sock:
+        def settimeout(self, t):
+            pass
+
+        def sendto(self, q, addr):
+            self.reply = answer(bytes(q)), addr
+
+        def recvfrom(self, n):
+            return self.reply
+
+        def close(self):
+            pass
+
+    sock = types.ModuleType("socket")
+    sock.AF_INET = sock.SOCK_DGRAM = 0
+    sock.socket = lambda *a: Sock()
+    sock.getaddrinfo = lambda host, port: [(0, 0, 0, "", ("198.51.100.1", 123))]
+    sync = rtc.sync
+    for name, value in (("BUILD_TIME", _BUILT), ("_floor", _BUILT), ("_bad", False),
+                        ("_source", "none"), ("_net_ms", None), ("_fallback_next", 0),
+                        ("now", lambda: clock[0]), ("set_time", set_time),
+                        ("sync", lambda host=None: syncs.append(host) or sync(host))):
+        monkeypatch.setattr(rtc, name, value)
+    monkeypatch.setitem(sys.modules, "socket", sock)
+    monkeypatch.setitem(sys.modules, "openmv_rtc", rtc)
+    return rtc, clock, syncs
+
+
+def test_a_kiss_o_death_does_not_set_a_recovering_camera_s_clock(monkeypatch):
+    """ntpd's rate-limit kiss-o'-death echoes the request's transmit time, which was 0: the
+    clock read 2036, recovery took it as trusted and never asked NTP again, and with no
+    certificate valid in 2036 no check-in got through to correct it."""
+    rtc, clock, syncs = _recovering_clock(
+        monkeypatch, lambda q: _ntp_answer(q, int.from_bytes(q[40:44], "big") - 2_208_988_800,
+                                           stratum=0, li=3))
+    for attempt in range(1, 4):
+        assert rec._signer() is None
+        assert clock == [_DEAD] and not rtc.trusted() and len(syncs) == attempt
+
+
+def test_recovery_asks_ntp_again_until_a_verified_server_gives_the_time(monkeypatch):
+    """A reply that passes every check still comes from anyone on the path. A clock it put in
+    2036 is trusted, and fails TLS: recovery asks again on the next attempt rather than keep
+    it, and stops once a verified check-in's Date has set the clock."""
+    answers = [2_097_000_000, _BUILT + 60]                     # 2036-06, then the real time
+    rtc, clock, syncs = _recovering_clock(monkeypatch, lambda q: _ntp_answer(q, answers[0]))
+    rec._signer()
+    assert clock == [answers[0]] and rtc.trusted() and rtc.source() == "ntp"
+    answers.pop(0)
+    rec._signer()
+    assert clock == [_BUILT + 60] and len(syncs) == 2
+    rtc.server_time(_BUILT + 61, True)
+    rec._signer()
+    assert len(syncs) == 2 and rtc.source() == "server"

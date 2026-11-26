@@ -405,10 +405,15 @@ def _signer():  # pragma: no cover  (device)  # hil-residual-fn: see _uid -- no 
     """A function signing a check-in body with the camera's identity key, or None with no
     trusted clock (or no keys). A cold board's clock is tried against NTP first -- recovery may
     be slow, and a signed check-in is what puts a recovering camera on the fleet view; failing
-    that the reply's Date sets it (_set_clock) and the next attempt signs."""
+    that the reply's Date sets it (_set_clock) and the next attempt signs.
+
+    NTP is asked again on every attempt until a verified server has given the time, and not only
+    while the clock is untrusted: NTP is anyone's on the path, and a clock it set years ahead
+    reads as trusted while it fails the check-in's TLS (no certificate is valid in 2036), so the
+    Date that would correct it never arrives."""
     try:
         import openmv_rtc
-        if not openmv_rtc.trusted():
+        if openmv_rtc.source() != "server":
             openmv_rtc.sync()
         if not openmv_rtc.trusted():
             log.info("recovery: no trusted clock yet; this check-in goes unsigned")
