@@ -170,6 +170,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A camera's words keep nothing that reads as something else.** A version, slot, stream or
+  fallback reason kept newlines, ANSI escapes and right-to-left overrides, which made a
+  version read as another in the fleet table, a webhook or a terminal. A running image's
+  `body_sha256` is 64 hex digits or unknown (a cut one named a delta base it was not), and a
+  `stub` that is not an object is "did not say" rather than a refused check-in.
+- **A `%` or `_` in a search matches only itself.** They were LIKE's wildcards: a search for
+  `a_b` found `axb`, and one for `%` every camera of the account.
+
 - **NTP sets the camera's clock only from a server's answer to the request it sent.** The
   request carried a transmit timestamp of 0 and nothing in the reply was checked: ntpd's
   rate-limit kiss-o'-death echoes that 0, as could any packet reaching the port, and 0 reads

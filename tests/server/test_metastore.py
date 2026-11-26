@@ -741,3 +741,17 @@ def test_v46_keeps_the_newest_active_rollout_of_each_cohort_and_supersedes_the_r
                    "ro_e": ("stopped", None), "ro_f": ("active", None)}
     assert store.add_rollout(rollout_id="ro_g", release_id="r", product_id=7, cohort="c",
                              percent=5) is False
+
+
+def test_a_search_for_a_percent_or_underscore_matches_only_itself(tmp_path):
+    """``%`` and ``_`` are LIKE's wildcards: a search for ``a_b`` found ``axb`` too, and one
+    for ``%`` every camera of the account."""
+    store = SqliteMetadataStore(str(tmp_path / "m.db"))
+    store.migrate()
+    for dev in ("a_b", "axb", "50%", "a\\b"):
+        store.upsert_device(device_id=dev, product_id=1)
+    assert store.count_devices(q="a_b") == 1 and store.count_devices(q="%") == 1
+    assert store.count_devices(q="a\\b") == 1 and store.count_devices(q="a") == 3
+    store.add_account(created_by="ci", account_id="acct_1", name="Under_Score")
+    store.add_account(created_by="ci", account_id="acctx1", name="Underxscore")
+    assert [a["account_id"] for a in store.list_accounts(q="r_s")] == ["acct_1"]

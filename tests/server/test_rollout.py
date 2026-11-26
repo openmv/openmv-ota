@@ -137,6 +137,10 @@ def test_running_body_sha256_reads_the_running_slot():
     # "" from the device (a trailer that would not parse) is unknown-to-us, same as absent
     assert running_body_sha256([{"slot": "A", "running": True, "body_sha256": ""}]) is None
     assert running_body_sha256([{"slot": "A", "running": True}]) is None
+    # ...and so is anything but 64 hex digits: it names the delta base a camera is offered
+    for odd in ("aa" * 31, "zz" * 32, "aa" * 32 + "\n", "aa" * 33, 7):
+        assert running_body_sha256([{"slot": "A", "running": True, "body_sha256": odd}]) is None
+    assert running_body_sha256([{"slot": "A", "running": True, "body_sha256": "AB" * 32}]) == "ab" * 32
 
 
 # --- rollout ramps ---------------------------------------------------------------------------

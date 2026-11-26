@@ -465,6 +465,18 @@ def _storable(text: str) -> str:
     return text.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
 
 
+# Control characters, and the marks that reorder the text around them (U+061C, U+200E/F,
+# U+202A-U+202E, U+2066-U+2069).
+_UNPRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+
+
+def _word(text: str) -> str:
+    """A camera's one-line word as the fleet keeps it: storable, and without what would make
+    it read as something else where it is shown -- a newline or an ANSI escape in a log line
+    or a terminal table, a right-to-left override turning ``1.2.3-rc`` around on a page."""
+    return _UNPRINTABLE.sub("", _storable(text))
+
+
 class CheckIn(BaseModel):
     device_id: str
     # The numbers are bounded by what stores them: one past its column was an error from the
@@ -502,7 +514,8 @@ class CheckIn(BaseModel):
     # first, each ``[seq, slot, reason, cause_a, cause_b, events]`` (``ota.boot_journal``) --
     # what the stub decided on the boots that were not ordinary ones. The camera sends them
     # with every check-in; each one new to the server becomes a ``device.boot`` audit event.
-    stub: dict | None = None
+    # (any JSON: one that is not a report reads as "did not say", see _stub_fields)
+    stub: object = None
 
     @field_validator("product", "app_version", "slot", "representation", "fallback_reason")
     @classmethod
@@ -510,12 +523,12 @@ class CheckIn(BaseModel):
         """A camera's words are kept in its fleet row, the audit trail and every webhook they
         reach, and the camera chooses them: each is a short one, cut, never refused (this
         endpoint does not turn a camera away over a cosmetic field)."""
-        return _storable(v)[:_REASON_MAX] if v else v
+        return _word(v)[:_REASON_MAX] if v else v
 
     @field_validator("streams")
     @classmethod
     def _few(cls, v):
-        return [_storable(s)[:_STREAM_MAX] for s in v[:_STREAMS_MAX]]
+        return [_word(s)[:_STREAM_MAX] for s in v[:_STREAMS_MAX]]
 
 
 def _stub_fields(stub) -> tuple[int | None, str | None]:
@@ -1265,7 +1278,7 @@ def feedback(report: Feedback, request: Request, raw: bytes = Depends(_raw_body)
         # Not a release of the product this camera runs -- and a camera with no fleet row
         # runs none: it was never offered anything, so it has no install to report.
         return {"ok": False}
-    reason = _storable(report.reason or "")[:_REASON_MAX] or None
+    reason = _word(report.reason or "")[:_REASON_MAX] or None
     ms.record_deployment(device_id=report.device_id, release_id=report.release_id,
                          product_id=rel["product_id"], status=report.status, reason=reason,
                          account_id=account_id)

@@ -549,7 +549,7 @@ def test_a_check_ins_numbers_fit_what_stores_them(tmp_path):
     assert _check(c, body, camera.sign(key, body))["update"] is True
     row = store.get_device(DEV)
     assert row["stub_version"] is None and row["fallback_payload_version"] is None
-    assert len(row["body_sha256"]) == 64
+    assert row["body_sha256"] is None          # a cut one would name a base it is not running
     assert store.read_audit(account_id=ACCT)[0]["action"]              # and it enrolled once
     assert len(_audit(store, "device.enrolled")) == 1
 
@@ -803,3 +803,20 @@ def test_a_pin_lifted_before_the_camera_arrives_still_sent_it(tmp_path):
     # ...once, and there: anywhere else by itself is its own move
     report(product_id=BID + 7)
     assert [e["data"]["reported"] for e in _audit(store, "device.product_mismatch")] == [BID + 7]
+
+
+def test_a_camera_s_words_keep_nothing_that_reads_as_something_else(tmp_path):
+    """A version, slot or fallback reason is shown in the fleet table, the audit trail, a
+    webhook and a terminal: a newline, an ANSI escape or a right-to-left override in one
+    made it read as another (``1.2.3`` shown reversed, a fake second log line). And a stub
+    report that is not an object is "did not say", not a refused check-in."""
+    c, store = _app(tmp_path)
+    key = _register(store)
+    body = json.dumps({**json.loads(_body()), "app_version": "1.2\n\x1b[31m3\u202e-cr",
+                       "slot": "a\tb\u2066", "fallback_reason": "x\x85y",
+                       "stub": "not a report"}).encode()
+    assert _check(c, body, camera.sign(key, body))["update"] is True
+    row = store.get_device(DEV)
+    assert (row["current_version"], row["slot"], row["fallback_reason"]) == (
+        "1.2[31m3-cr", "ab", "xy")
+    assert row["stub_version"] is None
