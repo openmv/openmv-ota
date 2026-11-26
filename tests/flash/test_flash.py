@@ -239,6 +239,26 @@ def test_imx_sdk_python_is_beside_blhost():
     assert fl._sdk_python("/opt/sdk/python/bin/blhost") == "/opt/sdk/python/bin/python3"
 
 
+def test_imx_a_python_older_than_3_11_beside_blhost_is_refused_before_a_helper_runs(
+        imx_project, tmp_path, monkeypatch):
+    """The spsdk helpers run with -P, which Python has from 3.11. A blhost on PATH beside an
+    older python3 failed every helper on the flag, and the first said only that the catcher
+    never armed."""
+    root, ran, _recorded = imx_project
+    bin_ = tmp_path / "venv" / "bin"
+    bin_.mkdir(parents=True)
+    (bin_ / "python3.10").write_text("")
+    (bin_ / "python3").symlink_to("python3.10")
+    monkeypatch.setattr(fl.tools, "find_spsdk", lambda name, sdk_home: str(bin_ / name))
+    with pytest.raises(FlashError, match="Python 3.10, and the spsdk helpers need 3.11"):
+        fl.flash_romfs(str(root), board="OPENMV_RT1060")
+    assert ran == []
+    (bin_ / "python3").unlink()
+    (bin_ / "python3.12").write_text("")
+    (bin_ / "python3").symlink_to("python3.12")
+    assert fl._sdk_python(str(bin_ / "blhost")) == str(bin_ / "python3")
+
+
 def test_imx_uses_bundled_flashloader(imx_project):
     # the RAM flashloaders are an internal crutch shipped in the package -- never the user's -- and
     # only the RECOVERY path (factory/bootloader, over SDP) loads one; the everyday firmware/romfs

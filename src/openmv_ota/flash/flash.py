@@ -227,8 +227,16 @@ def _imx_files(board: str, op: str, raw: dict, out_dir: Path) -> dict[str, Path]
 
 def _sdk_python(blhost: str) -> str:
     """The python interpreter beside the spsdk tools (blhost is a wrapper that execs it) --
-    used to run the in-process flashloader scan-wait."""
-    return str(Path(blhost).parent / "python3")
+    used to run the in-process flashloader scan-wait. The helpers it runs take ``-P``, which
+    Python has from 3.11: one whose real name says it is older is refused here, where it
+    otherwise failed every helper on the flag and the first said only that the catcher never
+    armed. One whose name says nothing (a shim) is run as it is."""
+    python3 = Path(blhost).parent / "python3"
+    old = re.fullmatch(r"python3\.([0-9]|10)", python3.resolve().name)
+    if old:
+        raise FlashError("%s is Python 3.%s, and the spsdk helpers need 3.11 or newer: install "
+                         "spsdk under a newer Python, or pass --sdk-home" % (python3, old[1]))
+    return str(python3)
 
 
 def _await_line(proc, marker: str, timeout: float) -> bool:

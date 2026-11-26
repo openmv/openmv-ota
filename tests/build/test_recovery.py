@@ -269,6 +269,16 @@ def test_an_answer_made_of_brackets_or_elements_is_refused_before_it_is_parsed()
             rec.offered_lockbox(raw)
 
 
+def test_an_answer_whose_values_follow_a_u_escape_is_refused_before_it_is_parsed(monkeypatch):
+    """The parser takes the four bytes after `\\u` unread, a quote or a backslash among them;
+    the count ended the string elsewhere and saw the 600 numbers after it as one string."""
+    import json
+    monkeypatch.setattr(json, "loads", lambda b: pytest.fail("parsed %d bytes" % len(b)))
+    for lead in (b'"\\uabc\\" ', b'"\\u"abc" '):
+        with pytest.raises(OSError, match="check-in answer"):
+            rec.offered(200, b"[" + lead + b"1 " * 600 + b"]")
+
+
 def test_a_refusal_raises_so_the_loop_logs_it_and_backs_off():
     for code in (422, 404, 500, 302):
         with pytest.raises(OSError, match="HTTP %d" % code):

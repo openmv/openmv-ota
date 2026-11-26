@@ -45,21 +45,29 @@ def load(path: Path | None = None) -> ClientConfig | None:
                         token=(data.get("auth") or {}).get("token", ""))
 
 
-def save(server_url: str, token: str, path: Path | None = None) -> Path:
-    p = path or config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    # A new file, never world-readable, renamed over the old: opened in place, an existing file
-    # held the token under its own mode until the chmod, and a link there took it elsewhere.
-    tmp = p.with_name(".%s.%d" % (p.name, os.getpid()))
+def write_private(path: Path, data: bytes) -> None:
+    """``data`` as a new file at ``path`` that only its owner can read, renamed over whatever is
+    there. Made under the umask (0644 on most systems), or opened in place under the mode of
+    the file already there, a decrypted delta base or the profile's token was readable by every
+    user; and opened in place, a link at the name (planted in a directory someone else made:
+    downloads default to the working directory) took the write to wherever it pointed."""
+    tmp = path.with_name(".%s.%d.tmp" % (path.name, os.getpid()))
     tmp.unlink(missing_ok=True)                    # a crashed save's, or a link: not followed
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write('[server]\nurl = "%s"\n\n[auth]\ntoken = "%s"\n' % (server_url, token))
-        os.replace(tmp, p)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def save(server_url: str, token: str, path: Path | None = None) -> Path:
+    p = path or config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    write_private(p, ('[server]\nurl = "%s"\n\n[auth]\ntoken = "%s"\n'
+                      % (server_url, token)).encode("utf-8"))
     return p
 
 

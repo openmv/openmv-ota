@@ -2658,9 +2658,30 @@ def test_every_json_value_count_is_one_count_and_never_short():
     for b in corpus:
         got = {f(b) for f in counts}
         assert len(got) == 1 and got.pop() >= _values(json.loads(b)), b
+    # the parser takes the four bytes after `\u` unread, a quote or a backslash among them
     for b, n in ((b"[1 2 3]", 4), (b'{"a" 1 "b" 2}', 5), (b'["a""b"]', 3),
-                 (b'["\\\\" "\\"" 1.5e-3]', 5), (b"[true false null]", 4), (b'["open', 2)):
+                 (b'["\\\\" "\\"" 1.5e-3]', 5), (b"[true false null]", 4), (b'["open', 2),
+                 (b'["\\u"abc" 1 1]', 4), (b'["\\uabc\\" 1 1]', 4), (b'["\\u00e9\\"" 1]', 3),
+                 (b'["\\u12', 2), (b'["\\', 2)):
         assert {f(b) for f in counts} == {n}, b
+
+
+def _json_values_body(src):
+    """``_json_values`` in a module's source, from the end of its docstring to the next
+    top-level definition: the docstrings say where each copy is used, the code is one."""
+    start = src.index("def _json_values(b):")
+    start = src.index('"""', src.index('"""', start) + 3) + 3
+    return src[start:src.index("\n\n\n", start)]
+
+
+def test_the_four_device_json_value_counts_are_one_text():
+    """Each cap is as good as its copy of the count: a fix made to one copy alone leaves the
+    other three caps open."""
+    device = _SRC.parents[2]
+    texts = {_json_values_body((device / p).read_text(encoding="utf-8"))
+             for p in ("openmv_ota/data/installer.py", "openmv_ota/__init__.py",
+                       "openmv_recovery.py", "openmv_cloud/_lib.py")}
+    assert len(texts) == 1 and "(b[i] == 117)" in texts.pop()
 
 
 def _raw_manifest(body):
@@ -2692,3 +2713,15 @@ def test_a_manifest_body_of_values_without_commas_is_refused_before_it_is_parsed
                  certificate=trust.certificate(generate_private_key(algorithm_for(ES256))))
     with pytest.raises(OtaError, match="values than a camera reads"):
         pack_manifest(m)
+
+
+def test_a_manifest_body_whose_values_follow_a_u_escape_is_refused_before_it_is_parsed(
+        monkeypatch):
+    """The parser takes the four bytes after `\\u` unread, so `"\\uabc\\"` and `"\\u"abc"` are
+    each one string to it. The count took the `\\"` for an escaped quote, or the `"` after
+    `\\u` for the string's end, and counted the 2000 numbers after it as one unended string."""
+    monkeypatch.setattr(_mod.json, "loads",
+                        lambda b: pytest.fail("parsed %d bytes" % len(b)))
+    for lead in (b'"\\uabc\\" ', b'"\\u"abc" '):
+        with pytest.raises(ValueError, match="too many values"):
+            inst("_manifest_parse")(_raw_manifest(b'{"x":[' + lead + b"1 " * 2000 + b"]}"))

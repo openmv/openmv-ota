@@ -156,16 +156,15 @@ def _json_values(b):
         if c == 34:                                  # '"': one value, skipped to its close
             n += 1
             num = False
-            while True:
-                j = b.find(b'"', i)
-                if j < 0:
-                    return n                         # unterminated: the parser refuses it
-                k = j
-                while k > i and b[k - 1] == 92:      # the backslashes just before this quote
-                    k -= 1
-                i = j + 1
-                if not (j - k) & 1:                  # an even run: this quote ends it
+            while i < end:                           # unterminated: the parser refuses it
+                c = b[i]
+                i += 1
+                if c == 34:                          # an unescaped quote ends it
                     break
+                if c == 92 and i < end:
+                    # the parser takes the byte after a `\` as the escape, and four more after
+                    # `\u`, whatever they are: a quote among them does not end the string
+                    i += 1 + 4 * (b[i] == 117)
         elif 48 <= c <= 57 or c == 45 or c == 46:    # digits, '-', '.': one number a run
             if not num:
                 n += 1
@@ -189,9 +188,12 @@ def _split_url(url):
     tls = scheme in ("https", "wss")
     hostport, _, tail = rest.partition("/")
     host, _, port = hostport.partition(":")
-    if not host:
-        raise ValueError("no host in url")
-    return tls, host, int(port) if port else (443 if tls else 80), "/" + tail
+    port = int(port or (443 if tls else 80))
+    # a port out of range reached the address lookup, which raised OverflowError (lwIP) or
+    # TypeError there, not the ValueError every caller handles
+    if not host or not 0 < port < 65536:
+        raise ValueError("bad url")
+    return tls, host, port, "/" + tail
 
 
 # --- the backscroll contract: session id + record batching (pure) ------------

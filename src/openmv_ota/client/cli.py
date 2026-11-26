@@ -87,21 +87,6 @@ def _when(text: str) -> float:
 _WHEN = "epoch seconds, 30m/2h/1d/1w ago, or an ISO date (UTC)"
 
 
-def _save(path: Path, data: bytes) -> None:
-    """``data`` as a new file at ``path``, renamed over whatever is there. Written in place, a
-    link at that name (planted in a directory someone else made: these default to the working
-    directory) took the download to wherever it pointed."""
-    tmp = path.with_name(".%s.%d.tmp" % (path.name, os.getpid()))
-    tmp.unlink(missing_ok=True)                    # a crashed save's, or a link: not followed
-    try:
-        with open(tmp, "xb") as fh:
-            fh.write(data)
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-
-
 def _emit(args: argparse.Namespace, payload, *lines: str) -> int:
     """The server's response as JSON under ``--json``, else the human summary.
 
@@ -959,7 +944,7 @@ def cmd_bases(args: argparse.Namespace) -> int:
         for rel in releases:
             path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX,
                                              _file_part(rel["version"])))
-            _save(path, plain(api.release_image(rel["release_id"]), rel))
+            config.write_private(path, plain(api.release_image(rel["release_id"]), rel))
             got.append({"path": str(path), "release_id": rel["release_id"],
                         "version": rel["version"], "bytes": path.stat().st_size})
             lines.append("%s  (%s, %d bytes)" % (path, rel["version"], path.stat().st_size))
@@ -1011,7 +996,7 @@ def _fleet_bases(args: argparse.Namespace, api, out: Path, plain) -> int:
                   % (row["devices"], row["version"]), file=sys.stderr)
             continue
         path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX, _file_part(rel["version"])))
-        _save(path, data)
+        config.write_private(path, data)
         got.append({"path": str(path), "release_id": rel["release_id"],
                     "version": rel["version"], "devices": row["devices"],
                     "bytes": path.stat().st_size})
@@ -1425,10 +1410,10 @@ def cmd_device_watch(args: argparse.Namespace) -> int:
             counts["frames"] = info["n"]
             if args.out:
                 path = args.out / ("%s-%06d.jpg" % (info["stream"], info["n"]))
-                _save(path, info["data"])
+                config.write_private(path, info["data"])
                 saved.append(str(path))
             if args.latest:
-                _save(args.latest, info["data"])      # a reader never sees half a frame
+                config.write_private(args.latest, info["data"])  # no reader sees half a frame
                 saved.append(str(args.latest))
         elif kind == "console":
             counts["batches"] += 1
@@ -1673,7 +1658,7 @@ def cmd_release_manifest(args: argparse.Namespace) -> int:
         data = _make_api(config.resolve(args.server, args.token)).release_manifest(
             args.release_id)
         out = Path(args.output or "manifest.bin")
-        _save(out, data)
+        config.write_private(out, data)
         return _emit(args, {"saved": str(out), "bytes": len(data)},
                      "saved %s (%d bytes)" % (out, len(data)))
     except ClientError as e:
@@ -1687,7 +1672,7 @@ def cmd_release_artifact(args: argparse.Namespace) -> int:
         data = _make_api(config.resolve(args.server, args.token)).release_artifact(
             args.release_id, args.filename)
         out = Path(args.output or args.filename)
-        _save(out, data)
+        config.write_private(out, data)
         return _emit(args, {"saved": str(out), "bytes": len(data)},
                      "saved %s (%d bytes)" % (out, len(data)))
     except ClientError as e:
@@ -1700,7 +1685,7 @@ def cmd_release_sbom(args: argparse.Namespace) -> int:
     try:
         data = _make_api(config.resolve(args.server, args.token)).release_sbom(args.release_id)
         if args.output:
-            _save(Path(args.output), data)
+            config.write_private(Path(args.output), data)
             return _emit(args, {"saved": args.output, "bytes": len(data)},
                          "saved %s (%d bytes)" % (args.output, len(data)))
         sys.stdout.write(data.decode("utf-8"))

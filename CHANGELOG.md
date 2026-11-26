@@ -170,6 +170,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **The camera's JSON caps count a `\u` escape as its parser reads one.** The parser takes the
+  four bytes after `\u` unread, a quote or a backslash among them, and the count did not:
+  `["\uabc\" 1. 1. ...]` (8 KB) counted as two values and built 2,702, past the manifest,
+  check-in, recovery and relay caps alike. A `/poll` body the heap cannot hold parsed is the
+  `OSError` that `poll_watch` documents.
+- **A poll grant whose URL names a port outside 1-65535 raises `OSError`** from `poll_watch`,
+  as any other malformed grant does. The port reached the address lookup, which raised
+  `OverflowError` and ended the app's wake loop.
+- **A download is written for its owner alone (0600).** `client release bases` writes
+  decrypted images, and every download came out under the umask's mode, 0644 on most
+  systems, over a file at its name too.
+- **The changelog no longer says `python -m openmv_ota` imports nothing from the working
+  directory.** Python finds the `openmv_ota` package there before its `__main__` can drop the
+  directory, so a project's own `openmv_ota/` runs in place of the tool: start it as the
+  `openmv-ota` console script or `python -P -m openmv_ota`.
+- **An spsdk beside a Python older than 3.11 is refused, with the reason.** Its helpers run
+  with `-P`, which that Python rejects, and `flash` on an RT1060 said only that the catcher
+  never armed.
+
 - **A helper run with `python -c` does not import from the working directory either.** The
   spsdk scripts `flash` runs with the SDK's Python (`flash factory` and `flash list` on an
   RT1060) used `-c`, which puts the working directory first on the import path as `-m` does:
@@ -183,9 +202,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A datalake reply too big to read in place is delivered only if it says 200.** A proxy's
   error page (kilobytes of HTML) overflowed the read buffer and was taken as delivered, and
   the camera dropped the batch it answered.
-- **`python -m openmv_ota` runs, and imports nothing from the working directory.** There was
-  no `__main__`, and `python -m openmv_ota.cli` imports the CLI's own modules (`argparse`
-  among them) before it can drop the directory.
+- **`python -m openmv_ota` runs, and the CLI's own imports after start-up come from outside
+  the working directory.** There was no `__main__`, and `python -m openmv_ota.cli` imports the
+  CLI's own modules (`argparse` among them) before it can drop the directory. Python finds
+  the `openmv_ota` package itself there first, so in a directory holding an `openmv_ota/`,
+  start the tool as the `openmv-ota` console script or `python -P -m openmv_ota`.
 - **A download replaces a link at its name and writes nothing through it.** `client release
   manifest`, `artifact`, `sbom`, `bases` and `watch` save to the working directory by
   default, and a link planted there took the download to wherever it pointed.

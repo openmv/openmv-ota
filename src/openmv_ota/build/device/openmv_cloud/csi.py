@@ -766,13 +766,15 @@ def parse_poll_response(body):
 
     Raises ``OSError`` on a body that is not the relay's answer, which is the one failure
     :func:`poll_watch` documents: a wake cycle that catches OSError ("sleep, retry next wake")
-    must not be killed by a captive portal's HTML, a truncated body, or ``[]``."""
+    must not be killed by a captive portal's HTML, a truncated body, ``[]``, or a body the heap
+    could not hold parsed."""
     if _json_values(body) > _RELAY_VALUES:
         raise OSError("poll: malformed reply")
     try:
         obj = json.loads(body)
         return bool(obj["watch"]), int(obj.get("viewers", 0))
-    except (ValueError, KeyError, TypeError, AttributeError, IndexError, OverflowError):
+    except (ValueError, KeyError, TypeError, AttributeError, IndexError, OverflowError,
+            MemoryError):
         raise OSError("poll: malformed reply")
 
 

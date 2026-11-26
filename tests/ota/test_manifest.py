@@ -417,3 +417,14 @@ def test_parse_body_nested_past_the_recursion_limit():
     RecursionError (a 500) instead of OtaError (a 400)."""
     with pytest.raises(OtaError, match="not valid JSON"):
         parse_manifest(_raw_manifest(b"[" * 50_000 + b"]" * 50_000))
+
+
+def test_the_packer_counts_a_u_escape_as_the_camera_parses_it():
+    """The camera's parser takes the four bytes after `\\u` unread, a quote or a backslash
+    among them, so `"\\uabc\\"` and `"\\u"abc"` are each one string to it; the count ended them
+    elsewhere and saw every value after them as one string."""
+    from openmv_ota.ota.manifest import json_values
+    assert json_values(b'["\\uabc\\" 1 1 1]') == 5
+    assert json_values(b'["\\u"abc" 1 1 1]') == 5
+    assert json_values(b'["\\u00e9\\"" 1]') == 3              # what json.dumps writes
+    assert json_values(b'["\\uabc\\" ' + b"1 " * 600 + b"]") > 512

@@ -1276,11 +1276,11 @@ def test_a_download_replaces_a_link_at_its_name_and_writes_nothing_through_it(
     assert main(["client", "release", "manifest", "--release-id", "rel1"]) == 0
     assert victim.read_bytes() == b"mine" and not (work / "manifest.bin").is_symlink()
     assert (work / "manifest.bin").read_bytes() == b"SIGNEDMANIFEST"
-    from openmv_ota.client import cli as client_cli
-    monkeypatch.setattr(client_cli.os, "replace",
+    from openmv_ota.client import config as cfg_mod
+    monkeypatch.setattr(cfg_mod.os, "replace",
                         lambda a, b: (_ for _ in ()).throw(OSError("disk full")))
     with pytest.raises(OSError, match="disk full"):            # a failed save leaves no temp
-        client_cli._save(work / "x.bin", b"data")
+        cfg_mod.write_private(work / "x.bin", b"data")
     assert sorted(p.name for p in work.iterdir()) == ["manifest.bin"]
 
 
@@ -1432,6 +1432,26 @@ def test_bases_decrypt_with_the_projects_key(wired, tmp_path, capsys):
                  "--project", str(project)]) == 0
     # the file a delta build reads is the PLAINTEXT image, exactly as before encryption
     assert (dest / "OPENMV_N6-base-2.0.0.img.gz").read_bytes() == image_gz
+
+
+def test_a_decrypted_base_is_its_owners_alone_whatever_was_at_its_name(wired, tmp_path, capsys):
+    """`release bases` writes the plaintext the payload key protects. It came out under the
+    umask's mode, and over a file already at the name it took that file's 0644."""
+    _store, _ = wired
+    project = tmp_path / "proj"
+    _publish_encrypted(project, _project_with_keys(project))
+    dest = tmp_path / "bases"
+    dest.mkdir()
+    base = dest / "OPENMV_N6-base-2.0.0.img.gz"
+    base.write_bytes(b"stale")
+    base.chmod(0o644)
+    argv = ["client", "release", "bases", "-b", "OPENMV_N6", "-o", str(dest),
+            "--project", str(project)]
+    assert main(argv) == 0
+    assert (base.stat().st_mode & 0o777) == 0o600 and base.read_bytes() != b"stale"
+    base.unlink()
+    assert main(argv) == 0
+    assert (base.stat().st_mode & 0o777) == 0o600
 
 
 def test_bases_say_so_when_this_project_cannot_open_them(wired, tmp_path, capsys):
