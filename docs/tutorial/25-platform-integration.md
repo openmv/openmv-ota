@@ -287,8 +287,10 @@ openmv-ota client device forget --device-id OPENMV_N6:3c0021000c51333037343234
 
 It leaves the fleet, and the
 datalake erases everything it stored under the account — which is the erasure an end
-customer's data-subject request calls for, one call. `--keep-data` leaves the data to
-retention instead. Its install history stays — a deployment row records what happened on
+customer's data-subject request calls for, one call. A token limited to a list of products
+erases what the camera stored under the product it is in now, the data that token can read;
+what it stored under a product it was moved from is erased by a token for the whole
+account. `--keep-data` leaves the data to retention instead. Its install history stays — a deployment row records what happened on
 a day that has already passed, and rollout counters are built from those rows — and the
 removal is in the audit log, with what was erased. A camera that checks in again
 afterwards is a device the server has not seen before: it enrols from scratch, under the

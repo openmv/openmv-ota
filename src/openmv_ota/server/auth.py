@@ -54,7 +54,10 @@ class TokenAuth:
         if not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="missing bearer token")
         row = self._ms.get_token(hash_token(authorization[len("Bearer "):].strip()))
-        if row is None or row["revoked"]:
+        # A deactivated account's token is refused here, not only revoked: one issued or
+        # rotated while the account was being deactivated passed the active check before the
+        # deactivate, and was minted after its revoke-all.
+        if row is None or row["revoked"] or not row["account_active"]:
             raise HTTPException(status_code=401, detail="invalid token")
         return Principal(name=row["name"], scopes=expand(row["scopes"]),
                          account_id=row.get("account_id", "") or "",

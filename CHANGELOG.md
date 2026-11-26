@@ -189,6 +189,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with `-P`, which that Python rejects, and `flash` on an RT1060 said only that the catcher
   never armed.
 
+- **One rollout is active per product and cohort, however requests interleave.** A create
+  read the cohort's rollouts before superseding them, and a resume or a pause by hand wrote
+  what it decided on an earlier read: two creates at once, or a create landing inside a
+  resume, left two active, and a pause by hand turned `superseded` into `operator`, which a
+  resume let through. The database holds one active rollout per cohort (the migration
+  supersedes all but the newest where a race already left more), and a change to a rollout
+  that changed meanwhile is a 409.
+- **Forgetting a camera with a token limited to some products erases only what it stored
+  under the product it is in now.** The datalake erased the camera's data under every
+  product of the account, a product it was moved from included, which that token cannot
+  read. The purge names the product (`*` for a token for the whole account); the datalake
+  (openmv-cloud) answers in lockstep.
+- **A deactivated account's tokens are refused, and one minted while it was deactivated is
+  revoked.** One issued or rotated while the account was being deactivated was minted after
+  its tokens were revoked, and worked, and a reactivation would have kept it working; a
+  rotate that met a deactivate put the leaked token it was replacing back.
+- **A rollout's percent never goes down, and an auto-raise never rewinds its stage.** The
+  auto-raise wrote what it decided on an earlier read, so a hand raise landing in between
+  went back to the next stage and its percent, and of two raises by hand at once the lower
+  could land last. A percent write keeps the larger value, and an auto-raise lands only at
+  the stage it judged.
+- **The auto-pause floor leaves out the cameras a rollout never offers.** A camera held by a
+  pin, its own or its cohort's, or with a boot stub too old for the image, was counted, so
+  a rollout whose few other cameras all failed never paused.
+- **A viewer grant names its product.** It defaulted to every product of the account, the
+  grant a token limited to one product must not get, for any caller that left it out.
+- **Registrations are limited per IPv6 /64 as well.** Counted per address alone, a client
+  rotating through its /64 had a fresh budget on every request.
+
 - **A helper run with `python -c` does not import from the working directory either.** The
   spsdk scripts `flash` runs with the SDK's Python (`flash factory` and `flash list` on an
   RT1060) used `-c`, which puts the working directory first on the import path as `-m` does:

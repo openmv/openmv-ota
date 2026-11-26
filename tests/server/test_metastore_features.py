@@ -66,6 +66,70 @@ def test_rollout_lifecycle():
     assert [r["rollout_id"] for r in s.list_rollouts()] == ["ro1"]
 
 
+def test_the_database_holds_one_active_rollout_per_cohort():
+    """Superseding was the handler's read then write, which two at once both passed. The
+    unique index is the backstop: a second active rollout for one (account, product,
+    cohort) is neither inserted nor resumed into being."""
+    s = _store()
+    add = dict(release_id="rel1", product_id=BID, percent=5)
+    assert s.add_rollout(rollout_id="ro1", cohort="c", **add) is True
+    assert s.add_rollout(rollout_id="ro2", cohort="c", **add) is False
+    assert s.get_rollout("ro2") is None
+    assert s.add_rollout(rollout_id="ro2", cohort="c", state="paused", **add) is True
+    assert s.update_rollout("ro2", state="active") is False             # ro1 holds the cohort
+    assert s.get_rollout("ro2")["state"] == "paused"
+    # another cohort, product or account is another key, and a paused or stopped one is none
+    assert s.add_rollout(rollout_id="ro3", cohort="d", **add) is True
+    assert s.add_rollout(rollout_id="ro4", cohort="c", account_id="a", **add) is True
+    assert s.add_rollout(rollout_id="ro5", cohort="c", state="stopped", **add) is True
+    s.update_rollout("ro1", state="paused")
+    assert s.update_rollout("ro2", state="active") is True
+
+
+def test_a_rollout_write_refused_for_another_reason_still_raises(monkeypatch):
+    import sqlite3
+
+    import pytest
+    s = _store()
+
+    def broken(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(s, "execute", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        s.update_rollout("ro1", percent=5)
+
+
+def test_a_postgres_unique_violation_is_told_by_its_sqlstate():
+    class UniqueViolation(Exception):
+        sqlstate = "23505"
+    assert SqliteMetadataStore._is_unique_violation(UniqueViolation("duplicate key value"))
+    assert not SqliteMetadataStore._is_unique_violation(RuntimeError("deadlock detected"))
+
+
+def test_a_rollout_write_keeps_the_larger_percent_and_can_wait_on_a_stage():
+    """A raise decided on a stale read cannot lower one written since; a write for a stage
+    lands only while the ramp is still at it."""
+    s = _store()
+    s.add_rollout(rollout_id="ro1", release_id="rel1", product_id=BID, cohort="c", percent=50)
+    assert s.update_rollout("ro1", percent=30) is True
+    assert s.get_rollout("ro1")["percent"] == 50
+    assert s.update_rollout("ro1", percent=70) is True
+    assert s.get_rollout("ro1")["percent"] == 70
+    s.update_rollout("ro1", stage_index=2)
+    assert s.update_rollout("ro1", if_stage=1, stage_index=2) is False
+    assert s.update_rollout("ro1", if_stage=2, if_state="active", stage_index=3) is True
+
+
+def test_a_token_carries_whether_its_account_is_active():
+    s = _store()
+    s.add_account("acct", "A")
+    s.add_token("h1", "t", ["observe"], account_id="acct")
+    s.add_token("h2", "root", ["accounts.all"])          # the implicit account: no row
+    assert s.get_token("h1")["account_active"] == 1 and s.get_token("h2")["account_active"] == 1
+    s.set_account_active("acct", False)
+    assert s.get_token("h1")["account_active"] == 0
+
+
 def test_rollout_bump_counters():
     s = _store()
     s.add_rollout(rollout_id="ro1", release_id="rel1", product_id=1, cohort="c", percent=100)

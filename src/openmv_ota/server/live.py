@@ -48,8 +48,8 @@ def _clean_streams(streams) -> list[str]:
     return good or list(_DEFAULT_STREAMS)
 
 
-def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "",
-                 account_id: str = "", product_id=None) -> dict | None:
+def viewer_grant(settings, device_id: str, streams=None, *, product, datalake_url: str = "",
+                 account_id: str = "") -> dict | None:
     """The grant a DASHBOARD needs to read one device: a ``viewer``-role token
     plus ready-made URLs. None when Live is not configured.
 
@@ -89,12 +89,12 @@ def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "",
         # and the PRODUCT are in the token and the URL, as the camera's data was filed: a
         # camera that changes owner, or is moved to another product, keeps its id, and a
         # grant for less read back through what it sent before -- to a token limited to
-        # the product it is in now, the product it was in. ``product_id`` None is every
-        # product of the account ("*", which no product id can be).
+        # the product it is in now, the product it was in. ``product`` is a product id, or
+        # "*" (which no product id can be) for every product of the account. It has no
+        # default: a caller that left it out minted a grant for the whole account.
         from .datalog import account_key
         dl = datalake_url.rstrip("/")
         account = account_key(account_id)
-        product = "*" if product_id is None else "%s" % product_id   # as ingest_grant files it
         base = "%s/api/v1/devices/%s/%s/%s" % (dl, account, product, device_id)
         grant["datalake"] = {
             # (`device/` first: a product's viewer token is "{account}/{product}" and a

@@ -49,6 +49,20 @@ def test_authenticate_unknown_and_revoked():
     assert e.value.status_code == 401
 
 
+def test_a_deactivated_account_s_token_is_refused():
+    """Revoking every token is half of deactivating; one minted alongside it was not
+    revoked, and nothing else stood between it and the API."""
+    s = SqliteMetadataStore(":memory:")
+    s.migrate()
+    s.add_account("acct", "A")
+    s.add_token(hash_token("secret-token"), "ci", ["observe"], account_id="acct")
+    assert TokenAuth(s).authenticate("Bearer secret-token").account_id == "acct"
+    s.set_account_active("acct", False)
+    with pytest.raises(HTTPException) as e:
+        TokenAuth(s).authenticate("Bearer secret-token")
+    assert e.value.status_code == 401
+
+
 def test_require_scope_ok():
     p = require_scope("publish")(_req(TokenAuth(_store(("publish",))),
                                             "Bearer secret-token"))

@@ -181,7 +181,7 @@ def _settings(**kw):
 
 def test_viewer_grant_mints_a_viewer_role_token_the_relay_will_accept():
     st = _settings()
-    grant = live.viewer_grant(st, "dev1", ["0", "thermal"])
+    grant = live.viewer_grant(st, "dev1", ["0", "thermal"], product="*")
     exp, _, mac = grant["token"].partition(".")
     want = hmac.new(SECRET.encode(), b"viewer:dev1:%s" % exp.encode(),
                     hashlib.sha256).hexdigest()
@@ -194,15 +194,15 @@ def test_viewer_grant_mints_a_viewer_role_token_the_relay_will_accept():
 def test_a_viewer_token_is_not_a_camera_token():
     # the roles are distinct MACs, so a viewer can never publish frames or poll
     st = _settings()
-    viewer = live.viewer_grant(st, "dev1")["token"]
+    viewer = live.viewer_grant(st, "dev1", product="*")["token"]
     camera = live.camera_grant(st, "dev1")["streams"]["0"]["camera_url"]
     assert viewer not in camera
 
 
 def test_viewer_grant_is_scoped_to_one_device():
     st = _settings()
-    a = live.viewer_grant(st, "devA")["token"]
-    b = live.viewer_grant(st, "devB")["token"]
+    a = live.viewer_grant(st, "devA", product="*")["token"]
+    b = live.viewer_grant(st, "devB", product="*")["token"]
     assert a != b                            # the device id is inside the MAC
 
 
@@ -211,7 +211,7 @@ def test_viewer_grant_includes_the_datalake_half_with_its_own_token():
     carries a second viewer token under `datalake` -- decoupled from the relay's."""
     s = _settings(datalake_token_secret="dl-secret")
     grant = live.viewer_grant(s, "dev1", datalake_url="https://data.test/", account_id="acctA",
-                              product_id=77)
+                              product=77)
     dl = grant["datalake"]
     assert dl["topics_url"] == "https://data.test/api/v1/devices/acctA/77/dev1/topics"
     assert dl["logs_url"] == "https://data.test/api/v1/devices/acctA/77/dev1/logs"
@@ -223,8 +223,16 @@ def test_viewer_grant_includes_the_datalake_half_with_its_own_token():
     want = hmac.new(b"dl-secret", b"viewer:device/acctA/77/dev1:%d" % int(exp),
                     hashlib.sha256).hexdigest()
     assert mac == want                            # signed with the DATALAKE's secret
-    own = live.viewer_grant(s, "dev1", datalake_url="https://data.test/")["datalake"]
+    own = live.viewer_grant(s, "dev1", datalake_url="https://data.test/", product="*")["datalake"]
     assert own["topics_url"] == "https://data.test/api/v1/devices/default/*/dev1/topics"
+
+
+def test_a_viewer_grant_names_its_product_or_is_not_made():
+    """The product defaulted to every product, so a caller that forgot it handed a token
+    limited to one product a grant for the camera's whole history."""
+    s = _settings(datalake_token_secret="dl-secret")
+    with pytest.raises(TypeError):
+        live.viewer_grant(s, "dev1", datalake_url="https://data.test/", account_id="acctA")
 
 
 def test_viewer_grant_lives_minutes_whatever_the_device_grants_do():
@@ -234,12 +242,12 @@ def test_viewer_grant_lives_minutes_whatever_the_device_grants_do():
                               live_relay_url=RELAY, live_token_secret=SECRET,
                               datalake_token_secret=SECRET,
                               live_token_ttl=86400, datalake_token_ttl=86400)
-    g = live.viewer_grant(settings, "cam-42", datalake_url=DATALAKE)
+    g = live.viewer_grant(settings, "cam-42", datalake_url=DATALAKE, product="*")
     assert g["expires_in_s"] == g["datalake"]["expires_in_s"] == 300
     short = ServerSettings(swd_ids_verify_url="u", swd_ids_verify_token="t",
                            live_relay_url=RELAY, live_token_secret=SECRET,
                            datalake_token_secret=SECRET, viewer_token_ttl=60)
-    g = live.viewer_grant(short, "cam-42", datalake_url=DATALAKE)
+    g = live.viewer_grant(short, "cam-42", datalake_url=DATALAKE, product="*")
     assert g["expires_in_s"] == g["datalake"]["expires_in_s"] == 60
     exp = int(g["datalake"]["token"].split(".")[0])
     assert exp - time.time() <= 60
@@ -248,22 +256,22 @@ def test_viewer_grant_lives_minutes_whatever_the_device_grants_do():
 def test_viewer_grant_omits_the_datalake_half_without_its_secret():
     # a datalake URL alone is not enough -- an un-signable half is omitted, not broken
     assert "datalake" not in live.viewer_grant(
-        _settings(), "dev1", datalake_url="https://data.test/")
-    assert "datalake" not in live.viewer_grant(_settings(), "dev1")
+        _settings(), "dev1", datalake_url="https://data.test/", product="*")
+    assert "datalake" not in live.viewer_grant(_settings(), "dev1", product="*")
 
 
 def test_viewer_grant_is_none_when_neither_read_side_is_configured():
-    assert live.viewer_grant(ServerSettings(base_url="https://ota.test"), "dev1") is None
+    assert live.viewer_grant(ServerSettings(base_url="https://ota.test"), "dev1", product="*") is None
     # a datalake secret alone is not a datalake: the URL has to be passed too
     s = ServerSettings(base_url="https://ota.test", datalake_token_secret="dl")
-    assert live.viewer_grant(s, "dev1") is None
+    assert live.viewer_grant(s, "dev1", product="*") is None
 
 
 def test_viewer_grant_opens_the_datalake_without_a_relay():
     """A dashboard that only charts data (no live video) must not need Live configured:
     the datalake half stands alone, the relay half is simply empty."""
     s = ServerSettings(base_url="https://ota.test", datalake_token_secret="dl-secret")
-    g = live.viewer_grant(s, "dev1", ["0"], datalake_url="https://data.test")
+    g = live.viewer_grant(s, "dev1", ["0"], datalake_url="https://data.test", product="*")
     assert g["token"] == "" and g["streams"] == {}
     assert g["datalake"]["topics_url"] == "https://data.test/api/v1/devices/default/*/dev1/topics"
     assert g["expires_in_s"] == g["datalake"]["expires_in_s"] == 300

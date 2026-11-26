@@ -220,8 +220,9 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     assert g("rollouts", pause_reason="operator")["rollouts"][0]["rollout_id"] == "ro_a"
     assert c.patch("/api/v1/admin/rollouts/ro_a", headers=AUTH, json={"state": "active"}).status_code == 200
     assert g("rollouts", pause_reason="operator")["total"] == 0
-    assert c.post("/api/v1/admin/rollouts", headers=AUTH,
-                  json={"release_id": "r2", "cohort": "beta", "percent": 5}).status_code == 200
+    newer = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                   json={"release_id": "r2", "cohort": "beta", "percent": 5})
+    assert newer.status_code == 200
     assert g("rollouts", state="paused", pause_reason="superseded")["rollouts"][0]["rollout_id"] == "ro_a"
     # devices: the attention filters (fell back, unconfirmed, quiet since an instant)
     store.upsert_device(device_id="d2", product_id=BID, fallback_reason="A:body-sha", confirmed=0)
@@ -260,7 +261,8 @@ def test_list_contract_sort_page_and_filtered_totals(tmp_path):
     # audit: total + offset + sort by action; newest still works. Store-seeded rows
     # write no audit, so two API actions make the entries.
     assert c.post("/api/v1/admin/cohorts/create", headers=AUTH, json={"cohort": "staging"}).status_code == 200
-    assert c.patch("/api/v1/admin/rollouts/ro_a", headers=AUTH, json={"percent": 50}).status_code == 200
+    assert c.patch("/api/v1/admin/rollouts/" + newer.json()["rollout_id"], headers=AUTH,
+                   json={"percent": 50}).status_code == 200
     a = g("audit")
     assert a["total"] == len(a["events"]) >= 2
     assert g("audit", action="cohort.create")["total"] == 1
@@ -489,6 +491,135 @@ def test_create_rollout_supersedes_a_paused_one_too(tmp_path):
     assert store.get_rollout(held)["pause_reason"] == "operator"
     assert [ro["rollout_id"] for ro in store.list_rollouts(state="active")] == [newest]
     assert store.rollout_successor(store.get_rollout(failed))["rollout_id"] == newest
+
+
+def _active(store):
+    return [ro["rollout_id"] for ro in store.list_rollouts(state="active")]
+
+
+def test_two_creates_at_once_leave_one_rollout_active(tmp_path):
+    """Each create read the cohort's live rollouts, superseded them and inserted: two at once
+    both read before either wrote, and both went active."""
+    import threading
+    app, store = _app(tmp_path)
+    for rid, pv in (("rel0", 0x02000000), ("rel1", 0x02010000), ("rel2", 0x02020000)):
+        _seed_release(store, rid=rid, pv=pv)
+    c = TestClient(app)
+    old = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                 json={"release_id": "rel0", "percent": 5}).json()["rollout_id"]
+    read, both = store.live_rollouts, threading.Barrier(2, timeout=10)
+    waits = [2]
+
+    def live(*a, **k):
+        out = read(*a, **k)
+        if waits[0] > 0:                 # the first read of each: both have read, neither written
+            waits[0] -= 1
+            both.wait()
+        return out
+    store.live_rollouts = live
+    codes = []
+    ts = [threading.Thread(target=lambda r=r: codes.append(TestClient(app).post(
+        "/api/v1/admin/rollouts", headers=AUTH, json={"release_id": r, "percent": 5}).status_code))
+        for r in ("rel1", "rel2")]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert codes == [200, 200]
+    assert len(_active(store)) == 1                           # the later insert superseded the first
+    assert store.get_rollout(old)["pause_reason"] == "superseded"
+
+
+def test_a_create_that_loses_the_cohort_twice_is_a_409(tmp_path):
+    app, store = _app(tmp_path)
+    _seed_release(store, rid="rel1")
+    store.add_rollout = lambda **kw: False                    # another create wins every time
+    r = TestClient(app).post("/api/v1/admin/rollouts", headers=AUTH,
+                             json={"release_id": "rel1", "percent": 5})
+    assert r.status_code == 409 and "try again" in r.json()["detail"]
+
+
+def _raced_patch(store, rid, race):
+    """The store, with ``race`` landing between the PATCH's read of ``rid`` and its write."""
+    read = store.get_rollout
+    armed = [True]
+
+    def get(r):
+        out = read(r)
+        if r == rid and armed[0]:
+            armed[0] = False
+            race()
+        return out
+    store.get_rollout = get
+
+
+def test_a_create_between_a_resume_s_read_and_write_leaves_one_active(tmp_path):
+    """A resume decided on a read of a paused rollout landed after a create superseded it:
+    two active for one product and cohort."""
+    app, store = _app(tmp_path)
+    _seed_release(store, rid="rel0")
+    _seed_release(store, rid="rel1", pv=0x02010000)
+    c = TestClient(app)
+    old = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                 json={"release_id": "rel0", "percent": 5}).json()["rollout_id"]
+    store.update_rollout(old, state="paused", pause_reason="failure_limit")
+    new = []
+    _raced_patch(store, old, lambda: new.append(c.post(
+        "/api/v1/admin/rollouts", headers=AUTH,
+        json={"release_id": "rel1", "percent": 5}).json()["rollout_id"]))
+    r = c.patch("/api/v1/admin/rollouts/" + old, headers=AUTH, json={"state": "active"})
+    assert r.status_code == 409 and "read it again" in r.json()["detail"]
+    assert store.get_rollout(old)["pause_reason"] == "superseded"
+    assert _active(store) == new
+
+
+def test_a_pause_by_hand_racing_a_create_keeps_it_superseded(tmp_path):
+    """A pause by hand landing after a create superseded the rollout rewrote why it was
+    paused to `operator`, and a resume of it then went through."""
+    app, store = _app(tmp_path)
+    _seed_release(store, rid="rel0")
+    _seed_release(store, rid="rel1", pv=0x02010000)
+    c = TestClient(app)
+    old = c.post("/api/v1/admin/rollouts", headers=AUTH,
+                 json={"release_id": "rel0", "percent": 5}).json()["rollout_id"]
+    _raced_patch(store, old, lambda: c.post("/api/v1/admin/rollouts", headers=AUTH,
+                                            json={"release_id": "rel1", "percent": 5}))
+    assert c.patch("/api/v1/admin/rollouts/" + old, headers=AUTH,
+                   json={"state": "paused"}).status_code == 409
+    assert store.get_rollout(old)["pause_reason"] == "superseded"
+    r = c.patch("/api/v1/admin/rollouts/" + old, headers=AUTH, json={"state": "active"})
+    assert r.status_code == 409 and len(_active(store)) == 1
+    # nor is anything else about a superseded rollout changed
+    assert c.patch("/api/v1/admin/rollouts/" + old, headers=AUTH,
+                   json={"percent": 50}).status_code == 409
+
+
+def test_resuming_beside_another_active_rollout_is_a_409(tmp_path):
+    """What a race could leave: a paused rollout a create did not supersede, beside an active
+    one. The database holds one active per cohort; the resume it refuses is a 409, not a 500."""
+    app, store = _app(tmp_path)
+    _seed_release(store)
+    store.add_rollout(rollout_id="ro_old", release_id="rel1", product_id=BID,
+                      cohort="__default__", percent=5)
+    store.update_rollout("ro_old", state="paused", pause_reason="operator")
+    store.add_rollout(rollout_id="ro_new", release_id="rel1", product_id=BID,
+                      cohort="__default__", percent=5)
+    r = TestClient(app).patch("/api/v1/admin/rollouts/ro_old", headers=AUTH,
+                              json={"state": "active"})
+    assert r.status_code == 409
+    assert _active(store) == ["ro_new"] and store.get_rollout("ro_old")["state"] == "paused"
+
+
+def test_a_raise_decided_on_a_stale_read_never_lowers_the_percent(tmp_path):
+    """Two raises at once: each checked "only rises" against its own read, and the one with
+    the lower percent, written last, lowered the dial."""
+    app, store = _app(tmp_path)
+    c = TestClient(app)
+    rid = _make_rollout(c, store)
+    _raced_patch(store, rid, lambda: store.update_rollout(rid, percent=50))
+    assert c.patch("/api/v1/admin/rollouts/" + rid, headers=AUTH,
+                   json={"percent": 30}).status_code == 200
+    assert store.get_rollout(rid)["percent"] == 50
 
 
 # --- patch / rollback -----------------------------------------------------------------------
@@ -744,6 +875,60 @@ def test_account_lifecycle_api(tmp_path):
                   json={"name": "y"}).status_code == 200
     assert c.post("/api/v1/admin/accounts/ghost/deactivate", headers=AUTH).status_code == 404
     assert c.post("/api/v1/admin/accounts/ghost/activate", headers=AUTH).status_code == 404
+
+
+def test_a_token_minted_while_its_account_is_deactivated_does_not_work(tmp_path):
+    """Issue checked the account was active and then minted; a deactivate landing between
+    the two revoked every token there was, and the new one, minted after, worked."""
+    app, store = _app(tmp_path, scopes=("accounts",))
+    store.add_account(created_by="ci", account_id="acctA", name="A")
+    c = TestClient(app)
+    in_use = store.token_name_in_use
+
+    def deactivated_meanwhile(*a, **k):
+        out = in_use(*a, **k)
+        assert c.post("/api/v1/admin/accounts/acctA/deactivate", headers=AUTH).status_code == 200
+        return out
+    store.token_name_in_use = deactivated_meanwhile
+    r = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+               json={"name": "late", "scopes": ["observe"]})
+    store.token_name_in_use = in_use
+    assert r.status_code == 409 and "token" not in r.json()
+    # ...and the one it made is revoked, so reactivating the account does not revive it
+    assert c.post("/api/v1/admin/accounts/acctA/activate", headers=AUTH).status_code == 200
+    late = [t for t in store.list_tokens(account_id="acctA") if t["name"] == "late"]
+    assert len(late) == 1 and late[0]["revoked"]
+
+
+def test_a_rotate_that_meets_a_deactivate_does_not_put_the_leaked_token_back(tmp_path):
+    """Rotate revoked the old token, a deactivate landed, the replacement was refused, and
+    rotate's undo un-revoked the old one: reactivating the account let the leaked token in."""
+    app, store = _app(tmp_path, scopes=("accounts",))
+    store.add_account(created_by="ci", account_id="acctA", name="A")
+    c = TestClient(app)
+    issued = c.post("/api/v1/admin/accounts/acctA/tokens", headers=AUTH,
+                    json={"name": "leaky", "scopes": ["manage"]}).json()
+    old, secret = issued["token_hash"], issued["token"]
+    revoke = store.revoke_token
+
+    def deactivated_meanwhile(h):
+        out = revoke(h)
+        if h == old:
+            store.revoke_token = revoke
+            assert c.post("/api/v1/admin/accounts/acctA/deactivate",
+                          headers=AUTH).status_code == 200
+        return out
+    store.revoke_token = deactivated_meanwhile
+    assert c.post("/api/v1/admin/tokens/%s/rotate" % old, headers=AUTH).status_code == 409
+    store.revoke_token = revoke
+    assert c.post("/api/v1/admin/accounts/acctA/activate", headers=AUTH).status_code == 200
+    assert store.get_token(old)["revoked"]
+    assert c.get("/api/v1/admin/devices",
+                 headers={"Authorization": "Bearer " + secret}).status_code == 401
+    # an undo with the account still active puts it back, as before
+    store.revoke_token(old)
+    store.restore_token(old)
+    assert not store.get_token(old)["revoked"]
 
 
 def test_account_name_validation_api(tmp_path):

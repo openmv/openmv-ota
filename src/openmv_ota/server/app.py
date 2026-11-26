@@ -713,19 +713,23 @@ def _rollout_reach(ms, ro, rel, account_id, product_id) -> int:
 
     "Behind" is in each camera's own order, the one the offer uses: by payload version, or
     by the account's publish counter for a camera built with PRODUCT_ID 0. By payload
-    version alone, a fleet of those that the rollout was offered to counted as none."""
-    before = (int(rel.get("payload_version", 0) or 0), int(rel.get("publish_seq", 0) or 0))
+    version alone, a fleet of those that the rollout was offered to counted as none. A
+    camera a pin holds, or whose boot stub cannot install the image, is never offered it by
+    the rollout, and is not counted either (see ``reachable_by``). A camera mid-trial is:
+    it is held only until it confirms."""
+    offer = (int(rel.get("payload_version", 0) or 0), int(rel.get("publish_seq", 0) or 0),
+             int(rel.get("min_stub", 0) or 0))
     behind = ms.count_devices(product_id=product_id, account_id=account_id,
-                              cohort=ro["cohort"], before_release=before)
+                              cohort=ro["cohort"], reachable_by=offer)
     base = ro.get("stage_attempted_base", 0)
     # The base is in the key: a resume or a raise to an equal percent moves it and keeps
     # everything else, and a reach counted for the old base gave the new stage a floor of 1.
-    key = (ro["rollout_id"], before, ro["percent"], base, ro["updated"], behind)
+    key = (ro["rollout_id"], offer, ro["percent"], base, ro["updated"], behind)
     if key not in _REACH:
         want = AUTOPAUSE_MIN_ATTEMPTED + base
         reach = ro["updated"]
         for device_id in ms.device_ids(product_id=product_id, account_id=account_id,
-                                       cohort=ro["cohort"], before_release=before):
+                                       cohort=ro["cohort"], reachable_by=offer):
             if reach >= want:
                 break
             reach += staged_in(ro["rollout_id"], device_id, ro["percent"])
@@ -765,12 +769,15 @@ def _ramp_or_autopause(ms, rid, ro):
         action, nxt = ramp_action(*args)
         if action == "pause":
             action, nxt = ramp_action(*args, floor())
-        # The raise, like the pause, is written only while the rollout is still active: a
-        # supersede or a pause by hand can land between the read above and the write.
+        # The raise, like the pause, is written only while the rollout is still active (a
+        # supersede or a pause by hand can land between the read above and the write) and
+        # still at the stage judged: a hand raise past the next stage landing there too was
+        # rewound to the next stage, its percent lowered to that stage's.
         if action == "raise":
-            # never lower the dial: an operator may have raised past the next stage by hand
+            # never lower the dial: an operator may have raised it by hand
             nxt = max(nxt, fresh["percent"])
-            if ms.update_rollout(rid, if_state="active", percent=nxt, stage_index=idx + 1,
+            if ms.update_rollout(rid, if_state="active", if_stage=idx, percent=nxt,
+                                 stage_index=idx + 1,
                                  stage_entered_at=datetime.now(timezone.utc).isoformat(),
                                  stage_attempted_base=fresh["attempted"],
                                  stage_failures_base=fresh["failures"]):
@@ -1524,7 +1531,13 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.admin_auth = admin_auth if admin_auth is not None else TokenAuth(metastore)
     app.state.secret = secret
     app.state.ratelimit = _rate_limiter(settings, metastore)
+    # Registrations per account, and per address with the check-in limiter's IPv6 /64 tier:
+    # without it, one /64 (2**64 addresses) was a fresh address budget a request. The /64
+    # gets the per-address rate: it is one site, and registering is a desk's, not a fleet's.
     app.state.reg_ratelimit = RateLimiter(settings.registration_rate_per_min)
+    app.state.reg_addr_ratelimit = RateLimiter(
+        settings.registration_rate_per_min,
+        per_prefix_per_minute=settings.registration_rate_per_min)
     from .advisor import OsvClient
     app.state.osv = osv if osv is not None else OsvClient()
     from .datalake import DatalakeAdmin

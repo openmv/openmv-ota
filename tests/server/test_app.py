@@ -680,6 +680,40 @@ def test_a_rollout_every_camera_fails_pauses_however_few_it_reaches(tmp_path):
     assert (ro["attempted"], ro["failures"], ro["state"]) == (2, 1, "paused")
 
 
+def test_a_camera_the_rollout_never_offers_is_not_counted_toward_the_floor(tmp_path):
+    """A pin (the camera's own, or its cohort's) takes a camera out of every rollout, and a
+    boot stub older than the image needs is never offered it. The floor counted them: with
+    two cameras that could take the release, both failing, it said five and never paused."""
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, pv=0x02000000, percent=100, min_stub=3)
+    store.update_rollout("ro1", state="paused")
+    c = TestClient(app)
+    for n in range(6):
+        camera.check(c, _checkin(dev="d%d" % n, stub={"version": 2 if n in (2, 3) else 3,
+                                                      "reason": 0}))
+    for n in (0, 1):
+        store.set_device_pin("d%d" % n, "rel1")
+    store.update_rollout("ro1", state="active")
+    for n in (4, 5):                                          # the two it can reach: offered...
+        assert camera.check(c, _checkin(dev="d%d" % n, stub={"version": 3, "reason": 0})
+                            ).json()["update"] is True
+    camera.check(c, _checkin(dev="d4", fallback_reason="crc", stub={"version": 3, "reason": 0}))
+    ro = store.get_rollout("ro1")                             # ...and one of them failed
+    assert (ro["attempted"], ro["failures"], ro["state"]) == (2, 1, "paused")
+
+
+def test_a_cohort_pin_holds_every_camera_from_the_rollout_s_reach(tmp_path):
+    from openmv_ota.server import app as app_mod
+    app, store, storage, v = _app(tmp_path)
+    _seed(store, pv=0x02000000, percent=100)
+    for n in range(6):
+        store.upsert_device(device_id="d%d" % n, product_id=BID, current_payload_version=1)
+    store.set_cohort_pin(BID, "__default__", "rel1")
+    app_mod._REACH.clear()
+    assert app_mod._rollout_reach(store, store.get_rollout("ro1"), store.get_release("rel1"),
+                                  "", BID) == 0
+
+
 def test_the_reach_counts_the_slice_and_is_remembered(tmp_path):
     """Only cameras in the staged slice can be reached; counting them is a hash each, so the
     answer is kept until the percent or the number of cameras behind the release changes."""
@@ -1216,6 +1250,33 @@ def test_ramp_auto_raise_never_lowers_a_hand_raised_percent(tmp_path):
     camera.check(TestClient(app), _checkin(pv=0x01000000))
     ro = store.get_rollout("ro1")
     assert ro["stage_index"] == 1 and ro["percent"] == 70
+
+
+def test_a_hand_raise_landing_before_the_auto_raise_is_not_undone(tmp_path):
+    """The auto-raise decided on a read of the ramp at stage 0. A hand raise to 60 landing
+    before its write (stage 2, past the next stage) was rewound to stage 1 and 25%."""
+    from openmv_ota.server.app import _ramp_or_autopause
+    from openmv_ota.server.auth import hash_token
+    app, store, storage, v = _app(tmp_path)
+    store.add_token(hash_token("admintok"), "ci", ["manage"])
+    _seed_ramp(store, [{"percent": 5, "min_soak": 0}, {"percent": 25}, {"percent": 50},
+                       {"percent": 100}])
+
+    class Raced:
+        """The store, with a hand raise landing between the evaluator's read and its write."""
+        def __getattr__(self, name):
+            return getattr(store, name)
+
+        def get_rollout(self, rid):
+            seen = store.get_rollout(rid)
+            assert TestClient(app).patch("/api/v1/admin/rollouts/ro1", json={"percent": 60},
+                                         headers={"Authorization": "Bearer admintok"}
+                                         ).status_code == 200
+            return seen
+    _ramp_or_autopause(Raced(), "ro1", {"account_id": "", "product_id": BID})
+    ro = store.get_rollout("ro1")
+    assert (ro["percent"], ro["stage_index"]) == (60, 2)
+    assert not [e for e in store.read_audit() if e["action"] == "rollout.autoraise"]
 
 
 def test_soak_elapsed_s_handles_missing_and_malformed():

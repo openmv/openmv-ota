@@ -599,6 +599,20 @@ _MIGRATIONS: list[list[str]] = [
         # signed check-in used to leave its arrival there reading as a move of its own.
         "ALTER TABLE device_registrations ADD COLUMN sent_product_id BIGINT",
     ],
+    [   # v46 -- one active rollout per (account, product, cohort), held by the database. A create
+        # superseded the active one by reading and then writing, so two creates at once, or a
+        # resume landing beside a create, left two active. A database that already holds two
+        # keeps the newest of each and has the rest superseded, as a create supersedes, before
+        # the index is built. (cohort is NOT NULL, so no row can stand outside the index.)
+        "UPDATE rollouts SET state = 'paused', pause_reason = 'superseded' "
+        "WHERE state = 'active' AND EXISTS (SELECT 1 FROM rollouts n "
+        "WHERE n.account_id = rollouts.account_id AND n.product_id = rollouts.product_id "
+        "AND n.cohort = rollouts.cohort AND n.state = 'active' "
+        "AND (n.created_at > rollouts.created_at "
+        "OR (n.created_at = rollouts.created_at AND n.rollout_id > rollouts.rollout_id)))",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_rollouts_one_active "
+        "ON rollouts (account_id, product_id, cohort) WHERE state = 'active'",
+    ],
 ]
 
 # How long after one refused check-in is audited the next one from the same camera is (see
@@ -913,18 +927,20 @@ class SqlMetadataStore:
     # --- rollouts ---------------------------------------------------------------------------
 
     def add_rollout(self, *, rollout_id, release_id, product_id, cohort, percent, state="active",
-                    failure_threshold=0.05, account_id="", display_name="", stages=None) -> None:
+                    failure_threshold=0.05, account_id="", display_name="", stages=None) -> bool:
+        """Insert the rollout; False when it was not, because another rollout is active for
+        its product and cohort (the unique index allows one) and this one would be too."""
         now = _now_iso()
         # ``stages`` (a validated list) is stored as JSON; a ramp starts at stage 0, entered now,
         # with zero baselines (the rollout's own attempted/failures also start at 0). NULL = no ramp.
         stages_json = json.dumps(stages) if stages else None
         entered = now if stages else None
-        self.execute(
+        return self.execute(
             "INSERT INTO rollouts (rollout_id, release_id, product_id, cohort, percent, state, "
             "failure_threshold, created_at, updated_at, account_id, display_name, stages, "
-            "stage_entered_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "stage_entered_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
             (rollout_id, release_id, product_id, cohort, percent, state, failure_threshold, now,
-             now, account_id, display_name, stages_json, entered))
+             now, account_id, display_name, stages_json, entered)).rowcount == 1
 
     def get_rollout(self, rollout_id: str) -> dict | None:
         return _d(self.query_one("SELECT * FROM rollouts WHERE rollout_id = ?", (rollout_id,)))
@@ -1081,19 +1097,52 @@ class SqlMetadataStore:
         if bad:
             raise ValueError("not an updatable column: %s" % ", ".join(sorted(bad)))
 
-    def update_rollout(self, rollout_id: str, *, if_state: str | None = None, **fields) -> bool:
-        """Write ``fields`` to the rollout; True when a row was written. With ``if_state``,
-        only while the rollout is still in that state: a decision made on a read of it must
-        not land on a rollout that changed state since (an auto-pause written over a
-        superseded rollout made it resumable, and left two active for one cohort)."""
+    def update_rollout(self, rollout_id: str, *, if_state: str | None = None,
+                       if_stage: int | None = None, **fields) -> bool:
+        """Write ``fields`` to the rollout; True when a row was written.
+
+        With ``if_state``, only while the rollout is still in that state and not superseded:
+        a decision made on a read of it must not land on a rollout that changed since (an
+        auto-pause written over a superseded rollout made it resumable, and a pause by hand
+        rewrote why it was paused). With ``if_stage``, only while its ramp is at that stage.
+
+        ``percent`` is never lowered: the larger of the stored and the written value is kept,
+        so a raise decided on a stale read cannot undo a higher one written since. False, too,
+        when the write would make a second active rollout for the product and cohort: the
+        unique index refuses it, and only a resume can meet it."""
         self._updatable(fields, self._ROLLOUT_UPDATABLE)
         fields = {**fields, "updated_at": _now_iso()}
-        assigns = ", ".join(k + " = ?" for k in fields)
-        where, params = " WHERE rollout_id = ?", (rollout_id,)
+        assigns, values = [], []
+        for k, v in fields.items():
+            if k == "percent":
+                assigns.append("percent = CASE WHEN percent > ? THEN percent ELSE ? END")
+                values += [v, v]
+            else:
+                assigns.append(k + " = ?")
+                values.append(v)
+        where = " WHERE rollout_id = ?"
+        values.append(rollout_id)
         if if_state is not None:
-            where, params = where + " AND state = ?", (*params, if_state)
-        return self.execute("UPDATE rollouts SET " + assigns + where,
-                            (*fields.values(), *params)).rowcount == 1
+            where += " AND state = ? AND COALESCE(pause_reason, '') != 'superseded'"
+            values.append(if_state)
+        if if_stage is not None:
+            where += " AND stage_index = ?"
+            values.append(if_stage)
+        try:
+            return self.execute("UPDATE rollouts SET " + ", ".join(assigns) + where,
+                                tuple(values)).rowcount == 1
+        except Exception as e:
+            # (the session that ran it has rolled the failed statement back)
+            if not self._is_unique_violation(e):
+                raise
+            return False
+
+    @staticmethod
+    def _is_unique_violation(exc: Exception) -> bool:
+        """Whether a statement failed on a unique index: SQLSTATE 23505, or sqlite's words."""
+        state = getattr(exc, "sqlstate", None) or getattr(
+            getattr(exc, "diag", None), "sqlstate", None)
+        return state == "23505" or "unique constraint failed" in str(exc).lower()
 
     def count_once(self, rollout_id: str, device_id: str, what: str) -> bool:
         """Count ``what`` (``attempted``, ``updated`` or ``failures``) for this camera in this
@@ -1269,7 +1318,7 @@ class SqlMetadataStore:
                        version=None, older_than_pv=None, fell_back=None, unconfirmed=None,
                        not_seen_since=None, products=None, seen_since=None,
                        behind=None, up_to_date=None, installed_on=None,
-                       failed_on=None, before_release=None) -> tuple[str, tuple]:
+                       failed_on=None, reachable_by=None) -> tuple[str, tuple]:
         where, params = _scope(account_id, product_id, products)
         if cohort is not None:
             where, params = _and(where, "cohort = ?"), (*params, cohort)
@@ -1312,14 +1361,27 @@ class SqlMetadataStore:
         if older_than_pv is not None:                # "not yet on (or past) this release"
             where = _and(where, "(current_payload_version IS NULL OR current_payload_version < ?)")
             params = (*params, older_than_pv)
-        if before_release is not None:
-            # (payload_version, publish_seq): the cameras a release is an upgrade for, each
-            # compared in the order the offer compares it -- a camera built with PRODUCT_ID 0
-            # by the account's publish counter, which its payload version says nothing about
+        if reachable_by is not None:
+            # (payload_version, publish_seq, min_stub) of a release: the cameras a rollout of it
+            # can offer it to, as the offer decides. Behind it, each compared in the order the
+            # offer compares it -- a camera built with PRODUCT_ID 0 by the account's publish
+            # counter, which its payload version says nothing about. Not held by a pin: a pin
+            # on the device, or on its cohort, takes it out of every rollout (counted, two
+            # pinned cameras held a rollout whose every other camera failed from pausing). And
+            # with a boot stub that can install the image, which no stub updates by itself.
             where = _and(where, "((orders_by_seq = 0 AND (current_payload_version IS NULL "
                                 "OR current_payload_version < ?)) "
                                 "OR (orders_by_seq != 0 AND publish_seq < ?))")
-            params = (*params, *before_release)
+            where = _and(where, "NOT EXISTS (SELECT 1 FROM device_pins p "
+                                "WHERE p.device_id = devices.device_id "
+                                "AND p.account_id = devices.account_id)")
+            where = _and(where, "NOT EXISTS (SELECT 1 FROM cohort_pins cp "
+                                "WHERE cp.account_id = devices.account_id "
+                                "AND cp.product_id = devices.product_id "
+                                "AND cp.cohort = devices.cohort)")
+            where = _and(where, "(? = 0 OR stub_version >= ?)")
+            pv, seq, min_stub = reachable_by
+            params = (*params, pv, seq, min_stub, min_stub)
         if cohort_not is not None:                   # a picker: everything NOT yet in it
             where, params = _and(where, "cohort != ?"), (*params, cohort_not)
         if q:                                        # name-or-id substring, case-insensitive
@@ -1332,19 +1394,19 @@ class SqlMetadataStore:
                       cohort_not=None, version=None, older_than_pv=None, fell_back=None,
                       unconfirmed=None, not_seen_since=None, products=None,
                       seen_since=None, behind=None, up_to_date=None,
-                      installed_on=None, failed_on=None, before_release=None) -> int:
+                      installed_on=None, failed_on=None, reachable_by=None) -> int:
         where, params = self._devices_where(account_id, product_id, cohort, q, cohort_not,
                                             version, older_than_pv, fell_back, unconfirmed,
                                             not_seen_since, products, seen_since,
                                             behind, up_to_date, installed_on, failed_on,
-                                            before_release)
+                                            reachable_by)
         return self.query_one("SELECT COUNT(*) AS n FROM devices " + where, params)["n"]
 
-    def device_ids(self, product_id=None, account_id=None, cohort=None, before_release=None,
+    def device_ids(self, product_id=None, account_id=None, cohort=None, reachable_by=None,
                    page=500):
         """The ids of the devices the filters select, ``page`` at a time (an iterator)."""
         where, params = self._devices_where(account_id, product_id, cohort, None, None,
-                                            before_release=before_release)
+                                            reachable_by=reachable_by)
         after = ""
         while True:
             rows = self.query_all("SELECT device_id FROM devices " + _and(where, "device_id > ?")
@@ -2439,7 +2501,12 @@ class SqlMetadataStore:
                       ",".join(str(int(p)) for p in products)))
 
     def get_token(self, token_hash: str) -> dict | None:
-        r = _d(self.query_one("SELECT * FROM admin_tokens WHERE token_hash = ?", (token_hash,)))
+        """The token, with ``account_active``: 0 when its account is deactivated, 1 when it is
+        active or has no account row (the self-host's implicit account)."""
+        r = _d(self.query_one(
+            "SELECT t.*, COALESCE(a.active, 1) AS account_active FROM admin_tokens t "
+            "LEFT JOIN accounts a ON a.account_id = t.account_id WHERE t.token_hash = ?",
+            (token_hash,)))
         if r is not None:
             r["scopes"] = r["scopes"].split(",") if r["scopes"] else []
             raw = r.get("products") or ""
@@ -2460,8 +2527,13 @@ class SqlMetadataStore:
                             "AND revoked = 0", (token_hash,)).rowcount == 1
 
     def restore_token(self, token_hash: str) -> None:
-        """Undo a revoke made on the way to a replacement that was never handed over."""
-        self.execute("UPDATE admin_tokens SET revoked = 0 WHERE token_hash = ?", (token_hash,))
+        """Undo a revoke made on the way to a replacement that was never handed over, unless
+        the token's account is deactivated: a rotate that met a deactivate on its way put the
+        leaked token it was replacing back, and a reactivation then let it in. Deactivate
+        clears the flag before it revokes, so a restore that lands after its revoke sees it."""
+        self.execute("UPDATE admin_tokens SET revoked = 0 WHERE token_hash = ? AND NOT EXISTS "
+                     "(SELECT 1 FROM accounts a WHERE a.account_id = admin_tokens.account_id "
+                     "AND a.active = 0)", (token_hash,))
 
     def token_hashes(self, prefix: str) -> list[str]:
         """The hashes of the tokens whose hash starts with ``prefix``, eight characters of

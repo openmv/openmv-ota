@@ -537,7 +537,8 @@ def test_forget_device(wired, tmp_path, capsys, monkeypatch):
     assert "removed from the fleet (data kept)" in capsys.readouterr().out
     from openmv_ota.server.datalake import DatalakeAdmin
     monkeypatch.setattr(DatalakeAdmin, "configured", property(lambda self: True))
-    monkeypatch.setattr(DatalakeAdmin, "purge_device", lambda self, a, d: {"deleted": 5, "bytes": 2048})
+    monkeypatch.setattr(DatalakeAdmin, "purge_device",
+                        lambda self, a, p, d: {"deleted": 5, "bytes": 2048})
     store.upsert_device(device_id="d3", product_id=BID)
     assert main(["client", "device", "forget", "--device-id", "d3"]) == 0
     assert "and 5 stored object(s), 2048 bytes, erased" in capsys.readouterr().out

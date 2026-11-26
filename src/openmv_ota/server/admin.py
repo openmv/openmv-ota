@@ -385,7 +385,9 @@ def deactivate_account(account_id: str, request: Request, body: TokenActor | Non
     token revoke and rotate already do; the operator is kept as `via`."""
     ms = request.app.state.metastore
     _owned_account(ms, account_id, principal)
-    ms.set_account_active(account_id, False)     # first: a token minted meanwhile is refused
+    # First, so that authentication refuses the account's tokens from here on: an issue or
+    # rotate that passed its active check before this can still mint one after the revoke.
+    ms.set_account_active(account_id, False)
     n = ms.revoke_account_tokens(account_id)
     # `actor` names the PERSON, the way revoke and rotate already allow: a console
     # calls this with an operator credential, and "the operator retired the account"
@@ -485,6 +487,14 @@ def _mint(ms, principal, name, scopes, account_id, action, extra=None, actor=Non
     token = secrets.token_urlsafe(32)
     th = hash_token(token)
     ms.add_token(th, name, scopes, account_id=account_id, products=products)
+    acc = ms.get_account(account_id) if account_id else None
+    if acc is not None and not acc["active"]:
+        # A deactivate landed after the caller's active check: authentication refuses this
+        # token now, but a reactivation would have brought it back to life, and reactivating
+        # never un-revokes. Deactivate clears the flag before it revokes, so a mint that
+        # lands after its revoke always sees the flag here.
+        ms.revoke_token(th)
+        raise HTTPException(status_code=409, detail="account is deactivated")
     who, via = _audit_actor(principal, actor)
     # Recorded under the TOKEN's account, not the caller's: tokens are minted by an operator
     # credential (account "" ), and the tenant is who needs to see it in their audit log.
@@ -671,17 +681,30 @@ def create_rollout(body: RolloutCreate, request: Request,
     else:
         raise HTTPException(status_code=400, detail="provide percent, stages or ramp")
     rid = new_id("ro")
-    # One active per (account, product, cohort): the active one is superseded, and so is any
-    # paused one, which a resume would otherwise have put back beside this one -- two active.
-    for prior in ms.live_rollouts(product_id, body.cohort, account_id=account_id):
-        ms.update_rollout(prior["rollout_id"], state="paused", pause_reason="superseded")
-        ms.append_audit(actor=principal.name, action="rollout.superseded", entity_type="rollout",
-                        entity_id=prior["rollout_id"], data={"by": rid}, account_id=account_id,
-                        product_id=product_id)
-    ms.add_rollout(rollout_id=rid, release_id=body.release_id, product_id=product_id,
-                   cohort=body.cohort, percent=start_percent,
-                   failure_threshold=body.failure_threshold, account_id=account_id,
-                   display_name=display_name, stages=stages)
+
+    def supersede():
+        # One active per (account, product, cohort): the active one is superseded, and so is
+        # any paused one, which a resume would otherwise have put back beside this one.
+        for prior in ms.live_rollouts(product_id, body.cohort, account_id=account_id):
+            ms.update_rollout(prior["rollout_id"], state="paused", pause_reason="superseded")
+            ms.append_audit(actor=principal.name, action="rollout.superseded",
+                            entity_type="rollout", entity_id=prior["rollout_id"],
+                            data={"by": rid}, account_id=account_id, product_id=product_id)
+
+    def add() -> bool:
+        return ms.add_rollout(rollout_id=rid, release_id=body.release_id, product_id=product_id,
+                              cohort=body.cohort, percent=start_percent,
+                              failure_threshold=body.failure_threshold, account_id=account_id,
+                              display_name=display_name, stages=stages)
+    supersede()
+    # The database holds one active rollout per cohort. Refused, another create (or a resume)
+    # went active between the supersede and the insert: this one is the newer, so it
+    # supersedes that one too, once; a second refusal is a cohort being fought over.
+    if not add():
+        supersede()
+        if not add():
+            raise HTTPException(status_code=409, detail="another rollout went active for this "
+                                "product and cohort while this one was created -- try again")
     ms.append_audit(actor=principal.name, action="rollout.create", entity_type="rollout",
                     entity_id=rid, data={"release_id": body.release_id, "cohort": body.cohort,
                                          "percent": start_percent,
@@ -708,6 +731,13 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
     from the auto-pause."""
     ms = request.app.state.metastore
     ro = _owned(ms.get_rollout(rollout_id), principal)
+    if ro.get("pause_reason") == "superseded":
+        # a newer rollout took its cohort: resumed, there were two active for one product
+        # and cohort, and this one's release was offered again whenever the newer paused.
+        # Nor paused by hand: that rewrote why it was paused, and the resume then went
+        # through. Its percent and threshold are read by nothing now, so they are refused too.
+        raise HTTPException(status_code=409, detail="rollout was superseded by a newer one "
+                            "-- create a new rollout for this release to go back to it")
     changes: dict = {}
     if body.percent is not None:
         if body.percent < ro["percent"]:
@@ -725,13 +755,6 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
             # stop is TERMINAL -- the docs promise it, and a resume here would silently
             # re-offer a release the operator decided nobody else should get
             raise HTTPException(status_code=409, detail="rollout is stopped -- create a new one")
-        if ro.get("pause_reason") == "superseded":
-            # a newer rollout took its cohort: resumed, there were two active for one product
-            # and cohort, and this one's release was offered again whenever the newer paused.
-            # Nor paused by hand: that rewrote why it was paused, and the resume then went
-            # through.
-            raise HTTPException(status_code=409, detail="rollout was superseded by a newer one "
-                                "-- create a new rollout for this release to go back to it")
         changes["state"] = body.state
     if not changes:
         raise HTTPException(status_code=400, detail="nothing to change")
@@ -749,9 +772,16 @@ def patch_rollout(rollout_id: str, body: RolloutPatch, request: Request,
                      "stage_entered_at": datetime.now(timezone.utc).isoformat(),
                      "stage_attempted_base": ro["attempted"],
                      "stage_failures_base": ro["failures"]}
-    ms.update_rollout(rollout_id, **changes, **stage,
-                      **({"pause_reason": "operator" if body.state == "paused" else None}
-                         if body.state is not None else {}))
+    # Written only while the rollout is in the state it was read in and not superseded: a
+    # create superseding it in between was otherwise undone -- a resume left two active, a
+    # pause by hand made it resumable. Nor beside another active rollout of its cohort (a
+    # resume that one went active ahead of): the database refuses a second.
+    if not ms.update_rollout(rollout_id, if_state=ro["state"], **changes, **stage,
+                             **({"pause_reason": "operator" if body.state == "paused" else None}
+                                if body.state is not None else {})):
+        raise HTTPException(status_code=409, detail="the rollout changed while this was "
+                            "decided, or another rollout is active for its product and cohort "
+                            "-- read it again")
     if stage and stage["stage_index"] != ro["stage_index"]:
         changes["stage"] = stage["stage_index"]
     ms.append_audit(actor=principal.name, action="rollout.update", entity_type="rollout",
@@ -1322,16 +1352,17 @@ def register_device(body: RegistrationIn, request: Request,
 
     Registering is how a board is CLAIMED, so it is bounded like one: only a known board type,
     a new camera only within the account's device limit (a 403 -- the camera takes a seat now,
-    before its first check-in), and a 429 past `registration_rate_per_min` for the account or
-    the address."""
+    before its first check-in), and a 429 past `registration_rate_per_min` for the account,
+    the address, or the address's IPv6 /64."""
     from openmv_ota.ota import registration as reg
     from openmv_ota.romfs.boards import board_names
     ms = request.app.state.metastore
-    limiter = request.app.state.reg_ratelimit
     ip = request.client.host if request.client else "-"
-    # (two kinds of key in one limiter, each in its own name space: an address is the
-    # client's to name behind a proxy that passes its X-Forwarded-For on)
-    if not limiter.allow("acct:" + principal.account_id) or not limiter.allow("ip:" + ip):
+    # (an account and an address are counted by separate limiters: an address is the
+    # client's to name behind a proxy that passes its X-Forwarded-For on, and the address
+    # limiter's IPv6 /64 tier reads its key as an address)
+    if not request.app.state.reg_ratelimit.allow(principal.account_id) \
+            or not request.app.state.reg_addr_ratelimit.allow(ip):
         raise HTTPException(status_code=429, detail="too many registrations, try again shortly")
     record = body.record.encode("utf-8")
     keys = [reg.DeskKey(k["key_id"], k["pubkey"], k["expires"], k["revoked"])
@@ -1443,7 +1474,8 @@ def forget_device(device_id: str, request: Request,
     back. Its data goes with it: unless ``keep_data`` is set, the datalake erases
     everything the device stored under this account BEFORE the fleet row goes, so a
     datalake that cannot be reached leaves the device in place (502) to be retried rather
-    than forgotten with its data orphaned.
+    than forgotten with its data orphaned. A token limited to a list of products erases
+    what the device stored under the product it is in now, the data that token can read.
 
     This is the other half of binding one. A platform that maps each install of its
     product to a device needs a way to say an install ended -- without it a decommissioned
@@ -1473,8 +1505,13 @@ def forget_device(device_id: str, request: Request,
     if keep_data:
         data["data_kept"] = True
     elif lake.configured:
+        # A token for the whole account erases the camera's whole history, every product it
+        # was in; one limited to some products, only what the camera filed under the product
+        # it is in now -- what it reads (_viewer_grant_for). Purging every product let a token
+        # for the product a camera was moved to erase what it stored under the one it left.
+        product = (dev.get("product_id") or 0) if principal.products else "*"
         try:
-            purged = lake.purge_device(principal.account_id, device_id)
+            purged = lake.purge_device(principal.account_id, product, device_id)
         except DatalakeError as e:
             raise HTTPException(
                 status_code=502,
@@ -2108,7 +2145,7 @@ def _viewer_grant_for(st, principal, device_id: str):
     grant = live_mod.viewer_grant(
         st.settings, device_id, (device.get("streams") or "").split(","),
         datalake_url=getattr(st.settings, "datalake_url", "") or "", account_id=owner,
-        product_id=(device.get("product_id") or 0) if principal.products else None)
+        product=(device.get("product_id") or 0) if principal.products else "*")
     return grant if grant is not None else {}
 
 

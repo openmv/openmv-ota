@@ -132,7 +132,7 @@ counting). The account sees it in its unclaimed list (`client device unclaimed`)
 
 | env var | what it does |
 |---|---|
-| `OPENMV_OTA_REGISTRATION_RATE_PER_MIN` | registrations (claims) allowed per minute, per account and per address (default 30; 0 disables) |
+| `OPENMV_OTA_REGISTRATION_RATE_PER_MIN` | registrations (claims) allowed per minute, per account, per address and per IPv6 /64 (default 30; 0 disables) |
 
 **Signed check-ins and per-camera encryption**
 

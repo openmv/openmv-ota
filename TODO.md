@@ -204,6 +204,20 @@ budget for now; these are the free/cheap passes to run first, in order.
     call; a token in account `''` reads every account's `/fleet/bases`.
   - Rounds 8-10 (server): journal entries the audit budget dropped are not audited later; a
     `stale` refusal uses the day's refusal-audit slot.
+  - Round 19 (server): an `accounts` token's customers are filed under its name (`_owner`),
+    which is unique only within its account, so two such tokens with one name share one
+    customer directory (only the server's root mints them). A forgotten camera's ingest
+    token stays valid for up to a day, so its data can arrive again after the erasure. The
+    auto-pause reach still counts a camera mid-trial: the fleet row does not keep the slots
+    the offer's `settled` reads.
+  - Round 20 (server): after a limited token's forget, the whole-account token's forget of
+    the same id answers 404 (the fleet row is gone), so what the camera stored under its other
+    products waits for retention unless it checks in again. A publish token's storage has no
+    per-account cap (an image and 32 deltas of up to 512 MiB each per publish, any count). A
+    create that loses the cohort twice (409) has already audited and webhooked `superseded`
+    naming a rollout that never existed; a PATCH has no stage guard beside an auto-raise; an
+    old instance's create landing between v46's supersede and its index fails that deploy's
+    migration (the next start heals it).
   - Round 18 (server): a rollout's status (`rollout_status.on_release`, `_ROLLOUT_STATE`)
     still orders a camera by payload version alone, so a camera built with `PRODUCT_ID` 0 can
     read as behind or ahead on the dashboard (display only; the offer and the auto-pause
