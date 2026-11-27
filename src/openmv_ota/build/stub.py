@@ -79,7 +79,11 @@ def build_stub(
     signer = _footer_signer(p, factory_key, key_passphrase_file, allow_dev_key)
     out_dir = output_dir(project, output, BuildError)
     out_dir.mkdir(parents=True, exist_ok=True)
-    return [_build_one(p, name, roots, out_dir, jobs, signer) for name in names]
+    results = [_build_one(p, name, roots, out_dir, jobs, signer) for name in names]
+    from . import provenance                    # `flash` writes a stub only as this machine built it
+    for r in results:
+        provenance.record(r.output, p.lock, p.root, None)
+    return results
 
 
 def build_for_firmware(p, name: str, out_dir: Path, jobs, *, key_passphrase_file=None,
@@ -128,13 +132,14 @@ def compose_image(stub: bytes, firmware: bytes, layout) -> bytes:
     return stub + b"\xff" * (layout.stub_max - len(stub)) + firmware
 
 
-def combined_image(board: str, out_dir: Path, check=None) -> Path | None:
+def combined_image(board: str, out_dir: Path, check=None, dest: Path | None = None) -> Path | None:
     """For a stub board: write ``<board>-firmware-with-stub.bin`` from the build's stub and
     firmware and return its path -- what ``flash firmware``/``flash factory`` download to the
     FIRMWARE partition. None for a board without a stub layout. A missing stub or firmware is
     an error naming the file (``build firmware`` makes both). ``check(path, data)`` sees each
     input's bytes as read, before they are composed (``flash`` refuses one this machine did
-    not build, see :mod:`.provenance`)."""
+    not build, see :mod:`.provenance`), and ``dest`` is where the image goes (``out_dir``
+    unless given: ``flash`` writes it to a private directory)."""
     layout = get_board(board).stub
     if layout is None:
         return None
@@ -146,7 +151,7 @@ def combined_image(board: str, out_dir: Path, check=None) -> Path | None:
     if check is not None:
         for f, data in zip((stub, fw), parts, strict=True):
             check(f, data)
-    out = out_dir / ("%s-%s" % (board, COMBINED_SUFFIX))
+    out = (dest or out_dir) / ("%s-%s" % (board, COMBINED_SUFFIX))
     out.write_bytes(compose_image(parts[0], parts[1], layout))
     return out
 
@@ -222,8 +227,6 @@ def _build_one(p, name: str, roots, out_dir: Path, jobs, signer) -> StubResult:
             raise BuildError("%s: %s" % (name, e)) from None
         out = out_dir / ("%s-stub.bin" % name)
         out.write_bytes(sealed)
-        from . import provenance                    # `flash` writes it only as this machine built it
-        provenance.record(out, p.lock)
         return StubResult(name, out, len(image), len(sealed), signer.key_id)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -261,13 +261,15 @@ def _build_one(p, repo: Path, name: str, out_dir: Path, *, jobs, incremental,
             _relink_text2(repo, name, build_args, layout, p.sdk_home)
         outputs = _collect_outputs(repo, name, out_dir)
         outputs += _copy_wifi_blobs(repo, name, out_dir)
-        from . import provenance                        # what `build romfs` and `flash` will trust
-        for out in outputs:
-            provenance.record(out, p.lock)
         from . import stub as stub_mod                  # a stub board's firmware ships with its stub
         outputs += stub_mod.build_for_firmware(p, name, out_dir, jobs,
                                                key_passphrase_file=key_passphrase_file,
                                                allow_dev_key=allow_dev_key)
+        # What `build romfs` and `flash` will trust, once the whole board has built: a run that
+        # fails part way (its stub, say) leaves what it wrote unrecorded, and so refused.
+        from . import provenance
+        for out in outputs:
+            provenance.record(out, p.lock, p.root, digest)
         return FirmwareResult(name, outputs, ota=ota,
                               build_dir=tmp if (ota and keep_build_dir) else None)
     finally:

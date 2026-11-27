@@ -177,10 +177,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `flash factory` wrote the same files and the stub beside them: a project handed over as a
   directory or an archive, or with `build/` committed, had a binary planted there signed with the
   engineer's keys and put on cameras. `build firmware` and `build stub` now record each binary
-  they write (its path, sha256 and size, and the lock's firmware and MicroPython commits) in the
-  machine's state directory, outside the project; one with no record, one changed since and one
-  built from other commits are refused by name, and the build names each binary it packs with its
-  sha256.
+  they write, once the whole board has built (its path, sha256 and size, the lock's firmware and
+  MicroPython commits, the project and the digest of what the build fed the firmware), in the
+  machine's state directory, outside the project. One with no record, one changed since, one
+  built from other commits and one built for another project (two sharing an `-o` directory) are
+  refused by name, as are an image's or a flash's binaries from more than one build (new firmware
+  beside a second core a failed run left); the build names each binary it packs with its sha256,
+  and `flash` hands its tools a private copy of the bytes it checked, not the path in `build/`.
 - **A romfs build sent elsewhere with `-o` reads the firmware there and nowhere else.** With
   none there it packed the project's own `build/` binary, and no line of its output said so.
 - **An image whose install failed after the erase waits before the camera erases its slot for it
@@ -188,17 +191,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   camera's with junk where its image should be: every install erased the slot, streamed the junk
   and failed its sha256, three times, the reset forgot it, and the boot check-in was offered it
   again. On the M4, M7 and H7 (one slot of internal flash, TLS not verified) anyone on the path
-  wore the flash out in days. The failure is now written, once per failed install, to
-  `/flash/openmv-ota-hold.txt`, and that image is refused before the erase, in the app and in
+  wore the flash out in days. The failure is now written to `/flash/openmv-ota-hold.txt` once
+  per install, before its first erase (so a reset or power cut past it counts too) and emptied
+  when the install works, and that image is refused before the erase, in the app and in
   recovery alike, until 10 minutes of uptime or 1 boot have passed, doubling with each failure
   of it up to a day or 64 boots. Uptime is the clock nobody on the path can move, and a boot
   is counted once, the first time it finds the hold (one small write a boot while held), so a
   camera that wakes for a minute at a time still installs and one made to reboot erases once in
-  that many boots. A different release goes ahead unless releases keep failing one after
-  another, and the first install that works empties the file.
-- **An image that arrived whole and failed its sha256 is not downloaded again in the same
-  install.** The three attempts are for a dropped link; the same bytes were erased, written and
-  hashed twice more. A delta that fails is still demoted to the full image.
+  that many boots; once a hold has been in force, the app does not reboot for an offer for the
+  rest of that boot, so new release ids cannot add boots. A different release goes ahead unless
+  releases keep failing one after another, and a record with a count below zero is no record.
+- **Past the erase, only the link's failures are retried.** An image that failed to inflate, to
+  decrypt or to hash was erased, written and checked three times a session; it now stops at once,
+  and a dropped download that cannot be resumed is still retried. A delta that fails is demoted
+  to the full image.
 
 - **A camera's words keep nothing that reads as something else.** A version, slot, stream or
   fallback reason kept newlines, ANSI escapes and right-to-left overrides, which made a

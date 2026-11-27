@@ -1180,6 +1180,7 @@ class _InstallGate:
         self._boot_key = None    # the release the boot check-in tried in place, if any
         self._key = None         # the release the failure count below is about
         self._fails = 0          # consecutive failed in-place installs of _key
+        self._held = False       # the installer held a release back this boot
 
     def answered(self):
         """A check-in was answered with no offer: the boot check-in has passed."""
@@ -1191,6 +1192,8 @@ class _InstallGate:
             self._answered = True
             self._boot_key = key
             return "install"
+        if self._held:                       # a hold is in force: each boot counts toward its end,
+            return "install"                 # so whoever answers must not be able to add boots
         if key != self._boot_key:            # offered since boot: reboot, the boot install takes it
             return "reboot"
         if (self._key == key and self._fails >= _INPLACE_TRIES
@@ -1200,9 +1203,11 @@ class _InstallGate:
 
     def failed(self, key, err=None):
         """An in-place install of ``key`` raised ``err`` (before the erase -- after it, it
-        reboots). A release the installer held back is not a failure: it is waiting, and a reboot
-        would only start its wait over."""
+        reboots). A release the installer held back is not a failure: it is waiting. A hold ends
+        after enough boots as well as uptime, so from then on this boot never reboots for an
+        offer (see plan): a new release id in every answer would otherwise wear the hold down."""
         if "install held back" in str(err):
+            self._held = True
             return
         if key != self._key:
             self._key, self._fails = key, 0

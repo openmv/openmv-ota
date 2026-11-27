@@ -15,12 +15,12 @@ LOCK = {"lock_schema_version": 1, "firmware": {"commit": "f" * 40},
         "micropython": {"commit": "e" * 40}}
 
 
-def record(root, *paths) -> None:
-    """Record ``paths`` as built here from ``root``'s lock, giving ``root`` a minimal lock when
-    it has none."""
+def record(root, *paths, inputs: str | None = "one build") -> None:
+    """Record ``paths`` as built here for ``root`` from its lock, in one build (``inputs``),
+    giving ``root`` a minimal lock when it has none."""
     lock_path = ProjectPaths(Path(root)).lock
     if not lock_path.exists():
         lock_path.write_text(json.dumps(LOCK))
     lock = lock_mod.read(lock_path)
     for path in paths:
-        provenance.record(path, lock)
+        provenance.record(path, lock, root, inputs)

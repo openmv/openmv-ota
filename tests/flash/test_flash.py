@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -35,14 +36,36 @@ def project(tmp_path, monkeypatch):
     return tmp_path, ran, recorded, artifact
 
 
-def test_flash_firmware(project):
+def _capture(monkeypatch, ran):
+    """The fixture's runner, also keeping each file a step wrote as it was when it ran: the
+    firmware files are written from a private copy, gone once the flash is over."""
+    wrote = {}
+
+    def run(argv, **kw):
+        ran.append(argv)
+        f = Path(argv[-1])
+        if f.is_file():
+            wrote[f.name] = (f, f.read_bytes())
+    monkeypatch.setattr(fl.runner, "run", run)
+    return wrote
+
+
+def _private(path, root):
+    """A file the flash wrote from its private copy: outside the project, removed after."""
+    path = Path(path)
+    return root not in path.parents and path.parent.name.startswith("openmv-ota-flash-") \
+        and not path.parent.exists()
+
+
+def test_flash_firmware(project, monkeypatch):
     root, ran, recorded, artifact = project
-    artifact("OPENMV4-firmware.bin")
+    artifact("OPENMV4-firmware.bin", b"built here")
+    wrote = _capture(monkeypatch, ran)
     steps = fl.flash_firmware(str(root), board="OPENMV4")
     assert [s.alt for s in steps] == [2]
     # the FIRST write runs without -w: _await_dfu has already seen the device listed and settled
-    assert ran == [["DFU", "-d", ",37c5:9204", "-a", "2", "--reset",
-                    "-D", str(root / "build/OPENMV4-firmware.bin")]]
+    assert ran[0][:-1] == ["DFU", "-d", ",37c5:9204", "-a", "2", "--reset", "-D"]
+    assert _private(ran[0][-1], root) and wrote["OPENMV4-firmware.bin"][1] == b"built here"
     assert recorded == [{"action": "flash-firmware", "board": "OPENMV4",
                          "files": [{"file": "OPENMV4-firmware.bin", "alt": 2}]}]
 
@@ -191,7 +214,8 @@ def test_imx_firmware_runs_the_sequence(imx_project):
     assert ran[-1][-1] == "reset"
     # a stub board: the composed stub || pad || firmware image is what lands at the firmware address
     [w] = [a for a in ran if "write-memory" in a and "0x60040000" in a]
-    assert w[-1].endswith("OPENMV_RT1060-firmware-with-stub.bin")
+    assert w[-1].endswith("OPENMV_RT1060-firmware-with-stub.bin") and _private(w[-1], root)
+    fl.flash_firmware(str(root), board="OPENMV_RT1060", dry_run=True)   # composed in build/
     assert (root / "build" / "OPENMV_RT1060-firmware-with-stub.bin").stat().st_size == 0x10000 + 5000
     assert recorded[0]["action"] == "flash-firmware" and recorded[0]["steps"] == \
         [s.label for s in steps]
@@ -495,8 +519,9 @@ def test_arduino_firmware(arduino_project):
     fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7")
     assert [a[a.index("-s") + 1] for a in ran] == ["0x08020000", "0x08040000:leave"]
     assert "-w" not in ran[0] and "-w" in ran[1]              # later writes wait for the device
-    assert ran[0][-1] == str(root / "build/ARDUINO_PORTENTA_H7-firmware-text2.bin")
-    assert ran[1][-1] == str(root / "build/ARDUINO_PORTENTA_H7-firmware-with-stub.bin")
+    assert Path(ran[0][-1]).name == "ARDUINO_PORTENTA_H7-firmware-text2.bin"
+    assert Path(ran[1][-1]).name == "ARDUINO_PORTENTA_H7-firmware-with-stub.bin"
+    assert _private(ran[0][-1], root) and _private(ran[1][-1], root)
 
 
 def test_arduino_firmware_skips_an_empty_second_region_and_needs_the_stub(arduino_project):
@@ -517,8 +542,9 @@ def test_arduino_factory_writes_wifi_from_output_dir(arduino_project):
     fl.flash_factory(str(root), board="ARDUINO_PORTENTA_H7")
     assert [a[a.index("-s") + 1] for a in ran] == [
         "0x90F00000", "0x90FC0000", "0x08020000", "0x08040000", "0x90B00000:leave"]
-    assert ran[0][-1] == str(root / "build/cyw4343_7_45_98_102.bin")   # from the build outputs
-    assert ran[3][-1] == str(root / "build/ARDUINO_PORTENTA_H7-firmware-with-stub.bin")
+    assert Path(ran[0][-1]).name == "cyw4343_7_45_98_102.bin"   # from the build outputs, as checked
+    assert Path(ran[3][-1]).name == "ARDUINO_PORTENTA_H7-firmware-with-stub.bin"
+    assert _private(ran[0][-1], root) and _private(ran[3][-1], root)
     # the dual-slot image `build factory-romfs` writes, not the single-slot app romfs
     assert ran[-1][-1] == str(root / "build/ARDUINO_PORTENTA_H7-factory-romfs.img")
 
@@ -624,7 +650,7 @@ def test_imx_sbl_entry_execs_machine_bootloader(monkeypatch):
     assert reset_cmd[-2:] != ["bootloader"], "must not use the bootloader subcommand"
 
 
-def test_flash_firmware_on_a_stub_board_writes_the_composed_image(project):
+def test_flash_firmware_on_a_stub_board_writes_the_composed_image(project, monkeypatch):
     """The N6's FIRMWARE partition starts with the boot stub; the firmware is linked to run
     behind it. One DFU download carries both: stub, 0xFF to the firmware's destination, firmware."""
     root, ran, recorded, artifact = project
@@ -632,10 +658,11 @@ def test_flash_firmware_on_a_stub_board_writes_the_composed_image(project):
     with pytest.raises(FlashError, match="OPENMV_N6-stub.bin -- `build firmware` produces it"):
         fl.flash_firmware(str(root), board="OPENMV_N6")
     artifact("OPENMV_N6-stub.bin", b"S" * 16)
+    wrote = _capture(monkeypatch, ran)
     steps = fl.flash_firmware(str(root), board="OPENMV_N6")
-    combined = root / "build/OPENMV_N6-firmware-with-stub.bin"
+    [(combined, data)] = wrote.values()
     assert [s.file for s in steps] == [combined] and [s.alt for s in steps] == [1]
-    data = combined.read_bytes()
+    assert combined.name == "OPENMV_N6-firmware-with-stub.bin" and _private(combined, root)
     assert data[:16] == b"S" * 16 and data[0x10000:] == b"F" * 32 and len(data) == 0x10000 + 32
     assert ran[-1][-2:] == ["-D", str(combined)]
     assert recorded[-1]["files"] == [{"file": "OPENMV_N6-firmware-with-stub.bin", "alt": 1}]
@@ -646,7 +673,7 @@ def test_flash_firmware_on_a_stub_board_writes_the_composed_image(project):
                                            "OPENMV_N6-factory-romfs.img"]
 
 
-def test_flash_firmware_on_an_h7_board_writes_the_second_text_region_too(project):
+def test_flash_firmware_on_an_h7_board_writes_the_second_text_region_too(project, monkeypatch):
     """The H7 Plus's firmware has a second text region in the bootloader's FILESYSTEM
     partition (alt 1): written first, so the composed image's step stays the one that resets.
     An empty region (the packer moved nothing) is skipped."""
@@ -654,10 +681,12 @@ def test_flash_firmware_on_an_h7_board_writes_the_second_text_region_too(project
     artifact("OPENMV4P-firmware.bin", b"F" * 64)
     artifact("OPENMV4P-stub.bin", b"S" * 16)
     artifact("OPENMV4P-firmware-text2.bin", b"T" * 48)
+    wrote = _capture(monkeypatch, ran)
     steps = fl.flash_firmware(str(root), board="OPENMV4P")
     assert [(s.file.name, s.alt) for s in steps] == [("OPENMV4P-firmware-text2.bin", 1),
                                                      ("OPENMV4P-firmware-with-stub.bin", 2)]
-    data = (root / "build/OPENMV4P-firmware-with-stub.bin").read_bytes()
+    assert wrote["OPENMV4P-firmware-text2.bin"][1] == b"T" * 48
+    data = wrote["OPENMV4P-firmware-with-stub.bin"][1]
     assert data[:16] == b"S" * 16 and len(data) == 0x20000 + 64 and data[0x20000:] == b"F" * 64
     assert recorded[-1]["files"] == [{"file": "OPENMV4P-firmware-text2.bin", "alt": 1},
                                      {"file": "OPENMV4P-firmware-with-stub.bin", "alt": 2}]
@@ -752,3 +781,72 @@ def test_arduino_bare_firmware_is_checked_too(arduino_project, monkeypatch):
     (root / "build" / "ARDUINO_PORTENTA_H7-firmware.bin").write_bytes(b"planted")
     with pytest.raises(FlashError, match="changed since"):
         fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7", dry_run=True)
+
+
+def test_the_tool_writes_the_bytes_that_were_checked(project, monkeypatch):
+    """dfu-util opened the path in build/ again, after the check: whatever was there by then was
+    written. It now reads a private copy of the checked bytes, removed when the flash is over."""
+    root, ran, _rec, artifact = project
+    artifact("OPENMV4-firmware.bin", b"built here")
+    wrote = {}
+
+    def run(argv, **kw):
+        (root / "build" / "OPENMV4-firmware.bin").write_bytes(b"swapped in after the check")
+        f = Path(argv[-1])
+        wrote["data"], wrote["mode"] = f.read_bytes(), f.stat().st_mode & 0o777
+        wrote["dir"] = f.parent.stat().st_mode & 0o777
+    monkeypatch.setattr(fl.runner, "run", run)
+    steps = fl.flash_firmware(str(root), board="OPENMV4")
+    assert wrote == {"data": b"built here", "mode": 0o600, "dir": 0o700}
+    assert _private(steps[0].file, root)
+
+
+def test_the_private_copies_are_removed_when_a_write_fails(project, monkeypatch):
+    root, _ran, _rec, artifact = project
+    artifact("OPENMV4-firmware.bin")
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv[-1])
+        raise FlashError("dfu-util failed")
+    monkeypatch.setattr(fl.runner, "run", run)
+    with pytest.raises(FlashError, match="dfu-util failed"):
+        fl.flash_firmware(str(root), board="OPENMV4")
+    assert _private(seen[0], root)
+
+
+def test_a_dry_run_names_the_files_in_build(project):
+    root, _ran, _rec, artifact = project
+    artifact("OPENMV4-firmware.bin")
+    [step] = fl.flash_firmware(str(root), board="OPENMV4", dry_run=True)
+    assert step.file == root / "build" / "OPENMV4-firmware.bin"
+
+
+def test_flash_refuses_a_firmware_built_for_another_project(project, tmp_path):
+    """One `-o` directory shared by two projects pinned to one commit: the firmware there is the
+    other project's, with its payload keys and frozen modules."""
+    root, ran, _rec, artifact = project
+    artifact("OPENMV4-firmware.bin")
+    other = tmp_path / "other-project"
+    other.mkdir()
+    built.record(other, root / "build" / "OPENMV4-firmware.bin")
+    with pytest.raises(FlashError, match=r"OPENMV4-firmware\.bin was built for the project at %s"
+                       % re.escape(str(other.resolve()))):
+        fl.flash_firmware(str(root), board="OPENMV4")
+    assert ran == []
+
+
+def test_flash_refuses_firmware_binaries_from_two_builds(project):
+    """New firmware beside a second core an earlier build left: a stub built alone is fine."""
+    root, ran, _rec, artifact = project
+    for name in ("OPENMV_AE3-stub.bin", "OPENMV_AE3-firmware-M55_HP.bin",
+                 "OPENMV_AE3-factory-romfs.img", "OPENMV_AE3-coprocessor-romfs.img"):
+        artifact(name)
+    built.record(root, root / "build" / "OPENMV_AE3-stub.bin", inputs=None)   # `build stub`
+    (root / "build" / "OPENMV_AE3-firmware-M55_HE.bin").write_bytes(b"he")
+    built.record(root, root / "build" / "OPENMV_AE3-firmware-M55_HE.bin", inputs="an earlier build")
+    with pytest.raises(FlashError, match="were written by different `openmv-ota build firmware` runs"):
+        fl.flash_factory(str(root), board="OPENMV_AE3")
+    assert ran == []
+    built.record(root, root / "build" / "OPENMV_AE3-firmware-M55_HE.bin")
+    assert fl.flash_factory(str(root), board="OPENMV_AE3", dry_run=True)

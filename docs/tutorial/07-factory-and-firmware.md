@@ -99,11 +99,13 @@ on the AE3, the padded `firmware_pad.toc`) for `flash bootloader`. Firmware is
 built per board, not per partition.
 
 Each binary it writes is recorded in this machine's state directory
-(`$XDG_STATE_HOME/openmv-ota/firmware`, or `~/.local/state/openmv-ota/firmware`): its path,
-sha256 and size, and the firmware commit the lock pins. `build romfs`, `build ota-romfs`,
+(`$XDG_STATE_HOME/openmv-ota/firmware`, or `~/.local/state/openmv-ota/firmware`) once the whole
+board has built: its path, sha256 and size, the firmware commit the lock pins, the project, and
+the digest of what the build fed the firmware. `build romfs`, `build ota-romfs`,
 `build factory-romfs`, `flash firmware` and `flash factory` use a firmware binary only when it
-matches its record, so a project copied from elsewhere is built and flashed with firmware built
-here, never with whatever its `build/` held.
+matches its record and was built for this project, together with binaries from the same build,
+so a project copied from elsewhere is built and flashed with firmware built here, never with
+whatever its `build/` held.
 
 The project's OTA flag steers the build automatically:
 

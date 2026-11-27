@@ -302,8 +302,9 @@ NOCDC_FLASH_TIMEOUT = 480
 
 # The device's install-retry budget (installer.py: `getattr(cfg, "INSTALL_RETRIES", 3)`, and no
 # project here overrides it). Each attempt writes a full slot, so it is the multiplier on the
-# reinstall scenario's second phase. That phase's image fails its sha256, which now stops after
-# the first attempt (installer._stops); the window still allows for a retried dropped link.
+# reinstall scenario's second phase. That phase's image fails its sha256, which stops after the
+# first attempt (installer._stops: only the link's failures are retried); the window still
+# allows for a retried dropped link.
 _RETRIES = 3
 
 
@@ -682,11 +683,13 @@ SCENARIOS = {
         "forbid": ["install.delta", "install.fallback", "install.reject"],
     },
     "corrupt": {
-        "desc": "tampered image fails integrity -> retries exhausted -> falls back",
+        # Junk that fails to inflate is not retried: only the link's failures are, and each
+        # attempt is a whole-slot erase. The one attempt ends in the fallback reset.
+        "desc": "tampered image fails integrity -> not retried -> falls back",
         "publish": "corrupt", "app": "confirm", "end": "golden",
-        "expect": ["install.start", "install.retry", "install.retry_cleanup", "install.fallback",
+        "expect": ["install.start", "install.retry_cleanup", "install.fallback",
                    "install.reboot", "boot.fallback"],
-        "forbid": ["install.armed", "confirm.promoted"],
+        "forbid": ["install.armed", "confirm.promoted", "install.retry"],
     },
     # THE ONLY SCENARIO THAT STARTS FROM A PROMOTED BOARD, and under v2 it is the one that
     # demonstrates why v2 exists. In v1 the device ran the promoted image with only the FACTORY
@@ -752,7 +755,7 @@ SCENARIOS = {
         "desc": "image decompresses but sha256 mismatches -> integrity gate rejects the update",
         "publish": "corrupt_sha", "app": "confirm", "end": "golden",
         "expect": ["install.start", "install.reject_sha", "install.fallback"],
-        "forbid": ["install.armed", "install.committed", "confirm.promoted"],
+        "forbid": ["install.armed", "install.committed", "confirm.promoted", "install.retry"],
     },
     "rollback": {
         # v2 gives a trial MAX_ATTEMPTS boots (default 3), not one, so this scenario now needs

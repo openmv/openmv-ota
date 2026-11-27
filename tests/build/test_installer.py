@@ -2911,6 +2911,9 @@ def test_the_record_is_written_under_relax_and_synced(tmp_path, monkeypatch):
     b"", b"\xff\xfe\x00\x81 garbage junk more", _SHA_A, _SHA_A + b" 3 1", _SHA_A + b" x 1 0",
     _SHA_A + b" 1 2 3 4", b"\n".join([_SHA_A + b" 3 1 0"] * 50),
     _SHA_A + b" " * 100 + b"3 1 0",           # its counts lie past what is read
+    _SHA_A + b" -1000 1 0",                   # below zero, a count turned the hold off for good,
+    b"b" * 64 + b" 1 -100 0",                 # ...or, for another image, as good as
+    _SHA_A + b" 5 1 -99999999999999999999",   # ...or held a sleepy camera until it was deleted
 ])
 def test_a_corrupt_record_holds_nothing_back(tmp_path, record):
     path = tmp_path / "hold.txt"
@@ -2923,9 +2926,8 @@ def test_a_corrupt_record_holds_nothing_back(tmp_path, record):
 
 @pytest.mark.parametrize("record, wait", [
     (_SHA_A + b" " + b"9" * 50 + b" 1 0", 86400),   # a count no camera reaches: a day, no more
-    (_SHA_A + b" -1000 1 0", 0),                    # a negative count holds nothing back
     (_SHA_B + b" 1 99 0", 86400),                   # images in a row: a day too, then it goes
-    (_SHA_A + b" 5 1 -99999", 9600),                # boots below zero: the uptime still ends it
+    (_SHA_A + b" 5 1 " + b"9" * 50, 0),             # boots no camera reaches: it goes at once
 ])
 def test_a_hostile_record_is_bounded_by_a_day(tmp_path, record, wait):
     path = tmp_path / "hold.txt"
@@ -2944,8 +2946,48 @@ def test_a_record_that_cannot_be_read_or_written_never_fails_the_install(tmp_pat
 
 def test_a_transport_error_still_retries():
     stops = inst("_stops")
-    for e in (inst("_TransportError")(110, "timed out"), OSError(104), MemoryError(4096)):
-        assert [stops(e, a, 3, "full", None) for a in range(3)] == [False, False, True]
+    e = inst("_TransportError")("download failed: OSError(104)")
+    assert [stops(e, a, 3, "full", None) for a in range(3)] == [False, False, True]
+
+
+@pytest.mark.parametrize("e", [OSError(22), OSError("inflate"), ValueError("bad padding"),
+                               MemoryError(4096), OSError(104)])
+def test_junk_that_fails_past_the_erase_stops_at_once(e):
+    """Junk that fails to inflate or decrypt fails the same way again, and each try was a
+    whole-slot erase: only the link's failures, which _open_body and _ResumingBody raise as a
+    _TransportError, are retried. A bare errno is not one: inflate raises those too."""
+    assert inst("_stops")(e, 0, 3, "full", None) is True
+    assert inst("_stops")(e, 0, 3, inst("_DELTA_FORMAT"), ("https://h/full.gz", 0, None)) is False
+
+
+def test_a_download_that_stays_dropped_is_a_transport_error(clock, monkeypatch):
+    monkeypatch.setattr(_mod, "_open", lambda *a, **k: pytest.fail("reopened when out of time"))
+    rb = inst("_ResumingBody")("u", None, None, None, lambda: None, None, None)
+    inst("_slack_start")()
+    clock[0] += inst("_SLOW_MS") + 1
+    with pytest.raises(OSError, match="download failed: .*ECONNRESET") as err:
+        rb._reopen(OSError(104, "ECONNRESET"))
+    assert inst("_is_transport_error")(err.value)
+    assert inst("_stops")(err.value, 0, 3, "full", None) is False
+
+
+def test_the_failure_is_kept_before_the_erase_and_cleared_after_an_install(tmp_path):
+    """A session that dies past the erase -- a watchdog bite in a dripped handshake, a WINC recv,
+    a power cut -- never reached the code after a failure, so it kept nothing and erased again on
+    every boot. run() now writes the failure before the first erase."""
+    src = _SRC.read_text()
+    run = src[src.index("def run(manifest_url"):]
+    kept = run.index("_hold_write(on_fail, relax)")
+    assert kept < run.index("erase(target_off, slot_size)") and run.count("_hold_write(on_fail") == 1
+    assert run.index("if rec or not from_file:\n        _hold_write(b\"\", relax)") > \
+        run.index("_install_stream(source, write")
+    path = str(tmp_path / "hold.txt")
+    _w, on_fail, _rec = _hold(_SHA_A, 0, path)
+    inst("_hold_write")(on_fail, _Relax(), path)          # what run() writes before the erase
+    spec = importlib.util.spec_from_file_location("openmv_ota._installer_after_bite", str(_SRC))
+    fresh = importlib.util.module_from_spec(spec)          # ...then the bite: a new boot
+    spec.loader.exec_module(fresh)
+    assert fresh._hold(_SHA_A, 0, _boot(), _Relax(), path)[0] == 600
 
 
 def test_a_full_image_that_hashed_wrong_stops_at_once():

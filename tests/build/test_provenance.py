@@ -75,7 +75,7 @@ def test_a_firmware_built_from_other_commits_is_not_signed(make_project):
     root, repo, app = make_project(ota=True, app_files=_FILES)
     old = lock_mod.read(ProjectPaths(root).lock)
     old.firmware = dict(old.firmware, commit="0" * 40)
-    provenance.record(root / "build" / "OPENMV_N6-firmware.bin", old)
+    provenance.record(root / "build" / "OPENMV_N6-firmware.bin", old, root, "one build")
     with pytest.raises(BuildError, match=r"was built from firmware 0{40}, not the [0-9a-f]{40} the "
                        r"lock pins -- run `openmv-ota build firmware`"):
         _romfs(root, repo, app)
@@ -109,11 +109,13 @@ def test_what_build_firmware_writes_is_what_build_romfs_signs(make_project, monk
     out = tmp_path / "out"
     written = fw.build_firmware(root, firmware=repo, output=out)[0].outputs
     assert {p.name for p in written} >= {"OPENMV_N6-firmware.bin", "OPENMV_N6-stub.bin"}
+    inputs = (repo / "build" / "OPENMV_N6" / fw._INPUTS_STAMP).read_text().strip()
     for p in written:                                       # every binary it wrote is recorded
         entry = json.loads(provenance._record_path(str(p.resolve())).read_text())
         assert entry["sha256"] == hashlib.sha256(p.read_bytes()).hexdigest()
         assert entry["size"] == p.stat().st_size and entry["path"] == str(p.resolve())
         assert entry["firmware_commit"] == lock_mod.read(ProjectPaths(root).lock).firmware["commit"]
+        assert entry["project"] == str(root.resolve()) and entry["inputs"] == inputs
     assert _packed_firmware(_romfs(root, repo, app, output=out)[0]) == b"FW"
 
 
@@ -158,3 +160,45 @@ def test_the_state_dir_on_windows(monkeypatch, tmp_path):
     assert provenance.state_dir("nt") == tmp_path / "openmv-ota" / "state"
     monkeypatch.delenv("LOCALAPPDATA")
     assert provenance.state_dir("nt") == Path.home() / "AppData" / "Local" / "openmv-ota" / "state"
+
+
+def test_a_shared_output_dir_does_not_pack_another_projects_firmware(make_project, tmp_path):
+    """Two projects pinned to one commit, building into one `-o` directory: B's romfs build
+    packed A's firmware, with A's payload keys and frozen modules."""
+    root, repo, app = make_project(ota=True, app_files=_FILES)
+    path = root / "build" / "OPENMV_N6-firmware.bin"
+    other = tmp_path / "project-a"
+    other.mkdir()
+    provenance.record(path, lock_mod.read(ProjectPaths(root).lock), other, "a's build")
+    with pytest.raises(BuildError, match=r"was built for the project at %s -- run `openmv-ota "
+                       r"build firmware` for this one" % other.resolve()):
+        _romfs(root, repo, app)
+
+
+def test_firmware_and_a_second_region_from_two_builds_are_not_packed(make_project):
+    root, repo, app = make_project(boards=("OPENMV4P",), ota=True, app_files=_FILES, ca="tiny")
+    lock = lock_mod.read(ProjectPaths(root).lock)
+    provenance.record(root / "build" / "OPENMV4P-firmware-text2.bin", lock, root, "an earlier build")
+    with pytest.raises(BuildError, match="were written by different `openmv-ota build firmware` runs"):
+        _romfs(root, repo, app, boards=["OPENMV4P"])
+
+
+def test_a_board_build_that_fails_at_its_stub_records_nothing(make_project, monkeypatch, tmp_path):
+    """The firmware was recorded before the stub was built: a stub that failed left new firmware
+    and the old stub, each passing its check."""
+    from openmv_ota.build import stub as stub_mod
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    monkeypatch.setattr(fw, "_relink_text2", lambda *a: None)
+    root, repo, app = make_project(ota=True, app_files=_FILES)
+    (repo / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text("build/\n")
+
+    def broken(args):
+        raise BuildError("stub build failed (make): exit 2")
+    monkeypatch.setattr(stub_mod, "_run_make", broken)
+    out = tmp_path / "out"
+    with pytest.raises(BuildError, match="stub build failed"):
+        fw.build_firmware(root, firmware=repo, output=out)
+    assert (out / "OPENMV_N6-firmware.bin").read_bytes() == b"FW"
+    with pytest.raises(BuildError, match="was not built by `openmv-ota build firmware`"):
+        _romfs(root, repo, app, output=out)

@@ -312,7 +312,8 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
     stub = get_board(t.name).stub
     if stub is None or t.role != "main":        # a coprocessor romfs is plain: no firmware in it
         return body, []
-    firmware = _build_product(p, t, out_dir, firmware_image_name(t.name))
+    built: list = []                            # the records of what is packed: one build's
+    firmware = _build_product(p, t, out_dir, firmware_image_name(t.name), built)
     if len(firmware) > stub.firmware_max:
         raise BuildError("%s firmware is %d bytes but the boot stub's window holds %d (%d over)"
                          % (t.name, len(firmware), stub.firmware_max,
@@ -321,7 +322,7 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
     if stub.text2_dest is not None:
         # The second text region `build firmware` relinked into the board's spare sector: its
         # own component, since it has its own destination. Empty when nothing was moved.
-        text2 = _build_product(p, t, out_dir, "%s-firmware-text2.bin" % _target_name(t))
+        text2 = _build_product(p, t, out_dir, "%s-firmware-text2.bin" % _target_name(t), built)
         if len(text2) > stub.text2_max:
             raise BuildError("%s second text region is %d bytes but its sector holds %d (%d over)"
                              % (t.name, len(text2), stub.text2_max, len(text2) - stub.text2_max),
@@ -330,16 +331,18 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
             blobs.append((stub.text2_dest, text2))
     if stub.coproc_dest is not None:
         # The second core's image (the AE3's M55_HE): its own partition, so its own component.
-        coproc = _build_product(p, t, out_dir, coprocessor_image_name(t.name))
+        coproc = _build_product(p, t, out_dir, coprocessor_image_name(t.name), built)
         if len(coproc) > stub.coproc_max:
             raise BuildError("%s coprocessor firmware is %d bytes but its window holds %d (%d over)"
                              % (t.name, len(coproc), stub.coproc_max, len(coproc) - stub.coproc_max),
                              exit_code=1)
         blobs.append((stub.coproc_dest, coproc))
+    from . import provenance
+    provenance.one_build(built)
     return components.append(body, blobs)
 
 
-def _build_product(p, t, out_dir: Path, fname: str) -> bytes:
+def _build_product(p, t, out_dir: Path, fname: str, built: list) -> bytes:
     """A file `build firmware` on this machine wrote to this build's output dir, from the commits
     the lock pins (see :mod:`.provenance`); it is signed into the image, so a binary found there
     any other way is refused, and the one packed is named with its sha256. Only the output dir
@@ -355,8 +358,9 @@ def _build_product(p, t, out_dir: Path, fname: str) -> bytes:
                          " -- run `openmv-ota build firmware%s` first"
                          % (path, t.name, "" if out_dir == p.root / "build" else
                             " -o %s" % out_dir), exit_code=1) from None
-    digest = provenance.check(path, data, p.lock)
-    print("note: %s packs %s (sha256 %s)" % (t.name, path, digest), file=sys.stderr)
+    entry = provenance.check(path, data, p.lock, p.root)
+    built.append(entry)
+    print("note: %s packs %s (sha256 %s)" % (t.name, path, entry["sha256"]), file=sys.stderr)
     return data
 
 

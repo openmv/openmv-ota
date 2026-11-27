@@ -28,7 +28,8 @@ openmv-ota flash factory  ./my-product -b OPENMV4
 
 The firmware files are flashed only as this machine's `build firmware` (or `build stub`) wrote
 them, from the firmware commit the lock pins: one it has no record of, or one changed since, is
-refused by name before anything is written. The romfs images are signed and need no record.
+refused by name before anything is written, and the tool writes a private copy of the bytes
+that were checked. The romfs images are signed and need no record.
 
 A multi-partition write (`flash factory`) resets the board only after the final
 write, so it stays in the bootloader between steps — and every flash resolves

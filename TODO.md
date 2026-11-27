@@ -148,7 +148,13 @@ budget for now; these are the free/cheap passes to run first, in order.
     different releases in a row (`corrupt_sha` dispatched alone, again and again) holds the next
     one for 10 minutes; the regression order puts an install after every corrupt leg, and no
     scenario looks for `install held back` yet. The `corrupt_sha` and `reinstall` legs now
-    expect `install.fallback` in place of `install.retry`, unproven on the fleet.
+    expect `install.fallback` in place of `install.retry`, and `corrupt` no longer expects a
+    retry; all three forbid one, unproven on the fleet. A board build's record binds the inputs
+    `build firmware` fed it, but `build romfs` cannot recompute them, so a project changed since
+    (keys, frozen modules) packs the firmware built before the change. A camera's relay token
+    lives 24 h and the camera reconnects with the grant from its latest check-in, so one whose
+    check-ins are further apart (an outage, or an app `poll_after_s` near a day) is refused by
+    the relay every 5 s per stream, and has no Live, until it checks in again.
   - Round 21 (host): the camera's JSON caps bound values, not heap. On the M4 (OPENMV2,
     a 44 KB GC heap) a hostile check-in answer inside the caps (about 455 strings of 16
     characters, some 24 KB parsed) runs the heap out and the runtime reboots, and the
