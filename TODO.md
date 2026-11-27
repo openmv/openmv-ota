@@ -142,6 +142,12 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 19 (host): Windows is not a supported host (CI runs Linux and macOS): there,
+    `CreateProcess` and `shutil.which` look in the working directory before `PATH`, so a
+    `git.exe` or `dfu-util.exe` at a project's top runs; every tool wants resolving to an
+    absolute path outside the project before Windows is. On a board that does not verify TLS
+    no server time is verified, so an image stamped by a build machine whose clock ran fast
+    holds NTP off until a release built with the right time.
   - Round 18 (host): a firmware tree handed over as a directory (an archive, a copy) brings
     its untracked `mpy-cross` with it, and a build runs it; trusting only a binary this tool
     built wants its hash kept somewhere the tree cannot write. A hard link from a package
@@ -198,12 +204,19 @@ budget for now; these are the free/cheap passes to run first, in order.
     call; a token in account `''` reads every account's `/fleet/bases`.
   - Rounds 8-10 (server): journal entries the audit budget dropped are not audited later; a
     `stale` refusal uses the day's refusal-audit slot.
+  - Round 18 (server): a rollout's status (`rollout_status.on_release`, `_ROLLOUT_STATE`)
+    still orders a camera by payload version alone, so a camera built with `PRODUCT_ID` 0 can
+    read as behind or ahead on the dashboard (display only; the offer and the auto-pause
+    order it by the publish counter). A datalake record holding NaN or Infinity stored before
+    ingest refused them still makes its reads 500; nothing cleans one out. The datalake's
+    `device_stats` table, unread since device reads went by product
+    (`device_product_stats`), goes in its next change; objects it filed before it knew their
+    product (before 2026-09-14) are read by no route and wait for retention.
   - Round 17 (server): the hosted server still takes the leftmost `X-Forwarded-For` entry
     (`OPENMV_OTA_TRUSTED_PROXY_HOPS` unset until the platform's hop count is measured), so a
     client names the address it is rate-limited as. The datalake's arrival indexes do not
     lead with the account: a new owner reading back past a camera's transfer scans the old
-    owner's rows for that topic (slow, not a leak). The datalake still keeps `topic_stats`,
-    which nothing reads since `device_stats` replaced it; drop it in its next change.
+    owner's rows for that topic (slow, not a leak).
   - Rounds 13-16 (server): a product a camera was sent to by a pin, and never went to,
     stays noted on its registration, so a later move there by itself reads as sent. A
     webhook test ping has no

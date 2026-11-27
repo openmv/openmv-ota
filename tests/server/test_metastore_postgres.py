@@ -209,3 +209,21 @@ def test_rollout_device_states_and_successor_on_postgres(pg):
     assert states == {"failed": 0, "updated": 1, "ahead": 0, "offered": 1, "unoffered": 0}
     assert pg.rollout_successor(ro)["rollout_id"] == "ro_2"
     assert pg.rollout_successor(pg.get_rollout("ro_2")) is None
+
+
+def test_a_conditional_rollout_write_and_the_reach_filter_on_postgres(pg):
+    """The auto-pause's write is conditional on the state it read (its rowcount says whether
+    it landed), and the reach's filter orders each camera as the offer does."""
+    pg.add_rollout(rollout_id="ro_1", release_id="rel_1", product_id=7, cohort="__default__",
+                   percent=10, account_id="acct")
+    pg.update_rollout("ro_1", state="paused", pause_reason="superseded")
+    assert pg.update_rollout("ro_1", if_state="active", pause_reason="failure_limit") is False
+    assert pg.get_rollout("ro_1")["pause_reason"] == "superseded"
+    assert pg.update_rollout("ro_1", if_state="paused", percent=20) is True
+    pg.upsert_device(device_id="v", product_id=0, current_payload_version=1, account_id="acct")
+    pg.upsert_device(device_id="s", product_id=0, current_payload_version=9, publish_seq=4,
+                     orders_by_seq=True, account_id="acct")
+    pg.upsert_device(device_id="s_on", product_id=0, current_payload_version=1, publish_seq=5,
+                     orders_by_seq=True, account_id="acct")
+    assert list(pg.device_ids(product_id=0, account_id="acct", before_release=(2, 5))) == ["s", "v"]
+    assert pg.count_devices(product_id=0, account_id="acct", before_release=(2, 5)) == 2

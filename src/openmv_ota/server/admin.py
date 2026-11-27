@@ -670,9 +670,10 @@ def create_rollout(body: RolloutCreate, request: Request,
         start_percent = body.percent
     else:
         raise HTTPException(status_code=400, detail="provide percent, stages or ramp")
-    prior = ms.active_rollout(product_id, body.cohort, account_id=account_id)   # one active per (account, product, cohort)
     rid = new_id("ro")
-    if prior is not None:
+    # One active per (account, product, cohort): the active one is superseded, and so is any
+    # paused one, which a resume would otherwise have put back beside this one -- two active.
+    for prior in ms.live_rollouts(product_id, body.cohort, account_id=account_id):
         ms.update_rollout(prior["rollout_id"], state="paused", pause_reason="superseded")
         ms.append_audit(actor=principal.name, action="rollout.superseded", entity_type="rollout",
                         entity_id=prior["rollout_id"], data={"by": rid}, account_id=account_id,
@@ -2101,9 +2102,13 @@ def _viewer_grant_for(st, principal, device_id: str):
     owner = bound["account_id"] if bound else device.get("account_id", "")
     if owner != principal.account_id or not principal.may(device.get("product_id")):
         return None
+    # A credential for the whole account reads the camera's whole history, every product it
+    # was in (the account's data); one limited to some products reads only what the camera
+    # filed under the product it is in now, not the one it was moved from.
     grant = live_mod.viewer_grant(
         st.settings, device_id, (device.get("streams") or "").split(","),
-        datalake_url=getattr(st.settings, "datalake_url", "") or "", account_id=owner)
+        datalake_url=getattr(st.settings, "datalake_url", "") or "", account_id=owner,
+        product_id=(device.get("product_id") or 0) if principal.products else None)
     return grant if grant is not None else {}
 
 

@@ -170,6 +170,54 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A helper run with `python -c` does not import from the working directory either.** The
+  spsdk scripts `flash` runs with the SDK's Python (`flash factory` and `flash list` on an
+  RT1060) used `-c`, which puts the working directory first on the import path as `-m` does:
+  a `spsdk/` package where the user stood ran in place of the SDK's. They get `-P`.
+- **The camera's JSON caps count values, not commas.** Its parser takes `,` and `:` for
+  blanks, so `[1 1 1 ...]` passed the comma cap: a manifest body (parsed ahead of its
+  signature), a check-in answer or a relay `/poll` body made that way cost tens of KB more
+  heap than the cap meant to allow, and ran out on the smaller boards. The installer, the
+  runtime's check-in, recovery and the packer count every value outside strings, 512 at most;
+  a relay message or `/poll` answer, a handful of values, is refused past 32.
+- **A datalake reply too big to read in place is delivered only if it says 200.** A proxy's
+  error page (kilobytes of HTML) overflowed the read buffer and was taken as delivered, and
+  the camera dropped the batch it answered.
+- **`python -m openmv_ota` runs, and imports nothing from the working directory.** There was
+  no `__main__`, and `python -m openmv_ota.cli` imports the CLI's own modules (`argparse`
+  among them) before it can drop the directory.
+- **A download replaces a link at its name and writes nothing through it.** `client release
+  manifest`, `artifact`, `sbom`, `bases` and `watch` save to the working directory by
+  default, and a link planted there took the download to wherever it pointed.
+- **Saving the client profile writes a new file.** An existing `client.toml` kept its own
+  mode, with the token already in it, until the chmod; a link at its path took the token
+  elsewhere.
+- **A grant handed to `poll_watch` that is not one raises `OSError`,** the one error it
+  documents, not the `KeyError` that ended a wake loop catching `OSError`.
+
+- **A token limited to some products reads a device's data under the product it is in.**
+  A camera moved to another product keeps its id, and its grant (for the account and the
+  id) read what it sent under the product it left, to a token limited to the product it is
+  in now. The grant names the product in the token and in
+  `/api/v1/devices/{account}/{product}/{device}/...`: the camera's current one for a
+  limited token, `*` (every product, the account's whole history) for one of the whole
+  account; the datalake (openmv-cloud) answers only for that, in lockstep.
+- **A resumed ramp is judged on the cameras its new stage can reach.** The reach was
+  remembered without the stage's starting count, so a resume, or a raise to an equal
+  percent, was handed the old stage's figure: a floor of one attempt, and its first failure
+  paused it again.
+- **The auto-pause floor counts cameras built with `PRODUCT_ID` 0.** They are offered a
+  release by the account's publish counter, and the floor counted the cameras behind it by
+  payload version, so a fleet of them, every one offered the release, counted as none.
+- **An auto-pause or auto-raise lands only on a rollout that is still active.** A supersede
+  between its read and its write was overwritten: the rollout became `failure_limit`, which
+  a resume lets through, leaving two active for one product and cohort.
+- **A new rollout supersedes a paused one for its cohort too.** Only the active one was:
+  one paused by its failures or by hand stayed resumable, and a resume left two active.
+- **One client is one rate-limit key however it writes its address.** An IPv6 zone (any
+  text, of any length) and an IPv4 address written as `::ffff:a.b.c.d` were kept, each a
+  key of its own.
+
 - **A device's data is read under the account that owns it.** The datalake viewer grant
   named the device alone, so after a camera changed owner the new owner's grant paged back
   through the previous owner's console, telemetry and topics. The grant's token is now for

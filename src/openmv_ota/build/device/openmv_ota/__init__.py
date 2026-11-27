@@ -1579,6 +1579,42 @@ def _apply_server_time(rtc, unix, verified=True):
     return True
 
 
+def _json_values(b):
+    """The values ``json.loads`` builds from ``b`` -- strings, numbers, literals, containers --
+    counted outside strings (never fewer; an exponent counts twice). The device's parser takes
+    ``,`` and ``:`` for blanks, ``[1 1 1]`` is three elements, so counting commas bounds
+    nothing. The installer's ``_json_values``, for the check-in answer."""
+    n = 0
+    i = 0
+    end = len(b)
+    num = False
+    while i < end:
+        c = b[i]
+        i += 1
+        if c == 34:                                  # '"': one value, skipped to its close
+            n += 1
+            num = False
+            while True:
+                j = b.find(b'"', i)
+                if j < 0:
+                    return n                         # unterminated: the parser refuses it
+                k = j
+                while k > i and b[k - 1] == 92:      # the backslashes just before this quote
+                    k -= 1
+                i = j + 1
+                if not (j - k) & 1:                  # an even run: this quote ends it
+                    break
+        elif 48 <= c <= 57 or c == 45 or c == 46:    # digits, '-', '.': one number a run
+            if not num:
+                n += 1
+                num = True
+        else:
+            num = False
+            if c == 91 or c == 123 or c == 116 or c == 102 or c == 110:   # [ { t f n
+                n += 1
+    return n
+
+
 def _server_date(value, verified=True):  # pragma: no cover  (device: RTC)
     """Hand a check-in's ``Date`` header value to the clock. This is the device's main time
     source: free (the check-in happens anyway) and authenticated where the TLS session
@@ -1788,10 +1824,10 @@ def _checkin(server_url, body, ca):  # pragma: no cover  (device network)
             elif line[:5].lower() == b"date:":  # hil-residual: header dispatch; the taken branch is witnessed by the callee's `clock: server date` (every check-in: uvicorn and Cloudflare both send Date)
                 _server_date(line[5:], bool(ca))  # hil-residual: the witness is emitted by the CALLEE (`clock: server date`); the audit cannot see across the call boundary
         resp = _read_capped(ss, _RESP_MAX, clen, deadline)
-        if resp.count(b"[") + resp.count(b"{") > 64 or resp.count(b",") > 256:
+        if resp.count(b"[") + resp.count(b"{") > 64 or _json_values(resp) > 512:
             # each is an object to the parser: 8 KiB of them is hundreds of KB of heap, and
             # running out here reads as the network stack's own exhaustion (a reboot)
-            raise OSError("check-in answer nests too deep")  # hil-residual: bare raise (a hostile answer; inject-only)
+            raise OSError("check-in answer nests too deep or holds too many values")  # hil-residual: bare raise (a hostile answer; inject-only)
         resp = json.loads(resp)
         if not isinstance(resp, dict):
             raise OSError("check-in answer is not an object")  # hil-residual: bare raise (a server that answers JSON that is not an object; inject-only)

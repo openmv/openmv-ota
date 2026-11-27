@@ -261,7 +261,8 @@ def test_the_offer_is_installed_and_nothing_or_a_throttle_waits():
 def test_an_answer_made_of_brackets_or_elements_is_refused_before_it_is_parsed():
     """The answer is unsigned, and the parser builds an object for each bracket and each
     element: 8 KiB of them is more heap than a small camera has."""
-    for raw in (b"[" * 65 + b"]" * 65, b"[" + b"1," * 257 + b"1]", b"[]", b"7"):
+    for raw in (b"[" * 65 + b"]" * 65, b"[" + b"1," * 512 + b"1]", b"[" + b"1 " * 600 + b"]",
+                b"[]", b"7"):
         with pytest.raises(OSError, match="check-in answer"):
             rec.offered(200, raw)
         with pytest.raises(OSError, match="check-in answer"):

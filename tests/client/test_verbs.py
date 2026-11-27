@@ -1256,6 +1256,34 @@ def test_release_manifest_download(wired, tmp_path, capsys):
     assert "404" in capsys.readouterr().err
 
 
+def test_a_download_replaces_a_link_at_its_name_and_writes_nothing_through_it(
+        wired, tmp_path, capsys, monkeypatch):
+    """`release manifest` (and artifact, sbom, bases, watch) save to the working directory by
+    default; a link planted there under the file's name took the download elsewhere."""
+    store, _ = wired
+    storage = LocalArtifactStorage(str(tmp_path / "blobs"))
+    store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",
+                      payload_version=0x02000000, min_platform_version=0,
+                      image_sha256="ab" * 32, image_size=1, representations=[],
+                      manifest_key="manifests/rel1/manifest.bin", image_key="i")
+    storage.put("manifests/rel1/manifest.bin", b"SIGNEDMANIFEST", "application/octet-stream")
+    work = tmp_path / "work"
+    work.mkdir()
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"mine")
+    (work / "manifest.bin").symlink_to(victim)
+    monkeypatch.chdir(work)
+    assert main(["client", "release", "manifest", "--release-id", "rel1"]) == 0
+    assert victim.read_bytes() == b"mine" and not (work / "manifest.bin").is_symlink()
+    assert (work / "manifest.bin").read_bytes() == b"SIGNEDMANIFEST"
+    from openmv_ota.client import cli as client_cli
+    monkeypatch.setattr(client_cli.os, "replace",
+                        lambda a, b: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError, match="disk full"):            # a failed save leaves no temp
+        client_cli._save(work / "x.bin", b"data")
+    assert sorted(p.name for p in work.iterdir()) == ["manifest.bin"]
+
+
 def test_release_and_rollout_rename(wired, capsys):
     store, _ = wired
     store.add_release(release_id="rel1", product_id=BID, product="P", version="2.0.0",

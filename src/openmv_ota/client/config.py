@@ -48,10 +48,18 @@ def load(path: Path | None = None) -> ClientConfig | None:
 def save(server_url: str, token: str, path: Path | None = None) -> Path:
     p = path or config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)   # never world-readable,
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:                       # not even for an instant
-        fh.write('[server]\nurl = "%s"\n\n[auth]\ntoken = "%s"\n' % (server_url, token))
-    p.chmod(0o600)
+    # A new file, never world-readable, renamed over the old: opened in place, an existing file
+    # held the token under its own mode until the chmod, and a link there took it elsewhere.
+    tmp = p.with_name(".%s.%d" % (p.name, os.getpid()))
+    tmp.unlink(missing_ok=True)                    # a crashed save's, or a link: not followed
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write('[server]\nurl = "%s"\n\n[auth]\ntoken = "%s"\n' % (server_url, token))
+        os.replace(tmp, p)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return p
 
 

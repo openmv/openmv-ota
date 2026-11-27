@@ -675,6 +675,21 @@ def test_device_ids_pages_through_every_device(tmp_path):
                             account_id="a")
     assert list(store.device_ids(product_id=7, account_id="a", page=2)) == \
         ["d0", "d1", "d2", "d3", "d4"]
-    assert list(store.device_ids(product_id=7, account_id="a", older_than_pv=2, page=2)) == \
+    assert list(store.device_ids(product_id=7, account_id="a", before_release=(2, 0), page=2)) == \
         ["d0", "d1"]
     assert list(store.device_ids(product_id=8, account_id="a")) == []
+
+
+def test_behind_a_release_is_in_the_order_each_camera_is_offered_it(tmp_path):
+    """A camera built with PRODUCT_ID 0 is offered a release by the account's publish counter,
+    and its payload version says nothing about whether the release is an upgrade for it."""
+    store = ms.SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    for dev, pv, seq, by_seq in (("v_behind", 1, 9, False), ("v_on", 2, 0, False),
+                                 ("v_unknown", None, 0, False), ("s_behind", 7, 4, True),
+                                 ("s_on", 1, 5, True)):
+        store.upsert_device(device_id=dev, product_id=0, current_payload_version=pv,
+                            publish_seq=seq, orders_by_seq=by_seq)
+    want = ["s_behind", "v_behind", "v_unknown"]
+    assert list(store.device_ids(product_id=0, before_release=(2, 5))) == want
+    assert store.count_devices(product_id=0, before_release=(2, 5)) == len(want)

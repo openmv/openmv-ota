@@ -2618,3 +2618,77 @@ def test_the_decrypt_layer_lets_a_held_block_go_on_its_first_read():
     first = bytearray(16)
     assert stream.readinto(first) == 16 and stream.hold is None
     assert bytes(first) + _drain(stream) == artifact
+
+
+def _values(o):
+    """The values the parser builds for ``o`` (a key is one)."""
+    if isinstance(o, dict):
+        return 1 + sum(1 + _values(v) for v in o.values())
+    if isinstance(o, list):
+        return 1 + sum(_values(v) for v in o)
+    return 1
+
+
+def test_every_json_value_count_is_one_count_and_never_short():
+    """The camera's parser takes `,` and `:` for blanks, so the caps count values; the four
+    device copies and the packer's are one function, and none counts fewer than the parse."""
+    import json
+    import random
+
+    from openmv_ota.build.device import openmv_ota as rt
+    from openmv_ota.build.device import openmv_recovery as rec
+    from openmv_ota.build.device.openmv_cloud import _lib
+    from openmv_ota.ota.manifest import json_values
+    counts = (inst("_json_values"), rt._json_values, rec._json_values, _lib._json_values,
+              json_values)
+    rnd = random.Random(7)
+    alphabet = 'ab"\\/[]{},:tfn0123 é\n'
+
+    def gen(depth):
+        r = rnd.random()
+        if depth > 3 or r < 0.3:
+            return rnd.choice([rnd.randint(-10 ** 6, 10 ** 6), rnd.uniform(-1e9, 1e9) * 1e-12,
+                               True, False, None,
+                               "".join(rnd.choice(alphabet) for _ in range(rnd.randrange(9)))])
+        if r < 0.65:
+            return [gen(depth + 1) for _ in range(rnd.randrange(4))]
+        return {"".join(rnd.choice(alphabet) for _ in range(rnd.randrange(5))): gen(depth + 1)
+                for _ in range(rnd.randrange(4))}
+    corpus = [json.dumps(gen(0), ensure_ascii=rnd.random() < 0.5).encode() for _ in range(400)]
+    for b in corpus:
+        got = {f(b) for f in counts}
+        assert len(got) == 1 and got.pop() >= _values(json.loads(b)), b
+    for b, n in ((b"[1 2 3]", 4), (b'{"a" 1 "b" 2}', 5), (b'["a""b"]', 3),
+                 (b'["\\\\" "\\"" 1.5e-3]', 5), (b"[true false null]", 4), (b'["open', 2)):
+        assert {f(b) for f in counts} == {n}, b
+
+
+def _raw_manifest(body):
+    """A manifest around ``body`` exactly as given (the packer would refuse it)."""
+    import struct
+
+    from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota.keys import generate_private_key
+    from openmv_ota.ota.manifest import CERT_SIZE, HEADER_STRUCT, HEADER_VERSION, MAGIC
+    from tests import trust
+    cert = trust.certificate(generate_private_key(algorithm_for(ES256)))
+    head = struct.pack(HEADER_STRUCT, MAGIC, HEADER_VERSION, len(body), 64, CERT_SIZE, ES256)
+    return _resealed(head + cert + body + bytes(64) + bytes(4))
+
+
+def test_a_manifest_body_of_values_without_commas_is_refused_before_it_is_parsed(monkeypatch):
+    """`[1 1 1 ...]` is a list to the camera's parser: no comma, 2000 elements."""
+    from openmv_ota.ota.errors import OtaError
+    from openmv_ota.ota.manifest import Manifest, pack_manifest
+    raw = _raw_manifest(b'{"x":[' + b"1 " * 2000 + b"]}")
+    monkeypatch.setattr(_mod.json, "loads",
+                        lambda b: pytest.fail("parsed %d bytes" % len(b)))
+    with pytest.raises(ValueError, match="too many values"):
+        inst("_manifest_parse")(raw)
+    from tests import trust
+    from openmv_ota.ota import ES256, algorithm_for
+    from openmv_ota.ota.keys import generate_private_key
+    m = Manifest(body={"x": ["k"] * 600}, sig_alg=ES256, signature=bytes(64),
+                 certificate=trust.certificate(generate_private_key(algorithm_for(ES256))))
+    with pytest.raises(OtaError, match="values than a camera reads"):
+        pack_manifest(m)

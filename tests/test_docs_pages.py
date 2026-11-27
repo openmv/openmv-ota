@@ -122,13 +122,13 @@ def _served(path: str, routes) -> bool:
 def test_every_server_path_named_is_a_route(routes):
     bad = []
     for p, t in TEXTS.items():
-        for m in re.finditer(r"(/api/v1/[A-Za-z0-9_{}/:.\-]+)", t):
+        for m in re.finditer(r"(/api/v1/[A-Za-z0-9_{}/:.*\-]+)", t):   # `*`: every product
             path = m.group(1).rstrip(".").split("?")[0]
             if "..." in path or "{" in path.split("/")[-1] and "}" not in path:
                 continue
-            # the datalake serves its own /api/v1 paths: a device's reads under its account,
-            # a product's
-            if re.match(r"/api/v1/(devices/[^/]+/[^/]+/(topics|logs|series)|products/)", path):
+            # the datalake serves its own /api/v1 paths: a device's reads under its account
+            # and a product (or `*`), a product's
+            if re.match(r"/api/v1/(devices/[^/]+/[^/]+/[^/]+/(topics|logs|series)|products/)", path):
                 continue
             if not _served(path, routes):
                 bad.append("%s: %s" % (p.name, path))

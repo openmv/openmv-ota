@@ -99,6 +99,42 @@ class Manifest:
         return certificate_mod.parse(self.certificate).key_id
 
 
+def json_values(b: bytes) -> int:
+    """The values a camera's JSON parser builds from ``b`` -- strings, numbers, literals,
+    containers -- counted outside strings, the way the camera counts them (``installer.
+    _json_values``, which this mirrors). It takes ``,`` and ``:`` for blanks, so a count of
+    commas bounds nothing: ``[1 1 1]`` is three elements there."""
+    n = 0
+    i = 0
+    end = len(b)
+    num = False
+    while i < end:
+        c = b[i]
+        i += 1
+        if c == 34:                                  # '"': one value, skipped to its close
+            n += 1
+            num = False
+            while True:
+                j = b.find(b'"', i)
+                if j < 0:
+                    return n                         # unterminated: the parser refuses it
+                k = j
+                while k > i and b[k - 1] == 92:      # the backslashes just before this quote
+                    k -= 1
+                i = j + 1
+                if not (j - k) & 1:                  # an even run: this quote ends it
+                    break
+        elif 48 <= c <= 57 or c == 45 or c == 46:    # digits, '-', '.': one number a run
+            if not num:
+                n += 1
+                num = True
+        else:
+            num = False
+            if c in b"[{tfn":
+                n += 1
+    return n
+
+
 def _check_certificate(cert: bytes) -> None:
     if len(cert) != CERT_SIZE:
         raise OtaError("manifest certificate must be %d bytes, got %d" % (CERT_SIZE, len(cert)))
@@ -154,10 +190,10 @@ def pack_manifest(m: Manifest) -> bytes:
     if len(out) > MANIFEST_SZ:
         raise OtaError("manifest is %d bytes, over the %d-byte limit" % (len(out), MANIFEST_SZ))
     text = region[BODY_OFFSET:]
-    if text.count(b"[") + text.count(b"{") > 64 or text.count(b",") > 512:
+    if text.count(b"[") + text.count(b"{") > 64 or json_values(text) > 512:
         # the camera's own limit (installer._manifest_parse): a release it would refuse is
         # refused here, where it is built
-        raise OtaError("manifest body has more brackets or elements than a camera reads")
+        raise OtaError("manifest body has more brackets or values than a camera reads")
     return out
 
 

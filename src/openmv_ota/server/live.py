@@ -49,7 +49,7 @@ def _clean_streams(streams) -> list[str]:
 
 
 def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "",
-                 account_id: str = "") -> dict | None:
+                 account_id: str = "", product_id=None) -> dict | None:
     """The grant a DASHBOARD needs to read one device: a ``viewer``-role token
     plus ready-made URLs. None when Live is not configured.
 
@@ -86,17 +86,22 @@ def viewer_grant(settings, device_id: str, streams=None, datalake_url: str = "",
     if lake_on:
         # The read side: topics for the pane list, logs/{topic} for backscroll --
         # bearer-authed with the DATALAKE's own viewer token, not the relay's. The ACCOUNT
-        # is in the token and the URL: a camera that changes owner keeps its id, and a
-        # grant for the id alone read back through the previous owner's history.
+        # and the PRODUCT are in the token and the URL, as the camera's data was filed: a
+        # camera that changes owner, or is moved to another product, keeps its id, and a
+        # grant for less read back through what it sent before -- to a token limited to
+        # the product it is in now, the product it was in. ``product_id`` None is every
+        # product of the account ("*", which no product id can be).
         from .datalog import account_key
         dl = datalake_url.rstrip("/")
         account = account_key(account_id)
-        base = "%s/api/v1/devices/%s/%s" % (dl, account, device_id)
+        product = "*" if product_id is None else "%s" % product_id   # as ingest_grant files it
+        base = "%s/api/v1/devices/%s/%s/%s" % (dl, account, product, device_id)
         grant["datalake"] = {
-            # (`device/` first: a product's viewer token is "{account}/{product}", two parts,
-            # and this one can never be the same string)
+            # (`device/` first: a product's viewer token is "{account}/{product}" and a
+            # camera's ingest token "{account}/{product}/{device}"; this one is neither)
             "token": mint_token(settings.datalake_token_secret, "viewer",
-                                "device/%s/%s" % (account, device_id), settings.viewer_token_ttl),
+                                "device/%s/%s/%s" % (account, product, device_id),
+                                settings.viewer_token_ttl),
             "topics_url": base + "/topics",
             "logs_url": base + "/logs",                     # + /{topic}
             "series_url": base + "/series",                 # + /{topic}

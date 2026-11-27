@@ -12,7 +12,6 @@ hardware, not here.
 from __future__ import annotations
 
 import asyncio
-import json
 import struct
 
 import pytest
@@ -148,19 +147,30 @@ def test_throttle_zero_fps_means_unlimited():
 def test_session_start_stop():
     s = rt._Session()
     assert s.streaming is False
-    assert s.on_text(json.dumps({"type": "start"})) == "start"
+    assert s.on_text(b'{"type": "start"}') == "start"       # a frame's payload is bytes
     assert s.streaming is True
-    assert s.on_text(json.dumps({"type": "stop"})) == "stop"
+    assert s.on_text(b'{"type": "stop"}') == "stop"
     assert s.streaming is False
 
 
 def test_session_tolerates_unknown_and_garbage():
     s = rt._Session()
-    assert s.on_text(json.dumps({"type": "hello", "viewers": 3})) == "hello"
-    assert s.on_text("not json") is None
-    assert s.on_text(json.dumps({"no": "type"})) is None
-    assert s.on_text(json.dumps([1, 2])) is None
+    assert s.on_text(b'{"type": "hello", "viewers": 3}') == "hello"
+    assert s.on_text(b"not json") is None
+    assert s.on_text(b'{"no": "type"}') is None
+    assert s.on_text(b"[1, 2]") is None
     assert s.streaming is False
+
+
+def test_a_relay_frame_of_more_values_than_a_message_has_is_not_parsed(monkeypatch):
+    """2 KiB of `1 ` is a thousand elements to the camera's parser (it takes commas for
+    blanks); the relay's messages are a handful of values."""
+    s = rt._Session()
+    monkeypatch.setattr(rt.json, "loads", lambda b: pytest.fail("parsed %d bytes" % len(b)))
+    assert s.on_text(b'{"type": "start", "x": [' + b"1 " * 1000 + b"]}") is None
+    assert s.streaming is False
+    with pytest.raises(OSError, match="malformed"):
+        rt.parse_poll_response(b'{"watch": true, "x": [' + b"1 " * 4000 + b"]}")
 
 
 # --- registry + grant plumbing --------------------------------------------------------
