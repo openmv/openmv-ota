@@ -11,6 +11,13 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _machine_state(tmp_path_factory, monkeypatch):
+    """`build firmware` records what it built in this machine's state dir: each test gets its
+    own, so none reads another's record or writes the real one."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("state")))
+
+
+@pytest.fixture(autouse=True)
 def _no_real_osv(monkeypatch):
     """CVE scans must never reach api.osv.dev from a test: the default client's
     scan is a no-op here, and a test that wants findings monkeypatches its own."""

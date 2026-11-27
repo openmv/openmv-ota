@@ -28,7 +28,11 @@ image inside the main one for
 to apply on-device. On a board with a boot stub (the N6, the AE3, the RT1062, the H7 Plus, the Pure Thermal and the Arduino boards) an OTA image also carries
 the firmware its stub installs, taken from `build/<board>-firmware.bin`, so run
 `build firmware` first; `build romfs` refuses to sign
-without it.
+without it. It signs only a binary `build firmware` wrote on this machine, from the firmware
+commit the lock pins: one that came with a project handed over as a directory or an archive,
+one changed since, and one built before the lock moved are refused by name, and the build
+names each binary it packs with its sha256. With `-o DIR` the firmware is read from `DIR` and
+nowhere else, so build it there too (`build firmware -o DIR`).
 
 Every image carries the generated, read-only
 `/rom/system.json` — identity and

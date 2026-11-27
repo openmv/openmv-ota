@@ -6,6 +6,7 @@ import pytest
 
 from openmv_ota.cli import main
 from openmv_ota.flash import flash as fl
+from tests import built
 
 
 @pytest.fixture
@@ -18,8 +19,9 @@ def proj(tmp_path, monkeypatch):
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
     monkeypatch.setattr(fl, "provision_keys", lambda **k: [])   # its own tests: test_identity
 
-    def artifact(name):
+    def artifact(name):                       # as `build firmware` on this machine leaves it
         (tmp_path / "build" / name).write_bytes(b"x")
+        built.record(tmp_path, tmp_path / "build" / name)
 
     return tmp_path, ran, artifact
 

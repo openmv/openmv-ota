@@ -2034,6 +2034,80 @@ def _quiet_past_commit(lg, keep=None):
         lg.setLevel(_SILENT)
 
 
+# THE HOLD: AN IMAGE WHOSE INSTALL FAILED AFTER THE ERASE WAITS BEFORE THE NEXT ONE. Every failed
+# session past the erase costs a whole-slot erase and program, and whoever answers the check-in
+# can make every one fail: a real signed release newer than the camera's, with junk where its
+# image should be. The reset after it forgot the failure, the boot check-in was offered the same
+# release, and on a board with one slot of internal flash that loop wore the flash out in days.
+# So the failure is written down, once per failed session, as one line on the camera's own
+# filesystem: this installer and firmware-resident recovery both write /flash, and the boot stub
+# never reads a filesystem. The line names the image by the sha256 its signed manifest gives,
+# counts its failures in a row, and the images that have failed in a row since one last
+# installed. That image waits 600 s after its first failure, twice as long after each one after
+# it, up to a day, so a fault on the server's side heals by itself. Another image is not held
+# back, however often that one failed, unless images keep changing: once three have failed in a
+# row a new one waits 600 s, and twice as long for each image after it, so turning releases
+# over buys no more erases than offering one again. The wait is counted in uptime, the one clock
+# nobody on the path can move: the boards this protects most do not verify TLS, so NTP and the
+# check-in's Date are anyone's there. It also ends after the boots it was in force: 1 after the
+# first failure, twice as many after each one after it, up to 64. Each boot is counted once, the
+# first time it finds the hold (one small write a boot, and none while nothing is held), so a
+# camera that sleeps and wakes for a minute at a time gets there too, while one made to reboot
+# erases its slot once in that many boots.
+def _hold(sha, up, cfg, relax, path="/flash/openmv-ota-hold.txt"):
+    """``(wait, line, rec)`` for an install of the image ``sha`` (hex, bytes): the seconds it
+    waits yet, ``up`` seconds into this boot; the record to keep if it fails past the erase; and
+    the record as it stands. A record that does not read as one holds nothing back. The first
+    time a boot finds a hold in force it counts that boot in the record (one write, under
+    ``relax``), and ``cfg`` (``_ota_config``, which lives as long as the boot) remembers it."""
+    rec = b""
+    try:
+        with open(path, "rb") as f:
+            rec = f.read(128)
+    except OSError:
+        pass
+    try:
+        s, n, m, b = rec.split()     # the image that failed last, its failures in a row, how
+        n, m, b = int(n), int(m), int(b)   # many images in a row have failed, boots held since
+    except ValueError:
+        s, n, m, b = b"", 0, 0, 0
+    o = s != sha
+    k = (m - 2 if o else n) - 1
+    wait = 0
+    seen = getattr(cfg, "hold_seen", 0)      # this boot is counted in b already
+    if k >= 0:
+        d = min(600 << min(k, 8), 86400)
+        if up < d and b - seen < 1 << min(k, 6):
+            wait = d - up
+            if not seen:
+                cfg.hold_seen = 1
+                _hold_write(b"%s %d %d %d" % (s, n, m, b + 1), relax, path)
+    return wait, b"%s %d %d 0" % (sha, 1 if o else n + 1, m + o), rec
+
+
+def _hold_write(data, relax, path="/flash/openmv-ota-hold.txt"):
+    """Replace the hold record with ``data`` (empty: nothing held). Never raises: the record only
+    spaces installs out, and a filesystem that will not take it must not keep the install from
+    its reset. A FAT write can erase a flash sector, so it runs under ``relax``."""
+    import os
+    try:
+        with relax():
+            with open(path, "wb") as f:
+                f.write(data)
+            os.sync()
+    except Exception:
+        pass
+
+
+def _stops(e, attempt, attempts, fmt, alt):
+    """Whether a failed attempt past the erase ends the install (the failure is kept, and the
+    camera resets) rather than trying again. Bytes that arrived and hashed wrong hash wrong
+    again, and the retries are for a dropped link, so a full image that fails its sha256 stops
+    at once; a delta that does is demoted to the full image instead (see run())."""
+    return attempt + 1 >= attempts or "sha256 does not match" in str(e) and (
+        fmt != _DELTA_FORMAT or alt is None)
+
+
 def _reset():  # pragma: no cover
     """Reboot into the freshly-selected slot, but let the frozen logger's handler drain
     first. ``machine.reset()`` cuts an in-flight UART TX, so the final line -- e.g.
@@ -2630,6 +2704,15 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     attempts = getattr(cfg, "INSTALL_RETRIES", 3)
     body = None
     from_file = _is_path(image_url)
+    # The hold (see _hold), before the erase. Only a download waits: a file on a card is the
+    # camera's own, and a good copy put there after a bad one must not wait.
+    # (A file install is given an uptime no hold outlasts: it is never held, nor counted.)
+    left, on_fail, rec = _hold(expect_sha.encode(), 1 << 30 if from_file else ticks_ms() // 1000,
+                               cfg, relax)
+    if left:
+        # Raised to the app with /rom intact, which logs it and does not count it as a failed
+        # install (_InstallGate.failed); recovery logs it and asks again after its backoff.
+        raise OSError("install held back %ds" % left)  # hil-residual: needs a failed install before it, which only the corrupt legs make, and they score the failure, not the check-in after it; _hold is host-tested
     erased = False
     # PREALLOCATE EVERYTHING THE ARMED REGION WILL NEED, BEFORE ARMING. An automatic gc.collect()
     # is one unsplittable pause -- 65-100 ms on the N6's multi-MB heap, i.e. at or past that port's
@@ -2783,18 +2866,20 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                 # app free to retry later -- rather than spending retries and rebooting for nothing.
                 log.warning("install: failed before erase (%r)" % e)  # hil-residual: pre-erase file-chain failure; needs a heap too fragmented to stage the first chunk (measured on the M4 before this reorder, never on a passing run), so no marker can witness it
                 raise  # hil-residual: bare re-raise to the app (pre-erase, /rom intact; the warning above is the only line on this arm)
-            if attempt + 1 >= attempts:
-                log.error("install: FAILED after %d attempts (%r); rebooting to the other slot"
-                          % (attempts, e))                # %r: show the exception CLASS even when
-                _reset()  # hil-residual: terminal reset to the surviving slot on retry exhaustion (witnessed by install.fallback + install.reboot)
-            log.error("install: attempt %d/%d failed (%r); retrying"   # its message is empty (a bare
-                      % (attempt + 1, attempts, e))                    # deflate OSError) -> legible in the field
             # A delta that fails the INTEGRITY check (not transport) can only fail the same
             # way again -- the patch does not describe the bytes we have. Demote the remaining
             # attempts to the full image instead of burning them on a repeat: one wasted slot
             # write instead of an install that can never succeed (and, across polls, a device
             # that re-picks the same delta forever). Transport failures keep the delta -- a
-            # dropped link says nothing about the patch.
+            # dropped link says nothing about the patch. A full image that fails it stops.
+            if _stops(e, attempt, attempts, fmt, alt):
+                log.error("install: FAILED after %d attempts (%r); rebooting to the other slot"
+                          % (attempt + 1, e))             # %r: show the exception CLASS even when
+                if not from_file:  # hil-residual: the hold is written on the way to the reset below (witnessed by install.fallback before it); the file legs keep none
+                    _hold_write(on_fail, relax)  # hil-residual: same arm; the record's reading and writing are host-tested
+                _reset()  # hil-residual: terminal reset to the surviving slot on retry exhaustion (witnessed by install.fallback + install.reboot)
+            log.error("install: attempt %d/%d failed (%r); retrying"   # its message is empty (a bare
+                      % (attempt + 1, attempts, e))                    # deflate OSError) -> legible in the field
             if (fmt == _DELTA_FORMAT and alt is not None  # hil-residual: demote gate; needs a wrong-base/corrupt DELTA on the bench (the fleet's corrupt scenario ships a full image) -- the vet + demote pieces are host-tested (test_vet_manifest_hands_back_the_full_fallback...)
                     and "sha256 does not match" in str(e)):
                 image_url, wbits, enc = alt  # hil-residual: demote to the full rep (host-tested via the vet's alt contract)
@@ -2802,5 +2887,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                 log.warning("install: delta failed integrity; demoting to the full image")  # hil-residual: witness line for the demote; no fleet scenario corrupts a delta yet
             if progress is not None:  # hil-residual: progress callback is unused on the bench (install() passes none), so this guard is False
                 progress.reset()  # hil-residual: progress reset (callback unused on the bench)
+    if rec:
+        _hold_write(b"", relax)  # hil-residual: an image installed, so what failed before is forgotten; reached on the bench by the first install after a corrupt leg, which scores the install, not this (the removal is host-tested)
     log.info("install: installed + armed; rebooting into the trial")
     _reset()  # hil-residual: terminal reset into the trial on success (witnessed by install.armed + install.reboot)

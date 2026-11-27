@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 import sys
 
 import pytest
@@ -9,6 +11,7 @@ import pytest
 from openmv_ota.flash import flash as fl
 from openmv_ota.flash.errors import FlashError
 from openmv_ota.flash.targets import flash_config
+from tests import built
 
 
 @pytest.fixture
@@ -25,8 +28,9 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setattr(fl.history, "record",
                         lambda root, action, **f: recorded.append({"action": action, **f}))
 
-    def artifact(name, data=b"x"):
+    def artifact(name, data=b"x"):            # as `build firmware` on this machine leaves it
         (tmp_path / "build" / name).write_bytes(data)
+        built.record(tmp_path, tmp_path / "build" / name)
 
     return tmp_path, ran, recorded, artifact
 
@@ -172,6 +176,7 @@ def imx_project(tmp_path, monkeypatch):
     for n in ("OPENMV_RT1060-firmware.bin", "OPENMV_RT1060-romfs.img",
               "OPENMV_RT1060-factory-romfs.img", "OPENMV_RT1060-stub.bin"):
         (tmp_path / "build" / n).write_bytes(b"x" * 5000)
+        built.record(tmp_path, tmp_path / "build" / n)
     return tmp_path, ran, recorded
 
 
@@ -281,6 +286,7 @@ def test_imx_missing_build_artifact_errors(tmp_path, monkeypatch):
     with pytest.raises(FlashError, match="OPENMV_RT1060-firmware.bin"):
         fl.flash_firmware(str(tmp_path), board="OPENMV_RT1060")
     (tmp_path / "build" / "OPENMV_RT1060-firmware.bin").write_bytes(b"f" * 100)
+    built.record(tmp_path, *(tmp_path / "build").iterdir())
     with pytest.raises(FlashError, match="OPENMV_RT1060-factory-romfs.img"):
         fl.flash_factory(str(tmp_path), board="OPENMV_RT1060")
 
@@ -477,6 +483,7 @@ def arduino_project(tmp_path, monkeypatch):
               "ARDUINO_PORTENTA_H7-firmware-text2.bin",
               "cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"):
         (tmp_path / "build" / n).write_bytes(b"x")
+        built.record(tmp_path, tmp_path / "build" / n)
     return tmp_path, ran
 
 
@@ -661,3 +668,87 @@ def test_flash_firmware_on_an_h7_board_writes_the_second_text_region_too(project
     artifact("OPENMV4P-firmware-text2.bin", b"T" * 48)
     steps = fl.flash_factory(str(root), board="OPENMV4P")
     assert [s.alt for s in steps] == [1, 2, 4]
+
+
+# --- a firmware binary is flashed only as this machine's `build firmware` wrote it -----------
+# `flash factory` wrote whatever build/ held; a project handed over with a binary planted there
+# put it on the camera (see openmv_ota.build.provenance).
+
+@pytest.mark.parametrize("board, planted, others", [
+    ("OPENMV4", "OPENMV4-firmware.bin", ["OPENMV4-factory-romfs.img"]),
+    ("OPENMV_N6", "OPENMV_N6-firmware.bin", ["OPENMV_N6-stub.bin", "OPENMV_N6-factory-romfs.img"]),
+    ("OPENMV_N6", "OPENMV_N6-stub.bin", ["OPENMV_N6-firmware.bin", "OPENMV_N6-factory-romfs.img"]),
+    ("OPENMV4P", "OPENMV4P-firmware-text2.bin",
+     ["OPENMV4P-firmware.bin", "OPENMV4P-stub.bin", "OPENMV4P-factory-romfs.img"]),
+    ("OPENMV_AE3", "OPENMV_AE3-firmware-M55_HE.bin",
+     ["OPENMV_AE3-stub.bin", "OPENMV_AE3-firmware-M55_HP.bin", "OPENMV_AE3-factory-romfs.img",
+      "OPENMV_AE3-coprocessor-romfs.img"]),
+])
+def test_flash_factory_refuses_a_firmware_binary_this_machine_did_not_build(
+        project, board, planted, others):
+    root, ran, recorded, artifact = project
+    for name in others:
+        artifact(name)
+    (root / "build" / planted).write_bytes(b"planted")
+    with pytest.raises(FlashError, match=r"%s \(sha256 %s\) was not built by `openmv-ota build "
+                       r"firmware` on this machine" % (planted, hashlib.sha256(b"planted").hexdigest())):
+        fl.flash_factory(str(root), board=board)
+    assert ran == [] and recorded == []
+
+
+def test_flash_firmware_refuses_a_firmware_changed_since_it_was_built(project):
+    root, ran, _rec, artifact = project
+    artifact("OPENMV4-firmware.bin", b"built here")
+    (root / "build" / "OPENMV4-firmware.bin").write_bytes(b"changed")
+    with pytest.raises(FlashError, match="changed since `openmv-ota build firmware` wrote it"):
+        fl.flash_firmware(str(root), board="OPENMV4")
+    assert ran == []
+
+
+def test_a_firmware_flash_needs_the_projects_lock_and_a_romfs_flash_does_not(tmp_path, monkeypatch):
+    monkeypatch.setattr(fl.runner, "run", lambda argv, **kw: None)
+    monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: "DFU")
+    monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "OPENMV4-firmware.bin").write_bytes(b"x")
+    (tmp_path / "build" / "OPENMV4-romfs.img").write_bytes(b"x")
+    with pytest.raises(FlashError, match="no openmv-ota.lock.json found"):
+        fl.flash_firmware(str(tmp_path), board="OPENMV4", dry_run=True)
+    assert fl.flash_romfs(str(tmp_path), board="OPENMV4", dry_run=True)
+
+
+def test_imx_refuses_a_firmware_this_machine_did_not_build(imx_project):
+    root, _ran, _rec = imx_project
+    (root / "build" / "OPENMV_RT1060-firmware.bin").write_bytes(b"planted")
+    for verb in (fl.flash_firmware, fl.flash_factory):
+        with pytest.raises(FlashError, match=r"OPENMV_RT1060-firmware\.bin .* changed since"):
+            verb(str(root), board="OPENMV_RT1060", dry_run=True)
+
+
+def test_imx_bare_firmware_is_checked_too(imx_project, monkeypatch):
+    """A board with no stub flashes the firmware as built: that file is the one checked."""
+    root, _ran, _rec = imx_project
+    monkeypatch.setattr(fl, "_firmware_image", lambda board, out_dir, check: None)
+    assert fl.flash_firmware(str(root), board="OPENMV_RT1060", dry_run=True)
+    (root / "build" / "OPENMV_RT1060-firmware.bin").write_bytes(b"planted")
+    with pytest.raises(FlashError, match="changed since"):
+        fl.flash_firmware(str(root), board="OPENMV_RT1060", dry_run=True)
+
+
+@pytest.mark.parametrize("planted", ["cyw4343_btfw.bin", "ARDUINO_PORTENTA_H7-firmware-text2.bin",
+                                     "ARDUINO_PORTENTA_H7-stub.bin"])
+def test_arduino_refuses_a_binary_this_machine_did_not_build(arduino_project, planted):
+    root, ran = arduino_project
+    (root / "build" / planted).write_bytes(b"planted")
+    with pytest.raises(FlashError, match=r"%s .* changed since" % re.escape(planted)):
+        fl.flash_factory(str(root), board="ARDUINO_PORTENTA_H7", dry_run=True)
+    assert ran == []
+
+
+def test_arduino_bare_firmware_is_checked_too(arduino_project, monkeypatch):
+    root, _ran = arduino_project
+    monkeypatch.setattr(fl, "_firmware_image", lambda board, out_dir, check: None)
+    assert fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7", dry_run=True)
+    (root / "build" / "ARDUINO_PORTENTA_H7-firmware.bin").write_bytes(b"planted")
+    with pytest.raises(FlashError, match="changed since"):
+        fl.flash_firmware(str(root), board="ARDUINO_PORTENTA_H7", dry_run=True)

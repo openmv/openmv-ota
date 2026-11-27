@@ -170,6 +170,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A firmware binary is signed into a release, or flashed, only as this machine's `build
+  firmware` wrote it.** `build romfs`, `build ota-romfs` and `build factory-romfs` signed
+  `build/<board>-firmware.bin` (with the second text region and the AE3's second core) into the
+  image on every boot-stub board with nothing to say where it came from, and `flash firmware` and
+  `flash factory` wrote the same files and the stub beside them: a project handed over as a
+  directory or an archive, or with `build/` committed, had a binary planted there signed with the
+  engineer's keys and put on cameras. `build firmware` and `build stub` now record each binary
+  they write (its path, sha256 and size, and the lock's firmware and MicroPython commits) in the
+  machine's state directory, outside the project; one with no record, one changed since and one
+  built from other commits are refused by name, and the build names each binary it packs with its
+  sha256.
+- **A romfs build sent elsewhere with `-o` reads the firmware there and nowhere else.** With
+  none there it packed the project's own `build/` binary, and no line of its output said so.
+- **An image whose install failed after the erase waits before the camera erases its slot for it
+  again.** Whoever answered the check-in could offer a real signed release newer than the
+  camera's with junk where its image should be: every install erased the slot, streamed the junk
+  and failed its sha256, three times, the reset forgot it, and the boot check-in was offered it
+  again. On the M4, M7 and H7 (one slot of internal flash, TLS not verified) anyone on the path
+  wore the flash out in days. The failure is now written, once per failed install, to
+  `/flash/openmv-ota-hold.txt`, and that image is refused before the erase, in the app and in
+  recovery alike, until 10 minutes of uptime or 1 boot have passed, doubling with each failure
+  of it up to a day or 64 boots. Uptime is the clock nobody on the path can move, and a boot
+  is counted once, the first time it finds the hold (one small write a boot while held), so a
+  camera that wakes for a minute at a time still installs and one made to reboot erases once in
+  that many boots. A different release goes ahead unless releases keep failing one after
+  another, and the first install that works empties the file.
+- **An image that arrived whole and failed its sha256 is not downloaded again in the same
+  install.** The three attempts are for a dropped link; the same bytes were erased, written and
+  hashed twice more. A delta that fails is still demoted to the full image.
+
 - **A camera's words keep nothing that reads as something else.** A version, slot, stream or
   fallback reason kept newlines, ANSI escapes and right-to-left overrides, which made a
   version read as another in the fleet table, a webhook or a terminal. A running image's

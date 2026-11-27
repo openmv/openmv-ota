@@ -66,6 +66,9 @@ def make_project(tmp_path, make_firmware, make_sdk):
                         (root / "build" / ("%s-firmware-text2.bin" % b)).write_bytes(FAKE_TEXT2)
                     if stub.coproc_dest is not None:
                         (root / "build" / coprocessor_image_name(b)).write_bytes(FAKE_COPROC)
+            if (root / "build").is_dir():         # ...and what it records of them, outside it
+                from tests import built
+                built.record(root, *(root / "build").iterdir())
         app = tmp_path / "appsrc"
         app.mkdir()
         files = dict(DEFAULT_APP if app_files is None else app_files)

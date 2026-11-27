@@ -98,6 +98,13 @@ Alif board's per-core images as `<board>-firmware-M55_HP.bin` / `-M55_HE.bin`, a
 on the AE3, the padded `firmware_pad.toc`) for `flash bootloader`. Firmware is
 built per board, not per partition.
 
+Each binary it writes is recorded in this machine's state directory
+(`$XDG_STATE_HOME/openmv-ota/firmware`, or `~/.local/state/openmv-ota/firmware`): its path,
+sha256 and size, and the firmware commit the lock pins. `build romfs`, `build ota-romfs`,
+`build factory-romfs`, `flash firmware` and `flash factory` use a firmware binary only when it
+matches its record, so a project copied from elsewhere is built and flashed with firmware built
+here, never with whatever its `build/` held.
+
 The project's OTA flag steers the build automatically:
 
 - **Non-OTA project:** just builds the firmware.
@@ -179,7 +186,8 @@ openmv-ota build stub ./my-product -b OPENMV_N6
 ```
 
 `build firmware` builds the boot stub as part of its own work. `build stub` builds the stub
-alone, for a board that has one: the same `<board>-stub.bin`, without the firmware build.
+alone, for a board that has one: the same `<board>-stub.bin`, without the firmware build, and
+recorded the same way, so `flash firmware` and `flash factory` write it.
 
 | Flag | Effect |
 |---|---|

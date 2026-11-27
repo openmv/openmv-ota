@@ -1168,7 +1168,12 @@ class _InstallGate:
     it -- and if that fails, this boot does not reboot for it again until ``_REBOOT_GAP_S`` of
     uptime and ``_INPLACE_TRIES`` failed in-place attempts have passed. The server's offers are
     deterministic per device (rollout percentage by device id), so the boot check-in after the
-    reboot is offered the same release."""
+    reboot is offered the same release.
+
+    What the reset after a failed install does forget is kept by the installer itself, in a small
+    file on /flash: an image that failed after the erase is held back for a while, however many
+    boots come between (installer.py, "THE HOLD"). Not load-bearing: a lost record only means the
+    next install is tried sooner."""
 
     def __init__(self):
         self._answered = False   # a check-in has been answered (un-throttled) this boot
@@ -1193,8 +1198,12 @@ class _InstallGate:
             return "reboot"                  # the boot install failed, and so has every retry
         return "install"
 
-    def failed(self, key):
-        """An in-place install of ``key`` raised (before the erase -- after it, it reboots)."""
+    def failed(self, key, err=None):
+        """An in-place install of ``key`` raised ``err`` (before the erase -- after it, it
+        reboots). A release the installer held back is not a failure: it is waiting, and a reboot
+        would only start its wait over."""
+        if "install held back" in str(err):
+            return
         if key != self._key:
             self._key, self._fails = key, 0
         self._fails += 1
@@ -1388,8 +1397,8 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
                             await _reboot_for_install()  # hil-residual: the witness is the CALLEE's first line (`run: fresh-heap reboot`)
                         try:  # hil-residual: failure-count guard around install(); witnessed by install.start (callee)
                             install(manifest_url, ca, resp.get("lockbox"))  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
-                        except Exception:  # hil-residual: a pre-erase install failure; witnessed by the caller's `run: cycle failed`
-                            _gate.failed(key)  # hil-residual: counter bookkeeping (host-tested _InstallGate)
+                        except Exception as e:  # hil-residual: a pre-erase install failure; witnessed by the caller's `run: cycle failed`
+                            _gate.failed(key, e)  # hil-residual: counter bookkeeping (host-tested _InstallGate)
                             raise  # hil-residual: bare re-raise to the cycle handler below
             except Exception as e:  # hil-residual: post-check-in failure (a verdict on the release, or an install fault); exercised by corrupt/bad_sig
                 # Retry next poll -- but SAY SO. Swallowed silently, a board that can never install

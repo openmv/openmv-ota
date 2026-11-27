@@ -10,6 +10,7 @@ from openmv_ota.build import romfs as build_mod
 from openmv_ota.build.errors import BuildError
 from openmv_ota.ota import geometry
 from openmv_ota.romfs.builder import read_image
+from tests import built
 
 import hashlib
 from pathlib import Path
@@ -563,6 +564,7 @@ def test_ae3_image_carries_both_cores_as_components(make_project):
     assert not copro_r.ota and not copro_r.output.name.endswith(".zip")   # a plain romfs, no trailer
     # an HE image over its partition is refused before anything is signed
     (Path(root) / "build" / "OPENMV_AE3-firmware-M55_HE.bin").write_bytes(b"\xee" * (0x15D000 + 1))
+    built.record(root, Path(root) / "build" / "OPENMV_AE3-firmware-M55_HE.bin")
     with pytest.raises(BuildError, match="coprocessor firmware is 1429505 bytes but its window holds 1429504"):
         build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
 
@@ -587,9 +589,11 @@ def test_h7_plus_image_carries_both_firmware_regions_as_components(make_project)
     assert hashlib.sha256(FAKE_TEXT2).digest() == text2.installed_sha256
     # nothing moved into the region -> no second component; a region over its sector -> refused
     (Path(root) / "build" / "OPENMV4P-firmware-text2.bin").write_bytes(b"")
+    built.record(root, Path(root) / "build" / "OPENMV4P-firmware-text2.bin")
     r = build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)[0]
     assert len(parse_trailer(_read_bundle(r)[1]).components) == 1
     (Path(root) / "build" / "OPENMV4P-firmware-text2.bin").write_bytes(b"\x00" * (0x20000 + 1))
+    built.record(root, Path(root) / "build" / "OPENMV4P-firmware-text2.bin")
     with pytest.raises(BuildError, match="second text region is 131073 bytes but its sector holds 131072"):
         build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
     (Path(root) / "build" / "OPENMV4P-firmware-text2.bin").unlink()
@@ -607,6 +611,7 @@ def test_ota_build_needs_the_firmware_built_first(make_project):
 def test_ota_build_refuses_a_firmware_the_stub_cannot_install(make_project):
     root, repo, app = _build_ota(make_project)
     (Path(root) / "build" / "OPENMV_N6-firmware.bin").write_bytes(b"\x00" * (0x36F000 + 1))
+    built.record(root, Path(root) / "build" / "OPENMV_N6-firmware.bin")
     with pytest.raises(BuildError, match="boot stub's window holds 3600384 \\(1 over\\)"):
         build_mod.build_romfs(root, app=app, firmware=repo, compile_py=False, convert_models=False)
 
@@ -1441,11 +1446,19 @@ def test_build_ota_romfs_warns_when_recorded_golden_missing(make_project, capsys
     assert "recorded provisioning image is missing" in capsys.readouterr().err
 
 
+def _firmware_in(root, out):
+    """The firmware in ``out``, as `build firmware -o out` on this machine leaves it."""
+    out.mkdir(parents=True, exist_ok=True)
+    shutil.copy(Path(root) / "build" / "OPENMV_N6-firmware.bin", out)
+    built.record(root, out / "OPENMV_N6-firmware.bin")
+
+
 def test_build_factory_romfs_golden_path_outside_root(make_project, tmp_path):
     # --output outside the project tree -> the golden path is recorded absolute (not relative)
     from openmv_ota.project import ledger
     root, repo, _ = make_project(boards=("OPENMV_N6",), ota=True)
     elsewhere = tmp_path / "artifacts"
+    _firmware_in(root, elsewhere)                      # `build firmware -o` put it there
     build_mod.build_factory_romfs(root, output=elsewhere, firmware=repo,
                                   compile_py=False, convert_models=False)
     assert str(elsewhere) in ledger.golden_for(root, "OPENMV_N6")["path"]
@@ -1773,6 +1786,7 @@ def test_kept_release_outside_the_project_is_recorded_absolute(make_project, tmp
     from openmv_ota.project import ledger
     root, repo = _build_n6_ota_bundle(make_project)
     out = tmp_path / "artifacts"
+    _firmware_in(root, out)                            # `build firmware -o` put it there
     build_mod.build_ota_romfs(root, firmware=repo, output=out, compile_py=False,
                               convert_models=False)
     assert ledger.last_release(root, "OPENMV_N6")["path"] == str(

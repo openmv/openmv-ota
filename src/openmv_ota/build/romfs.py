@@ -340,20 +340,24 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
 
 
 def _build_product(p, t, out_dir: Path, fname: str) -> bytes:
-    """A file `build firmware` left behind, read from the same output dir as this build, else
-    the project's build/ (a romfs build sent elsewhere with --output still packs the project's
-    firmware). Missing means the firmware was never built, which is the error named."""
-    places = [out_dir / fname]
-    if (p.root / "build") != out_dir:
-        places.append(p.root / "build" / fname)
-    for path in places:
-        try:
-            return path.read_bytes()
-        except OSError:
-            continue
-    raise BuildError("%s not found: a %s image carries the firmware its boot stub installs"
-                     " -- run `openmv-ota build firmware` first"
-                     % (" or ".join(str(x) for x in places), t.name), exit_code=1)
+    """A file `build firmware` on this machine wrote to this build's output dir, from the commits
+    the lock pins (see :mod:`.provenance`); it is signed into the image, so a binary found there
+    any other way is refused, and the one packed is named with its sha256. Only the output dir
+    is looked in: a romfs build sent elsewhere with --output packed the project's build/ when
+    that dir had none, which no output line said."""
+    from . import provenance
+
+    path = out_dir / fname
+    try:
+        data = path.read_bytes()
+    except OSError:
+        raise BuildError("%s not found: a %s image carries the firmware its boot stub installs"
+                         " -- run `openmv-ota build firmware%s` first"
+                         % (path, t.name, "" if out_dir == p.root / "build" else
+                            " -o %s" % out_dir), exit_code=1) from None
+    digest = provenance.check(path, data, p.lock)
+    print("note: %s packs %s (sha256 %s)" % (t.name, path, digest), file=sys.stderr)
+    return data
 
 
 def _signer_epoch(signer: _OtaSigner) -> int:

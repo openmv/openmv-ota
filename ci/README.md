@@ -65,8 +65,9 @@ regression on the pull request, run on live hardware ([below](#the-hil-gate)).
 pip install .                                                  # as a user would
 ci/build_boards.sh /path/to/openmv OPENMV_N6 OPENMV4 ARDUINO_NANO_33_BLE_SENSE
 
-# fast (skip the firmware compile); romfs/factory still build
-NO_FIRMWARE=1 ci/build_boards.sh /path/to/openmv OPENMV_N6
+# fast (skip the firmware compile); romfs/factory still build on a board with no boot stub --
+# on one with a stub (the N6 here) they need firmware built by this machine, and refuse
+NO_FIRMWARE=1 ci/build_boards.sh /path/to/openmv OPENMV4
 ```
 
 Boards are positional (one or more); the env toggles (`NO_FIRMWARE`,

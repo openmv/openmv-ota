@@ -301,8 +301,9 @@ CDC_FLASH_TIMEOUT = 420
 NOCDC_FLASH_TIMEOUT = 480
 
 # The device's install-retry budget (installer.py: `getattr(cfg, "INSTALL_RETRIES", 3)`, and no
-# project here overrides it). The reinstall scenario's second phase exhausts this budget on
-# purpose, and each attempt writes a full slot, so it is the multiplier on that phase's window.
+# project here overrides it). Each attempt writes a full slot, so it is the multiplier on the
+# reinstall scenario's second phase. That phase's image fails its sha256, which now stops after
+# the first attempt (installer._stops); the window still allows for a retried dropped link.
 _RETRIES = 3
 
 
@@ -706,11 +707,12 @@ SCENARIOS = {
             # on its provisioned image. Marker-scored, so no end-version is asserted -- and under
             # A/B the honest expectation CHANGED: the device keeps the promoted 1.1.0 rather than
             # losing it, because the slot behind it is that release and not the factory build.
-            "expect": ["install.start", "install.reject_sha", "install.retry"],
+            # A sha256 mismatch is not retried (bytes that hashed wrong hash wrong again): the one
+            # attempt ends in the fallback reset, and the failure is kept on /flash.
+            "expect": ["install.start", "install.reject_sha", "install.fallback"],
             "forbid": ["confirm.promoted"],
-            # Marker-scored: see the note at the phase-2 call site. The retry-exhaust fallback to
-            # golden is `corrupt`'s job and is slot-sized; asserting it here would make this
-            # scenario pass or fail on how big the board's slot is rather than on the gate.
+            # Marker-scored: see the note at the phase-2 call site. The fallback marker comes after
+            # one slot write, as phase 1's install does; settling back on a slot is not waited for.
             "by_marker": True,
         },
     },
@@ -742,14 +744,14 @@ SCENARIOS = {
         # decompress (a bare deflate error, before the integrity check). `corrupt_sha` flips a
         # DECOMPRESSED byte + re-gzips, so the image decompresses cleanly and the failure is the
         # sha256 gate itself (install.reject_sha) -- the actual integrity trust boundary, on HW.
-        # The sha256 GATE (install.reject_sha) is the point. The retry-exhaust -> golden fallback is
-        # `corrupt`'s job and is SLOW here: each attempt writes the FULL image before the sha check
-        # fails (~3x the N6's 12 MiB slot -> past the watch window). So assert the gate fired and the
-        # bad image was retried, never committed -- the device stays on its provisioned VERSION
-        # (it never promotes 1.1.0), which satisfies end="golden".
+        # The sha256 GATE (install.reject_sha) is the point. A mismatch is not retried: bytes that
+        # arrived and hashed wrong hash wrong again, so the one attempt (one full slot write) ends
+        # in the fallback reset, and the device stays on its provisioned VERSION (it never promotes
+        # 1.1.0), which satisfies end="golden". The failure is kept on /flash, so the check-ins
+        # after the reset are refused before the erase ("install held back").
         "desc": "image decompresses but sha256 mismatches -> integrity gate rejects the update",
         "publish": "corrupt_sha", "app": "confirm", "end": "golden",
-        "expect": ["install.start", "install.reject_sha", "install.retry"],
+        "expect": ["install.start", "install.reject_sha", "install.fallback"],
         "forbid": ["install.armed", "install.committed", "confirm.promoted"],
     },
     "rollback": {

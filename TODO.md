@@ -142,6 +142,13 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 22 (host): `flash bootloader` writes `<board>-bootloader.bin` (and the AE3's images
+    and TOC) as `build/` holds them, with no check against what `build firmware` recorded. A
+    bench board that fails three
+    different releases in a row (`corrupt_sha` dispatched alone, again and again) holds the next
+    one for 10 minutes; the regression order puts an install after every corrupt leg, and no
+    scenario looks for `install held back` yet. The `corrupt_sha` and `reinstall` legs now
+    expect `install.fallback` in place of `install.retry`, unproven on the fleet.
   - Round 21 (host): the camera's JSON caps bound values, not heap. On the M4 (OPENMV2,
     a 44 KB GC heap) a hostile check-in answer inside the caps (about 455 strings of 16
     characters, some 24 KB parsed) runs the heap out and the runtime reboots, and the

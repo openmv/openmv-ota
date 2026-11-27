@@ -17,6 +17,7 @@ from openmv_ota.cli import main
 from openmv_ota.flash import flash as fl
 from openmv_ota.flash.errors import FlashError
 from openmv_ota.flash.targets import flash_config
+from tests import built
 
 _LISTING = ('Found DFU: [37c5:9206] ver=0200, devnum=9, cfg=1, intf=0, path="1-2", alt=1, '
             'name="@Flash", serial="0123"\n')
@@ -77,6 +78,7 @@ def test_no_device_is_a_clear_error_not_a_hang(tmp_path, monkeypatch, capsys):
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "OPENMV_N6-firmware.bin").write_bytes(b"x")
     (tmp_path / "build" / "OPENMV_N6-stub.bin").write_bytes(b"s")        # the N6 has a boot stub
+    built.record(tmp_path, *(tmp_path / "build").iterdir())
     with pytest.raises(FlashError, match=r"no DFU device \(37c5:9206\) appeared.*--in-bootloader"):
         fl.flash_firmware(str(tmp_path), board="OPENMV_N6", enter_bootloader=False)
 
@@ -161,6 +163,7 @@ def test_dfu_flash_resets_then_waits_then_writes(tmp_path, monkeypatch):
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "OPENMV_N6-firmware.bin").write_bytes(b"x")
     (tmp_path / "build" / "OPENMV_N6-stub.bin").write_bytes(b"s")        # the N6 has a boot stub
+    built.record(tmp_path, *(tmp_path / "build").iterdir())
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: "DFU")
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
     monkeypatch.setattr(fl.device, "_comports",
@@ -280,6 +283,7 @@ def nicla(tmp_path, monkeypatch):
               "ARDUINO_NICLA_VISION-stub.bin", "cyw4343_7_45_98_102.bin", "cyw4343_btfw.bin"):
         (tmp_path / "build" / n).write_bytes(b"x")
     (tmp_path / "build" / "ARDUINO_NICLA_VISION-firmware-text2.bin").write_bytes(b"")   # nothing moved
+    built.record(tmp_path, *(tmp_path / "build").iterdir())
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: "DFU")
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
     entries = []

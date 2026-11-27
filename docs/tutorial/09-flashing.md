@@ -26,6 +26,10 @@ openmv-ota flash factory  ./my-product -b OPENMV4
 | `flash bootloader` | the bootloader | `<board>-bootloader.bin` |
 | `flash list` | *(query)* connected boards + the state each is in | — |
 
+The firmware files are flashed only as this machine's `build firmware` (or `build stub`) wrote
+them, from the firmware commit the lock pins: one it has no record of, or one changed since, is
+refused by name before anything is written. The romfs images are signed and need no record.
+
 A multi-partition write (`flash factory`) resets the board only after the final
 write, so it stays in the bootloader between steps — and every flash resolves
 its tool and its artifacts first, before it touches the board, so a missing
