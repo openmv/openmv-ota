@@ -87,9 +87,11 @@ def _limit(sql: str, params: tuple, limit, offset: int) -> tuple[str, tuple]:
 
 
 def _like(text: str) -> str:
-    """``text`` as a LIKE pattern that matches only itself (with ``ESCAPE '\\'``): a ``%`` or
-    ``_`` in a search box matched everything, and every row was compared against it."""
-    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    """``text`` as a LIKE pattern that matches only itself (with ``ESCAPE '!'``): a ``%`` or
+    ``_`` in a search box matched everything, and every row was compared against it. Not a
+    backslash: in Postgres that literal reads differently with standard_conforming_strings
+    off."""
+    return text.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
 def _and(where: str, clause: str) -> str:
@@ -1392,8 +1394,8 @@ class SqlMetadataStore:
             where, params = _and(where, "cohort != ?"), (*params, cohort_not)
         if q:                                        # name-or-id substring, case-insensitive
             like = "%" + _like(q.lower()) + "%"
-            where = _and(where, "(LOWER(device_id) LIKE ? ESCAPE '\\' "
-                                "OR LOWER(display_name) LIKE ? ESCAPE '\\')")
+            where = _and(where, "(LOWER(device_id) LIKE ? ESCAPE '!' "
+                                "OR LOWER(display_name) LIKE ? ESCAPE '!')")
             params = (*params, like, like)
         return where, params
 
@@ -2393,8 +2395,8 @@ class SqlMetadataStore:
             conds.append("created_by = ?")
             params.append(created_by)
         if q:
-            conds.append("(LOWER(name) LIKE ? ESCAPE '\\' OR account_id LIKE ? ESCAPE '\\' "
-                         "OR client_ref LIKE ? ESCAPE '\\')")
+            conds.append("(LOWER(name) LIKE ? ESCAPE '!' OR account_id LIKE ? ESCAPE '!' "
+                         "OR client_ref LIKE ? ESCAPE '!')")
             params += ["%" + _like(q.lower()) + "%", "%" + _like(q) + "%", "%" + _like(q) + "%"]
         if active is not None:
             conds.append("active = ?")

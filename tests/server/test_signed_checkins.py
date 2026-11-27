@@ -813,7 +813,7 @@ def test_a_camera_s_words_keep_nothing_that_reads_as_something_else(tmp_path):
     c, store = _app(tmp_path)
     key = _register(store)
     body = json.dumps({**json.loads(_body()), "app_version": "1.2\n\x1b[31m3\u202e-cr",
-                       "slot": "a\tb\u2066", "fallback_reason": "x\x85y",
+                       "slot": "a\tb\u2066\u2028", "fallback_reason": "x\x85\u200by\ufeff",
                        "stub": "not a report"}).encode()
     assert _check(c, body, camera.sign(key, body))["update"] is True
     row = store.get_device(DEV)

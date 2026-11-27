@@ -465,9 +465,12 @@ def _storable(text: str) -> str:
     return text.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
 
 
-# Control characters, and the marks that reorder the text around them (U+061C, U+200E/F,
-# U+202A-U+202E, U+2066-U+2069).
-_UNPRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+# Control characters, the marks that reorder the text around them (U+061C, U+200E/F,
+# U+202A-U+202E, U+2066-U+2069), the line and paragraph separators (U+2028/9, which split a
+# line as a newline does), and the characters that show as nothing (U+200B-D, U+2060-4,
+# U+FEFF), which make two words that read alike different.
+_UNPRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028\u2029"
+                          "\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
 
 
 def _word(text: str) -> str:

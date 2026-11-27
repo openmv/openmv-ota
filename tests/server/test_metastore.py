@@ -748,10 +748,11 @@ def test_a_search_for_a_percent_or_underscore_matches_only_itself(tmp_path):
     for ``%`` every camera of the account."""
     store = SqliteMetadataStore(str(tmp_path / "m.db"))
     store.migrate()
-    for dev in ("a_b", "axb", "50%", "a\\b"):
+    for dev in ("a_b", "axb", "50%", "a\\b", "a!b"):
         store.upsert_device(device_id=dev, product_id=1)
     assert store.count_devices(q="a_b") == 1 and store.count_devices(q="%") == 1
-    assert store.count_devices(q="a\\b") == 1 and store.count_devices(q="a") == 3
+    assert store.count_devices(q="a\\b") == 1 and store.count_devices(q="a!b") == 1
+    assert store.count_devices(q="!") == 1 and store.count_devices(q="a") == 4
     store.add_account(created_by="ci", account_id="acct_1", name="Under_Score")
     store.add_account(created_by="ci", account_id="acctx1", name="Underxscore")
     assert [a["account_id"] for a in store.list_accounts(q="r_s")] == ["acct_1"]
