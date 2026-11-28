@@ -50,6 +50,11 @@ budget for now; these are the free/cheap passes to run first, in order.
   signing/verify/installer/anti-rollback path and the camera-identity path (registration,
   signed check-ins, lockboxes).
 - **Left from the 2026-11 security review** (low severity, each needs a design call):
+  - The install hold writes nothing while a watchdog is armed: its record is a FAT file, and
+    on the RT1060 and the N6 the 100 ms watchdog bit inside that write (nothing feeds through
+    a flash erase). So an armed camera is not protected from a server that offers junk on
+    every boot. Keep the record in raw flash the installer writes a sector at a time (the
+    target slot's last block, erased first), so it can be written fed.
   - Registration at a desk: the camera signs the desk's challenge and nothing else, so the
     device id and exchange key it reports ride unsigned. A rogue USB device at a desk could
     claim another camera's id. Sign the whole report.

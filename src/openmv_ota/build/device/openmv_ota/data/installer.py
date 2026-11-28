@@ -2057,8 +2057,12 @@ def _quiet_past_commit(lg, keep=None):
 # first failure, twice as many after each one after it, up to 64. Each boot is counted once, the
 # first time it finds the hold (one small write a boot, and none while nothing is held), so a
 # camera that sleeps and wakes for a minute at a time gets there too, while one made to reboot
-# erases its slot once in that many boots.
-def _hold(sha, up, cfg, relax, path="/flash/openmv-ota-hold.txt"):
+# erases its slot once in that many boots. Under an armed watchdog none of it is written (a record
+# already there still holds): see _hold_write.
+_HOLD = "/flash/openmv-ota-hold.txt"
+
+
+def _hold(sha, up, cfg, relax, path=_HOLD):
     """``(wait, line, rec)`` for an install of the image ``sha`` (hex, bytes): the seconds it
     waits yet, ``up`` seconds into this boot; the record that says it failed, kept from its first
     erase until it works; and the record as it stands. A record that does not read as one holds nothing back. The first
@@ -2091,10 +2095,18 @@ def _hold(sha, up, cfg, relax, path="/flash/openmv-ota-hold.txt"):
     return wait, b"%s %d %d 0" % (sha, 1 if o else n + 1, m + o), rec
 
 
-def _hold_write(data, relax, path="/flash/openmv-ota-hold.txt"):
+def _hold_write(data, relax, path=_HOLD):
     """Replace the hold record with ``data`` (empty: nothing held). Never raises: the record only
     spaces installs out, and a filesystem that will not take it must not keep the install from
-    its reset. A FAT write can erase a flash sector, so it runs under ``relax``."""
+    its reset. A FAT write can erase a flash sector, so it runs under ``relax``.
+
+    ``relax`` None: nothing is written, which run() passes while a watchdog is armed. A FAT write
+    erases and programs sectors inside one call, and relax() cannot feed through a flash erase
+    (see openmv_wdt): on the RT1060 and the N6 the 100 ms watchdog bit inside this write, before
+    every install's erase, and a bite inside one can leave /flash, where the camera keeps its
+    network settings, half written."""
+    if relax is None:
+        return
     import os
     try:
         with relax():
@@ -2712,10 +2724,14 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     body = None
     from_file = _is_path(image_url)
     # The hold (see _hold), before the erase. Only a download waits: a file on a card is the
-    # camera's own, and a good copy put there after a bad one must not wait.
-    # (A file install is given an uptime no hold outlasts: it is never held, nor counted.)
-    left, on_fail, rec = _hold(expect_sha.encode(), 1 << 30 if from_file else ticks_ms() // 1000,
-                               cfg, relax)
+    # camera's own, and a good copy put there after a bad one must not wait. A file install does
+    # not even read the record here: the OpenMV Cam M7 installs from its card with no heap to
+    # spare, and the open file and the record line left its inflate window no room (MemoryError
+    # before the erase). Once it has installed, it empties a record that is there (below).
+    hold_relax = None if getattr(openmv_wdt, "_wdt", None) is not None else relax  # (see _hold_write)
+    left = 0
+    if not from_file:
+        left, on_fail, rec = _hold(expect_sha.encode(), ticks_ms() // 1000, cfg, hold_relax)  # hil-residual: the download arm, taken by every network install leg; the markers after it are reached by the file arm too, so none dominates it (_hold is host-tested)
     if left:
         # Raised to the app with /rom intact, which logs it and does not count it as a failed
         # install (_InstallGate.failed); recovery logs it and asks again after its backoff.
@@ -2828,7 +2844,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                 # The failure is kept BEFORE the first erase: a session that never reaches its
                 # end (a watchdog bite in a handshake, a power cut) counts as failed, and the
                 # install that works empties the record again.
-                _hold_write(on_fail, relax)  # hil-residual: a print-less write; its effect (the record) is host-tested
+                _hold_write(on_fail, hold_relax)  # hil-residual: a print-less write; its effect (the record) is host-tested
             _quiet_past_commit(log)                   # past here the romfs may be gone
             erased = True                             # from here on every failure reboots
             log.info("install: erasing %s (%d bytes) t=%d" % (target, slot_size, ticks_ms()))
@@ -2888,15 +2904,25 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                 log.error("install: FAILED after %d attempts (%r); rebooting to the other slot"
                           % (attempt + 1, e))             # %r: show the exception CLASS even when
                 _reset()  # hil-residual: terminal reset to the surviving slot on retry exhaustion (witnessed by install.fallback + install.reboot)
-            log.error("install: attempt %d/%d failed (%r); retrying"   # its message is empty (a bare
-                      % (attempt + 1, attempts, e))                    # deflate OSError) -> legible in the field
-            if fmt == _DELTA_FORMAT and alt is not None and not _is_transport_error(e):  # hil-residual: demote gate; needs a wrong-base/corrupt DELTA on the bench (the fleet's corrupt scenario ships a full image) -- the decision is host-tested (_stops)
-                image_url, wbits, enc = alt  # hil-residual: demote to the full rep (host-tested via the vet's alt contract)
-                fmt = "full"  # hil-residual: demote to full (same host-tested path)
-                log.warning("install: delta failed integrity; demoting to the full image")  # hil-residual: witness line for the demote; no fleet scenario corrupts a delta yet
+            # The demote is its own line, not a retry's: a retry is the same image again, after
+            # the link failed, and the fleet's corrupt leg (whose delta is tampered as well as
+            # its full image) tells the two apart.
+            if fmt == _DELTA_FORMAT and alt is not None and not _is_transport_error(e):  # hil-residual: demote gate (witnessed by install.demote on the corrupt leg, whose delta fails to inflate)
+                image_url, wbits, enc = alt  # hil-residual: demote to the full rep (witnessed as above)
+                fmt = "full"  # hil-residual: demote to full (witnessed as above)
+                log.warning("install: delta failed integrity (%r); demoting to the full image" % (e,))
+            else:
+                log.error("install: attempt %d/%d failed (%r); retrying"   # its message is empty (a bare
+                          % (attempt + 1, attempts, e))                    # deflate OSError) -> legible in the field
             if progress is not None:  # hil-residual: progress callback is unused on the bench (install() passes none), so this guard is False
                 progress.reset()  # hil-residual: progress reset (callback unused on the bench)
+    if from_file:
+        import os  # hil-residual: the file arm past the commit; the classic (file) legs have no coverage UART
+        try:  # hil-residual: same arm
+            rec = os.stat(_HOLD)                      # the slot is written: the heap is free again  # hil-residual: same arm
+        except OSError:  # hil-residual: same arm (no record, the usual case)
+            rec = None  # hil-residual: same arm
     if rec or not from_file:
-        _hold_write(b"", relax)  # hil-residual: an image installed, so what failed before is forgotten; reached on the bench by the first install after a corrupt leg, which scores the install, not this (the removal is host-tested)
+        _hold_write(b"", hold_relax)  # hil-residual: an image installed, so what failed before is forgotten; reached on the bench by the first install after a corrupt leg, which scores the install, not this (the removal is host-tested)
     log.info("install: installed + armed; rebooting into the trial")
     _reset()  # hil-residual: terminal reset into the trial on success (witnessed by install.armed + install.reboot)

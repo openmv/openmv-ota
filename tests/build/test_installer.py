@@ -2898,6 +2898,23 @@ def test_a_good_install_clears_the_record(tmp_path):
     assert _hold(_SHA_B, 0, path)[0] == 0
 
 
+def test_nothing_is_written_under_an_armed_watchdog(tmp_path):
+    """run() hands the hold no relax while a watchdog is armed: a FAT write is one call nothing
+    can feed through, and the RT1060's and the N6's 100 ms watchdog bit inside it, before every
+    install's erase. A record already there still holds; it is neither counted nor emptied."""
+    import os
+    path = str(tmp_path / "hold.txt")
+    inst("_hold_write")(_SHA_A + b" 1 1 0", None, path)
+    assert not os.path.exists(path)
+    _fail(path, _SHA_A)                                  # written by a boot that armed none
+    before = open(path, "rb").read()
+    cfg = _boot()
+    assert inst("_hold")(_SHA_A, 0, cfg, None, path)[0] == 600
+    assert cfg.hold_seen == 1 and open(path, "rb").read() == before
+    inst("_hold_write")(b"", None, path)
+    assert open(path, "rb").read() == before
+
+
 def test_the_record_is_written_under_relax_and_synced(tmp_path, monkeypatch):
     import os
     synced = []
@@ -2977,10 +2994,15 @@ def test_the_failure_is_kept_before_the_erase_and_cleared_after_an_install(tmp_p
     every boot. run() now writes the failure before the first erase."""
     src = _SRC.read_text()
     run = src[src.index("def run(manifest_url"):]
-    kept = run.index("_hold_write(on_fail, relax)")
+    kept = run.index("_hold_write(on_fail, hold_relax)")
     assert kept < run.index("erase(target_off, slot_size)") and run.count("_hold_write(on_fail") == 1
-    assert run.index("if rec or not from_file:\n        _hold_write(b\"\", relax)") > \
+    assert run.index("if rec or not from_file:\n        _hold_write(b\"\", hold_relax)") > \
         run.index("_install_stream(source, write")
+    # ...under an armed watchdog none of it is written (see _hold_write), and a file install
+    # reads no record before its erase: the M7's inflate window had no room left after it
+    assert 'hold_relax = None if getattr(openmv_wdt, "_wdt", None) is not None else relax' in run
+    assert "    if not from_file:\n        left, on_fail, rec = _hold(" in run
+    assert run.index("rec = os.stat(_HOLD)") > run.index("_install_stream(source, write")
     path = str(tmp_path / "hold.txt")
     _w, on_fail, _rec = _hold(_SHA_A, 0, path)
     inst("_hold_write")(on_fail, _Relax(), path)          # what run() writes before the erase
