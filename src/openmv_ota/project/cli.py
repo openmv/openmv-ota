@@ -303,7 +303,8 @@ def _read_passphrase(path: str) -> str:
 
 def cmd_keys_backup(args: argparse.Namespace) -> int:
     try:
-        out = proj.backup_private_keys(args.dir)
+        out = proj.backup_private_keys(args.dir, on_kept=lambda kept: print(
+            "The backup it replaces holds other keys: kept as %s" % kept))
     except ProjectError as e:
         print("error: %s" % e, file=sys.stderr)
         return e.exit_code
@@ -466,7 +467,9 @@ def cmd_new(args: argparse.Namespace) -> int:
                   % (args.factory_keys, args.ota_keys))
         if not args.dev:                        # dev keys are disposable; backup is refused
             try:
-                out = proj.backup_private_keys(args.dir)
+                out = proj.backup_private_keys(args.dir, on_kept=lambda kept: print(
+                    "The backup of the keys these replace is kept as %s -- the fleet that "
+                    "trusts them can be updated only with those" % kept))
                 history.record(args.dir, "keys-backup", file=out.name)
                 print("Wrote a key backup: %s — MOVE IT OFF THIS MACHINE (a vault / offline "
                       "drive). Without the private keys you can never update this fleet "

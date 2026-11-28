@@ -227,6 +227,10 @@ rebuilds `keys/private/` from it on a replacement machine. Neither takes a
 passphrase: the files are archived exactly as they sit on disk, already
 encrypted. A `--dev` project is refused — its passphrase is cached beside the
 keys, so a copy would be plaintext in effect.
+A backup never replaces one of other keys: after `project new --force
+--new-keys`, the backup of the old keys (the only way left to update the fleet
+that trusts them) moves to `keys/private/keys-backup-<time>.bin`, and the
+command says so.
 
 That archive also carries the project's **payload keys** — the board keys that
 encrypt what a camera downloads.

@@ -179,6 +179,43 @@ def _new_real_keys(tmp_path, make_firmware, make_sdk):
     return root
 
 
+def test_new_keys_keep_the_backup_of_the_keys_they_replace(tmp_path, make_firmware, make_sdk,
+                                                           capsys):
+    """`--force --new-keys` makes new keys; the backup of the old ones, the only way left to
+    update the fleet that trusts them, moves into keys/private/ (git-ignored), never over."""
+    pw = tmp_path / "kp.txt"
+    pw.write_text("vault passphrase")
+    rc, root, repo = _new(tmp_path, make_firmware, make_sdk, "--ota", "--key-passphrase-file", str(pw))
+    old = (root / "keys-backup.bin").read_bytes()
+    assert main(["project", "keys", "backup", str(root)]) == 0      # the same keys: in place
+    assert not list((root / "keys" / "private").glob("keys-backup-*.bin"))
+    capsys.readouterr()
+    rc, root, _ = _new(tmp_path, make_firmware, make_sdk, "--ota", "--force",
+                       "--new-keys", "--key-passphrase-file", str(pw), repo=repo)
+    assert rc == 0
+    (kept,) = (root / "keys" / "private").glob("keys-backup-*.bin")
+    assert kept.read_bytes() == old and (root / "keys-backup.bin").read_bytes() != old
+    assert "kept as %s" % kept in capsys.readouterr().out
+    assert "keys/private/" in (root / ".gitignore").read_text()
+
+
+def test_two_backups_replaced_in_one_second_are_both_kept(tmp_path, make_firmware, make_sdk,
+                                                          monkeypatch):
+    import time
+
+    from openmv_ota.project import project as proj
+    root = _new_real_keys(tmp_path, make_firmware, make_sdk)
+    monkeypatch.setattr(time, "strftime", lambda fmt: "20261128T000000")
+    private = root / "keys" / "private"
+    (private / "keys-backup-20261128T000000.bin").write_bytes(b"the first one")
+    (root / "keys-backup.bin").write_bytes(b"another set of keys")
+    kept = []
+    proj.backup_private_keys(root, on_kept=kept.append)
+    assert kept == [private / "keys-backup-20261128T000000-2.bin"]
+    assert kept[0].read_bytes() == b"another set of keys"
+    assert (private / "keys-backup-20261128T000000.bin").read_bytes() == b"the first one"
+
+
 def test_keys_backup_and_restore_roundtrip(tmp_path, make_firmware, make_sdk, capsys):
     root = _new_real_keys(tmp_path, make_firmware, make_sdk)
     capsys.readouterr()

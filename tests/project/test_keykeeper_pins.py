@@ -106,3 +106,24 @@ def test_the_sync_command(tmp_path, ring, monkeypatch, capsys):
                  "--token", "tok", str(root)]) == 0
     assert "generations 1-2" in capsys.readouterr().out
     assert kp.path_for(root).exists()
+
+
+def test_a_file_kept_before_pins_named_the_record_says_to_delete_it(tmp_path, ring):
+    """A kept pin of generation 2 or later by its sign key alone (written before pins carried
+    the record's digest) can only be refused; the error says to delete the file and sync."""
+    import json
+    root = tmp_path / "proj"
+    later = NOW + timedelta(days=31)
+    ring.extend(later, period_days=30)
+    kp.sync(root, ring.genesis_pin(), ring.chain(), later)
+    state = json.loads(kp.path_for(root).read_text())
+    assert state["pin"].startswith("2:")
+    state["pin"] = ":".join(state["pin"].split(":")[:2])          # what such a file holds
+    kp.path_for(root).write_text(json.dumps(state))
+    for call in (lambda: kp.sync(root, "", ring.chain(), later),
+                 lambda: kp.sealing_generation(root, later)):
+        with pytest.raises(ProjectError, match="kept before keykeeper pins named the whole "
+                                               "record.*Delete it and run"):
+            call()
+    kp.path_for(root).unlink()                                   # ...and once it is gone
+    assert kp.sync(root, ring.genesis_pin(), ring.chain(), later)[-1].key_id == 3
