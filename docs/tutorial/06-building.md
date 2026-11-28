@@ -45,7 +45,7 @@ The app source defaults to `<project>/app`; pass `--app` for another directory.
 An OTA project's app is also checked against what its board's OTA firmware carries: on
 the OpenMV Cam H7 the OTA firmware has no `find_barcodes()`, `find_datamatrices()`,
 `find_displacement()`, `find_lbp()`, `linpolar()`, `logpolar()` or `get_similarity()`, and on
-the OpenMV Cam H7 Plus and the OpenMV Cam M7
+the OpenMV Cam H7 Plus, the OpenMV Cam M7 and the OpenMV AE3
 it has no `find_datamatrices()`, and on the OpenMV Cam M4 it has no `lens_corr()`, so an app that calls
 any of them is refused here, with the file and line, instead of raising on the camera the
 first time a frame reaches that call. Taking the method without calling it
