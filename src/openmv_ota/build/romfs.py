@@ -1005,8 +1005,10 @@ def _gzip_small(data: bytes, wbits: int) -> bytes:
 
 # --- OTA download image (the gzipped slot-sized image a server hosts) --------
 
-SINGLE_WBITS = 12     # 4 KiB inflate window: measured on the bench -- a classic's heap after
-#                        the app + runtime lib cannot give DeflateIO 8 KiB contiguous
+SINGLE_WBITS = 11     # 2 KiB inflate window: a classic's heap after the app + runtime lib cannot
+#                        give DeflateIO 8 KiB contiguous, and on the OpenMV Cam M7 4 KiB fitted by
+#                        ~100 bytes: a few bytes more of the device library and its encrypted
+#                        install was a MemoryError before the erase. 2 KiB costs a little ratio.
 
 
 @dataclass
@@ -1090,7 +1092,7 @@ def build_ota_image(
                               trailer_bytes, block, slot_size)
         single = slot_size == t.partition_size
         if single:
-            # Small-heap boards: an 8 KiB inflate window (wbits 13) instead of the
+            # Small-heap boards: a 2 KiB inflate window (SINGLE_WBITS) instead of the
             # default 32 KiB, recorded in the manifest so the device allocates the same.
             gz = _gzip_small(image, SINGLE_WBITS)
         else:
