@@ -140,6 +140,9 @@ def test_the_stm32h7_boards_share_one_stub_layout():
         "IMLIB_ENABLE_DATAMATRICES": "find_datamatrices"}
     # the M4 was 88 bytes over once the boot script reset the import path
     assert B.get_board("OPENMV2").ota_firmware_drops == {"IMLIB_ENABLE_LENS_CORR": "lens_corr"}
+    # the AE3's main core, 9 KB over once openmv master took ml_ops and a ulab update (2026-11-28)
+    assert B.get_board("OPENMV_AE3").ota_firmware_drops == {
+        "IMLIB_ENABLE_DATAMATRICES": "find_datamatrices"}
     assert B.get_board("OPENMV_N6").stub.text2_dest is None            # one window is plenty there
 
 

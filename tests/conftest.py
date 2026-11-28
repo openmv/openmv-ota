@@ -202,6 +202,10 @@ def make_firmware(tmp_path):
                 (d / "imlib_config.h").write_text(
                     "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"
                     "#define IMLIB_ENABLE_LENS_CORR\n#endif\n")
+            if board == "OPENMV_AE3":    # its main core, 9 KB short on master of 2026-11-28
+                (d / "imlib_config.h").write_text(
+                    "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"
+                    "#define IMLIB_ENABLE_DATAMATRICES\n#endif\n")
             if board in ("OPENMV4P", "OPENMVPT"):   # the LAB LUT moves to the second region;
                 (d / "imlib_config.h").write_text(   # the H7 Plus also drops datamatrices
                     "#ifndef __IMLIB_CONFIG_H__\n#define __IMLIB_CONFIG_H__\n"
