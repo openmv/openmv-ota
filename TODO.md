@@ -103,8 +103,6 @@ budget for now; these are the free/cheap passes to run first, in order.
     caps, with no cap on how many run at once.
   - A webhook endpoint that sends its status line a byte at a time holds the one delivery
     worker for as long as it keeps sending.
-  - `flash register`: a malformed identity line from the USB device is a traceback, and its
-    error text is printed with control characters.
   - The cloud SDK's `poll_watch` and `_ws_connect` read header lines with an unbounded
     asyncio `readline()`.
   - A `manage` token can admin-bind a camera id nobody registered; the owner's registration
@@ -117,13 +115,8 @@ budget for now; these are the free/cheap passes to run first, in order.
     extend one (not un-revoke it).
   - An anonymous client naming an account can push real boards out of that account's
     capped unclaimed list with made-up ids.
-  - A webhook ping's audit row lands in the operator's account, not the caller's.
-  - `client data export` to stdout, error details and a few listings print server and
-    camera text unfiltered; `--json` output is safe.
   - `project keys restore` overwrites the keys in place with whatever a well-named archive
     holds, without checking that they open.
-  - A `keys/keykeeper.json` written before pins carried the record hash, holding a pin of
-    generation 2 or later, is refused with an error that does not say to delete it.
   - Stub: `verify.c` never reads the certificate's `kind`; nothing calls `port_wdt_start`
     although the design says the stub arms the trailer's watchdog; a failed install runs
     one boot on the RAM copy of an erased record; a signed trailer with `comp_count == 0`
@@ -134,9 +127,8 @@ budget for now; these are the free/cheap passes to run first, in order.
     registers; a learned binding from an unsigned check-in takes any account string.
   - Round 6 (host): `keys retire` re-certifies every entry of `trusted_keys.json` without
     checking that its existing certificate verifies under the root; the keykeeper checks a
-    registration's signature but not its freshness, and seals for expired desks; USB serial
-    strings in `flash list`, the camera's `SE-ERROR` text and server `detail` in errors
-    print unfiltered; `flash bootloader -b OPENMV_AE3` runs the project's
+    registration's signature but not its freshness, and seals for expired desks;
+    `flash bootloader -b OPENMV_AE3` runs the project's
     `tools/alif/toolkit/*.py`, and a committed `openmv-ota.local.toml` picks the SDK home
     whose `dfu-util` runs; the SDK archive's `.sha256` comes from the same host as the
     archive.
@@ -152,9 +144,7 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
-  - Round 22 (host): `flash bootloader` writes `<board>-bootloader.bin` (and the AE3's images
-    and TOC) as `build/` holds them, with no check against what `build firmware` recorded. A
-    bench board that fails three
+  - Round 22 (host): a bench board that fails three
     different releases in a row (`corrupt_sha` dispatched alone, again and again) holds the next
     one for 10 minutes; the regression order puts an install after every corrupt leg, and no
     scenario looks for `install held back` yet. The `corrupt_sha` and `reinstall` legs now
@@ -190,13 +180,11 @@ budget for now; these are the free/cheap passes to run first, in order.
     built wants its hash kept somewhere the tree cannot write. A hard link from a package
     cache (`uv pip install --target app/lib`) is refused like any other. The check of the
     working directory looks at that directory, not at a project above it.
-  - Round 17 (host): a FIFO in `app/` passes the project check; `build` as a file, and a
-    directory where a file is written, end in a traceback; on Windows a release's file name
+  - Round 17 (host): on Windows a release's file name
     taken from its URL, and a `C:name` entry in `romfs unpack`, are not contained (not
     tested there).
   - Round 16 (host): a project with `platform = true` has `build ota-romfs` take a publish
-    counter from the server the user is logged in to; `flash bootloader --dry-run` on the
-    AE3 writes its key-area file.
+    counter from the server the user is logged in to.
   - Round 15 (device, host): NTP cannot rewind the clock past the newest time a verified
     server gave since boot, or, after a reboot, past when the image it runs was built (the
     trailer's `built`). Between a release and a reboot that floor is as old as the release.
@@ -205,14 +193,12 @@ budget for now; these are the free/cheap passes to run first, in order.
     TLS, makes check-ins stale at the server until NTP or a verified server corrects it
     (minutes to six hours, never where NTP is blocked and the server unreachable).
     Host: `--keys-from` follows links in the source's key files; the ROMFS reader
-    copies a slice of the image for each record that points into it; `stage_app` copies a
-    FIFO or a device; the Azure signer talks to whatever host a record's `uri` names (the
+    copies a slice of the image for each record that points into it; the Azure signer talks to whatever host a record's `uri` names (the
     SDK checks the challenge from 4.7, now the floor).
   - Round 14 (host): `flash register --token` sends the
     token it is given to the server the project names (only the saved one is held back);
     `project setup` reuses a cached checkout without checking its HEAD is the locked commit (the build's
-    drift check catches it); a tracked file name that is not UTF-8, and a lock or manifest
-    field of the wrong type, end in a traceback.
+    drift check catches it); a manifest field of the wrong type ends in a traceback.
   - Round 12 (device, host), each needs a bench: the STM32 stub reads the four places of
     the flash key in one call, so a word torn in the first (power cut while it was
     programmed) fails the read of all four; the RT1062 fuse key's plausibility is checked
@@ -225,16 +211,12 @@ budget for now; these are the free/cheap passes to run first, in order.
     connect and the TLS handshake block: a peer that drips its handshake holds the
     installer, and every check-in, for as long as each wait stays under the socket timeout,
     or until the watchdog's minute where one is armed (nothing in Python can end a blocking
-    handshake, and the WINC cannot do a non-blocking one). `openmv-ota project history` prints a
-    file's fields as they are. The N6 stub's flash
+    handshake, and the WINC cannot do a non-blocking one). The N6 stub's flash
     reads and writes have no range checks of their own, a failed re-map leaves the part in
     octal mode, and the prescaler rounds down; the H7 stub retries a dead QSPI part on
     every call. A resumed download's `Content-Range` is not compared with what was asked.
     The recovery check-in's body is read an object a read. A firmware tree's version
     numbers are not range-checked.
-  - Round 8 (host): `project new --force --new-keys` overwrites the key backup with the
-    new keys'. `flash factory` takes `SE-NONE` from a
-    board that declares a secure element.
   - Round 7 (server): "is it news" checks are read-then-write, so a burst can audit a few rows
     instead of one; registration's device-limit check is check-then-write; an unsigned
     check-in naming a registered camera with a sealed release pending is one keykeeper
@@ -258,10 +240,7 @@ budget for now; these are the free/cheap passes to run first, in order.
   - Round 18 (server): a rollout's status (`rollout_status.on_release`, `_ROLLOUT_STATE`)
     still orders a camera by payload version alone, so a camera built with `PRODUCT_ID` 0 can
     read as behind or ahead on the dashboard (display only; the offer and the auto-pause
-    order it by the publish counter). A datalake record holding NaN or Infinity stored before
-    ingest refused them still makes its reads 500; nothing cleans one out. The datalake's
-    `device_stats` table, unread since device reads went by product
-    (`device_product_stats`), goes in its next change; objects it filed before it knew their
+    order it by the publish counter). Datalake objects filed before the catalog knew their
     product (before 2026-09-14) are read by no route and wait for retention.
   - Round 17 (server): the hosted server still takes the leftmost `X-Forwarded-For` entry
     (`OPENMV_OTA_TRUSTED_PROXY_HOPS` unset until the platform's hop count is measured), so a
@@ -269,9 +248,8 @@ budget for now; these are the free/cheap passes to run first, in order.
     lead with the account: a new owner reading back past a camera's transfer scans the old
     owner's rows for that topic (slow, not a leak).
   - Rounds 13-16 (server): a product a camera was sent to by a pin, and never went to,
-    stays noted on its registration, so a later move there by itself reads as sent. A
-    webhook test ping has no
-    rate limit and its audit row lands in the unnamed account. An account can pin a device
+    stays noted on its registration, so a later move there by itself reads as sent. An
+    account can pin a device
     id it has never seen, and the id's later owner cannot pin or unpin until the camera
     checks in. Two accounts registering one id at once, or one account registering past
     its device limit at once, are read-then-write.

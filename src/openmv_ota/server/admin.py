@@ -2356,12 +2356,19 @@ def rotate_webhook(webhook_id: str, request: Request,
 def ping_webhook(webhook_id: str, request: Request,
                  principal: Principal = Depends(require_account_scope("manage"))):
     """Queue a `webhook.ping` event to this endpoint alone, whatever it subscribes to,
-    so a receiver can be checked end to end. The worker sends it on its next pass."""
+    so a receiver can be checked end to end. The worker sends it on its next pass; one more
+    is refused (429) while it is still pending, since the one worker sends every account's
+    deliveries in turn."""
     ms = request.app.state.metastore
     _own_hook(ms, webhook_id, principal)
+    pending, _ = ms.list_deliveries(webhook_id, limit=50, status="pending")
+    if any(d["event"] == "webhook.ping" for d in pending):
+        raise HTTPException(429, "a test ping to this endpoint is still pending",
+                            headers={"Retry-After": "30"})
+    # the account's own entry, kept from its other endpoints
     seq = ms.append_audit(actor=principal.name, action="webhook.ping", entity_type="webhook",
                           entity_id=webhook_id, data={"requested_by": principal.name},
-                          account_id="")           # no account: the fan-out must not double it
+                          account_id=principal.account_id, fan_out=False)
     return {"webhook_id": webhook_id, "delivery_id": ms.enqueue_delivery(webhook_id, seq, "webhook.ping")}
 
 
