@@ -256,7 +256,9 @@ def _add_submodule(repo, inner):
 
 
 def _change_a_file(repo, attributes):
-    tracked = [p for p in repo.iterdir() if p.is_file() and p.name != ".gitattributes"][0]
+    # (in a submodule `.git` is a file too: the gitfile, which has to stay as it is)
+    tracked = sorted(p for p in repo.iterdir()
+                     if p.is_file() and p.name not in (".gitattributes", ".git"))[0]
     (repo / ".gitattributes").write_text(attributes)
     tracked.write_bytes(tracked.read_bytes() + b"x")
 

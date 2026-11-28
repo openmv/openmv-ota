@@ -444,6 +444,7 @@ COVERAGE = {
     "install: attempt": "install.retry",
     "install: installed + armed": "install.armed",
     "install: FAILED after": "install.fallback",
+    "install: delta failed integrity": "install.demote",     # a delta that failed: the full image next
     # NB: a dropped download that RESUMES logs "install: resuming at <offset>" -- deliberately NOT a
     # coverage marker. It only fires when the link actually drops mid-transfer, which no scenario can
     # make happen on demand (it is guaranteed on the H7 Plus, whose WINC aborts every transfer at
@@ -684,11 +685,13 @@ SCENARIOS = {
     },
     "corrupt": {
         # Junk that fails to inflate is not retried: only the link's failures are, and each
-        # attempt is a whole-slot erase. The one attempt ends in the fallback reset.
-        "desc": "tampered image fails integrity -> not retried -> falls back",
+        # attempt is a whole-slot erase. Every representation is tampered (see the publish), so
+        # the delta the device picks first fails, is demoted to the full image, and that fails
+        # too: two slot writes, then the fallback reset. A demote is not a retry.
+        "desc": "tampered image fails integrity -> delta demoted, not retried -> falls back",
         "publish": "corrupt", "app": "confirm", "end": "golden",
-        "expect": ["install.start", "install.retry_cleanup", "install.fallback",
-                   "install.reboot", "boot.fallback"],
+        "expect": ["install.start", "install.demote", "install.retry_cleanup",
+                   "install.fallback", "install.reboot", "boot.fallback"],
         "forbid": ["install.armed", "confirm.promoted", "install.retry"],
     },
     # THE ONLY SCENARIO THAT STARTS FROM A PROMOTED BOARD, and under v2 it is the one that
@@ -1641,6 +1644,10 @@ class UartCapture:
 # Bench app (main.py) -- minimal: bring the network up, run the OTA loop against the
 # bench server, and confirm the trial once operational. LAN or WiFi per board.
 # ---------------------------------------------------------------------------
+# This run's golden, by a token its bench app carries (one scenario a process): see bench_main_py.
+_GOLDEN_RUN = os.urandom(4).hex()
+
+
 def bench_main_py(board, net, app="confirm"):
     if net == "wifi":
         # openmv_ota.wifi() picks network.WLAN, or network.WINC on the H7 Plus's ATWINC1500 shield
@@ -1757,6 +1764,30 @@ def bench_main_py(board, net, app="confirm"):
             "            openmv_ota.confirm()\n"
             "        await asyncio.sleep(2)\n"
         )
+    # A FRESH GOLDEN STARTS WITH NO HOLD. The hold record is the camera's own, on /flash, and a
+    # flash of the golden keeps /flash: the corrupt leg's failure held the next leg's install back
+    # ("install held back 594s", the Nicla's and the Portenta's watchdog legs). The first boot of
+    # this run's golden drops it -- before run(), which may arm a watchdog no FAT write can be fed
+    # through -- and the boots after it (the corrupt leg's fallback) keep it.
+    fresh = (
+        "    try:\n"
+        "        import os as _os\n"
+        "        try:\n"
+        "            _run = open('/flash/.hil-golden').read()\n"
+        "        except OSError:\n"
+        "            _run = ''\n"
+        "        if _run != " + repr(_GOLDEN_RUN) + ":\n"
+        "            try:\n"
+        "                _os.remove('/flash/openmv-ota-hold.txt')\n"
+        "            except OSError:\n"
+        "                pass\n"
+        "            with open('/flash/.hil-golden', 'w') as _f:\n"
+        "                _f.write(" + repr(_GOLDEN_RUN) + ")\n"
+        "            _os.sync()\n"
+        "            _blog.info('app: a fresh golden, no hold')\n"
+        "    except Exception as _e:\n"
+        "        _blog.error('app: hold reset FAILED %r' % (_e,))\n"
+    )
     # The app logs its OWN progress to the openmv_ota logger (-> the coverage UART at DEBUG),
     # and wraps the whole run so any crash is VISIBLE there. Without this a trial that boots
     # but faults in the app is invisible: an uncaught exception prints to the USB REPL, not
@@ -1809,6 +1840,7 @@ def bench_main_py(board, net, app="confirm"):
         "        _blog.info('app: sealed data round-trip ok')\n"
         "    except Exception as _e:\n"
         "        _blog.error('app: seal FAILED %r' % (_e,))\n"
+        + fresh +
         "    _blog.info('app: network up, starting run()')\n"
         + start_run +
         trial_policy + "\n\n"

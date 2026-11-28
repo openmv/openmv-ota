@@ -127,3 +127,14 @@ def test_both_bench_files_ride_in_the_romfs():
     src = inspect.getsource(ota_cycle.prepare)
     assert '/app/.hilcov_uart' in src, "the coverage hint must be baked into the image"
     assert 'ca_board' in src, "so must the CA"
+
+
+@pytest.mark.parametrize("net", ["wifi", "lan"])
+def test_a_fresh_golden_drops_the_hold_before_run(net):
+    """A golden flash keeps /flash, and with it the hold the corrupt leg left: the watchdog leg
+    after it was held back 594 s. The first boot of this run's golden removes the record, before
+    run() can arm a watchdog no FAT write is fed through; a boot of the same golden keeps it."""
+    src = ota_cycle.bench_main_py("OPENMV4P", net)
+    token = repr(ota_cycle._GOLDEN_RUN)
+    assert "if _run != %s:" % token in src and "_f.write(%s)" % token in src
+    assert src.index("_os.remove('/flash/openmv-ota-hold.txt')") < src.index("network up, starting run()")
