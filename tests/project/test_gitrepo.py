@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -572,3 +574,19 @@ def test_clone_refuses_a_remote_that_names_a_program(tmp_path, monkeypatch):
     assert not ran.exists()
     subprocess.run(["git", "clone", "evil::x", str(tmp_path / "d2")], capture_output=True)
     assert ran.exists()                                         # git, left to itself, runs it
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="APFS takes UTF-8 file names only")
+def test_a_tracked_name_that_is_not_utf8_is_read_not_a_traceback(make_firmware):
+    """git prints a file's name as its bytes, and a name that is not UTF-8 (a Latin-1 é) was a
+    UnicodeDecodeError. It reads now, and as the same bytes: the filter walk joins these names
+    onto the tree, so a name read wrong would be a submodule it never looked into."""
+    repo = make_firmware()
+    name = os.fsdecode(b"caf\xe9.py")
+    (repo / name).write_text("x = 1\n")
+    for args in (("add", "--", name), ("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "n")):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    assert not gitrepo.is_dirty(repo)
+    (repo / name).write_text("x = 2\n")
+    assert gitrepo.is_dirty(repo)
+    assert any(os.fsencode(p).endswith(b"caf\xe9.py") for p in gitrepo.dirty_paths(repo))
