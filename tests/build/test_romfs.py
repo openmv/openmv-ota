@@ -1995,6 +1995,22 @@ def test_an_app_tree_holds_no_links(tmp_path):
         stage_app(app, tmp_path / "staged")
 
 
+def test_an_app_tree_holds_only_regular_files(tmp_path):
+    """A FIFO in app/ had the copy wait for a writer for ever."""
+    import os
+
+    from openmv_ota.build.errors import BuildError
+    from openmv_ota.build.staging import stage_app
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "main.py").write_text("print(1)\n")
+    os.mkfifo(app / "pipe")
+    with pytest.raises(BuildError, match="pipe is not a regular file"):
+        stage_app(app, tmp_path / "staged")
+    os.unlink(app / "pipe")
+    assert (stage_app(app, tmp_path / "ok") / "main.py").is_file()
+
+
 def test_a_platform_factory_image_carries_the_counter_and_seeds_its_floor(make_project):
     """The factory image seeds the floor a camera orders by, and for a platform camera that
     is the publish counter. `build factory-romfs` took none, so both factory slots were

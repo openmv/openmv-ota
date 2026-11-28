@@ -82,6 +82,9 @@ def _drop_cwd_from_path() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _drop_cwd_from_path()
+    from openmv_ota.terminal import guard
+
+    guard()                    # what a server, camera or USB device wrote shows inert on a terminal
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -111,7 +114,16 @@ def main(argv: list[str] | None = None) -> int:
                 print("error: %s" % e, file=sys.stderr)
                 return e.exit_code
 
-    return args.func(args)
+    try:
+        return args.func(args)
+    except OSError as e:
+        # The filesystem said no where a command did not look first (`build` a file where a
+        # directory is made, a directory where a file is written): one line, like every other
+        # error, not a traceback. A closed pipe is the reader's choice, not an error.
+        if isinstance(e, BrokenPipeError):
+            return 1
+        print("error: %s" % e, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

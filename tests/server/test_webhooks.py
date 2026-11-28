@@ -396,3 +396,27 @@ def test_finished_deliveries_are_kept_a_month(tmp_path, monkeypatch):
     deliverer.run_once(now=time.time() - 10)                           # nothing due, one pending
     left = store.query_all("SELECT status FROM webhook_deliveries")
     assert [r["status"] for r in left] == ["pending"] and before > 1
+
+
+def test_a_test_ping_is_the_account_s_goes_to_one_endpoint_and_waits_its_turn(tmp_path, monkeypatch):
+    """A ping's audit entry is the caller's account's (it used to land in no account at all),
+    reaches only the endpoint it names, though another of the account's takes every event, and a
+    second one is refused while the first is still pending."""
+    c, store, rx, deliverer = _app(tmp_path, monkeypatch)
+    one = c.post("/api/v1/admin/webhooks", headers=AUTH, json={"url": "https://one.example/",
+                                                              "events": ["device.*"]}).json()
+    c.post("/api/v1/admin/webhooks", headers=AUTH, json={"url": "https://all.example/", "events": ["*"]})
+    wid = one["webhook_id"]
+    assert c.post(f"/api/v1/admin/webhooks/{wid}/test", headers=AUTH).status_code == 200
+    again = c.post(f"/api/v1/admin/webhooks/{wid}/test", headers=AUTH)
+    assert again.status_code == 429 and again.headers["retry-after"] == "30"
+    row = store.query_one("SELECT account_id FROM audit WHERE action = 'webhook.ping'")
+    assert row["account_id"] == "a1"
+    assert store.query_one("SELECT COUNT(*) AS n FROM webhook_deliveries "
+                           "WHERE event = 'webhook.ping'")["n"] == 1
+    deliverer.run_once(now=time.time() + 1)
+    pinged = [r for r in rx.calls if r.headers["x-openmv-event"] == "webhook.ping"]
+    assert len(pinged) == 1 and pinged[0].headers["host"] == "one.example"
+    assert json.loads(pinged[0].content)["account_id"] == "a1"
+    # sent: the next one goes again
+    assert c.post(f"/api/v1/admin/webhooks/{wid}/test", headers=AUTH).status_code == 200

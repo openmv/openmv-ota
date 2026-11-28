@@ -2574,11 +2574,12 @@ class SqlMetadataStore:
     # --- the hash-chained audit log ---------------------------------------------------------
 
     def append_audit(self, *, actor, action, entity_type=None, entity_id=None, data=None,
-                     account_id="", product_id=None) -> int:
+                     account_id="", product_id=None, fan_out=True) -> int:
         """Append one entry. ``product_id`` is the product the act happened to, where the
         caller knows one -- it is what lets a product-limited credential read its own
         history, and it is stored beside the chain rather than inside it (see the v25
-        migration).
+        migration). ``fan_out=False`` keeps the entry from the account's webhooks: a test ping
+        is the account's, and goes to the one endpoint it names.
 
         The read of the last entry and the insert of the next are ONE critical section under
         the store lock. The sequence is ``MAX(seq)+1`` and the entry hash chains onto the
@@ -2606,7 +2607,7 @@ class SqlMetadataStore:
                       (seq, ts, actor, action, entity_type, entity_id, payload, prev, entry,
                        account_id, pid))
             conn.commit()
-        if account_id:
+        if account_id and fan_out:
             self._fan_out(seq, action, account_id, ts)
         return seq
 

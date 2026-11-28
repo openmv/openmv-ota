@@ -154,3 +154,28 @@ def test_the_working_directory_is_not_on_the_import_path(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "path", [src, "/usr/lib/python3"])
     cli._drop_cwd_from_path()
     assert sys.path[0] == src
+
+
+def test_a_filesystem_refusal_is_one_line_not_a_traceback(monkeypatch, capsys):
+    """`build` a file where a directory is made, a directory where a file is written: the
+    command's OSError prints as an error (exit 1), and a closed pipe ends it quietly."""
+    import argparse
+
+    from openmv_ota import cli
+
+    def fails(err):
+        def run(args):
+            raise err
+        return run
+
+    for err, said in ((NotADirectoryError(20, "Not a directory", "build/x"), "Not a directory"),
+                      (IsADirectoryError(21, "Is a directory", "device/openmv_log.py"),
+                       "Is a directory")):
+        monkeypatch.setattr(cli.argparse.ArgumentParser, "parse_args",
+                            lambda self, argv=None, e=err: argparse.Namespace(func=fails(e)))
+        assert cli.main(["x"]) == 1
+        err = capsys.readouterr().err
+        assert err.startswith("error: [Errno") and said in err and err.count("\n") == 1
+    monkeypatch.setattr(cli.argparse.ArgumentParser, "parse_args",
+                        lambda self, argv=None: argparse.Namespace(func=fails(BrokenPipeError())))
+    assert cli.main(["x"]) == 1 and capsys.readouterr().err == ""

@@ -54,7 +54,7 @@ def _filter_names(repo: Path, nested: bool, seen: set[str]) -> None:
     files this never looked at, and such a tree is refused."""
     def git(*args: str) -> list[str]:
         proc = subprocess.run([GIT, *_QUIET, "-C", str(repo), *args], capture_output=True,
-                              text=True, env=env)
+                              text=True, errors="surrogateescape", env=env)
         return proc.stdout.split("\0") if proc.returncode == 0 else []
     env = {**os.environ, **_ENV, "GIT_CONFIG_COUNT": str(_env_count())}
     fields = git("config", "--includes", "--show-scope", "--name-only", "-z",
@@ -72,12 +72,12 @@ def _filter_names(repo: Path, nested: bool, seen: set[str]) -> None:
     # ...and the same repository from there: a worktree moved to a directory above has
     # git list another index (or none) from it, while it reads this one's submodules
     gitdir = [(subprocess.run([GIT, *_QUIET, "-C", str(d), "rev-parse", "--absolute-git-dir"],
-                              capture_output=True, text=True, env=env).stdout.strip())
+                              capture_output=True, text=True, errors="surrogateescape", env=env).stdout.strip())
               for d in (repo, top)]
     if (Path(top) != here and Path(top) not in here.parents) or gitdir[0] != gitdir[1]:
         raise ProjectError("%s: its git config works on another tree (%s)" % (repo, top))
     for entry in subprocess.run([GIT, *_QUIET, "-C", top, "ls-files", "-s", "-z"],
-                                capture_output=True, text=True, env=env).stdout.split("\0"):
+                                capture_output=True, text=True, errors="surrogateescape", env=env).stdout.split("\0"):
         mode, _, path = entry.partition("\t")
         if not mode.startswith("160000"):
             continue
@@ -119,7 +119,7 @@ def run_git(repo: Path, *args: str, check: bool = True) -> str | None:
     try:
         proc = subprocess.run(
             [GIT, *_QUIET, "-C", str(repo), *args],
-            capture_output=True, text=True,
+            capture_output=True, text=True, errors="surrogateescape",
             # only these two read the files of the tree, and of its submodules
             env={**os.environ, **_no_filters(repo, args[:1] in (("status",), ("describe",)))},
         )
@@ -141,7 +141,7 @@ def untracked(path: Path) -> bool | None:
     try:
         proc = subprocess.run([GIT, *_QUIET, "-C", str(path.parent), "ls-files",
                                "--error-unmatch", "--", path.name],
-                              capture_output=True, text=True, env={**os.environ, **_ENV})
+                              capture_output=True, text=True, errors="surrogateescape", env={**os.environ, **_ENV})
     except FileNotFoundError:
         return None
     if proc.returncode == 0:
@@ -206,7 +206,7 @@ def dirty_paths(repo: Path, limit: int = 5) -> list[str]:
 
             def git(*args: str, here: Path = here) -> str:
                 proc = subprocess.run([GIT, *_QUIET, "-C", str(here), *args],
-                                      capture_output=True, text=True, env=env)
+                                      capture_output=True, text=True, errors="surrogateescape", env=env)
                 return proc.stdout if proc.returncode == 0 else ""
             fields = iter(git("status", "--porcelain", "-z", "--untracked-files=all",
                               "--ignored=matching", "--ignore-submodules=dirty").split("\0"))

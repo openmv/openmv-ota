@@ -53,6 +53,20 @@ def _read(root) -> dict | None:
         raise ProjectError("%s is damaged" % p) from None
 
 
+def _kept_before_digests(root) -> ProjectError | None:
+    """The error for a kept chain whose pin names its generation by the sign key alone, as the
+    file was written before pins carried the record's digest. Such a pin vouches for a chain's
+    first generation and no other, so past it the file can only be refused, and the remedy is to
+    delete it (the next sync starts again from the configured pin)."""
+    state = _read(root)
+    if state is None or state["pin"].count(":") != 1 or \
+            not state["pin"].split(":")[0].isdigit() or int(state["pin"].split(":")[0]) < 2:
+        return None
+    return ProjectError("%s was kept before keykeeper pins named the whole record: its pin %s "
+                        "vouches for keykeeper's first generation only. Delete it and run "
+                        "`openmv-ota project keys keykeeper sync`" % (path_for(root), state["pin"]))
+
+
 def trusted_pin(root, config_pin: str, server_url: str = "") -> str:
     """The newest generation this project trusts: the synced one, else the configured one, else
     -- for the hosted server -- :data:`HOSTED_KEYKEEPER_PIN`."""
@@ -78,6 +92,9 @@ def sync(root, config_pin: str, chain: list, now: datetime | None = None,
         gens = verify_chain(chain, trusted_pin(root, config_pin, server_url))
         pin = current(gens, now).pin()
     except KeykeeperError as e:
+        old = _kept_before_digests(root)
+        if old is not None:
+            raise old from None
         raise ProjectError("the keykeeper chain doesn't verify from this project's pin: %s -- "
                            "if keykeeper was reset after a leak, set a new [ota].keykeeper_pin "
                            "and delete %s" % (e, path_for(root))) from None
@@ -99,7 +116,7 @@ def sealing_generation(root, now: datetime | None = None) -> Generation:
         gens = verify_chain(state["chain"], state["pin"])
         gen = current(gens, now)
     except KeykeeperError as e:
-        raise ProjectError("%s: %s" % (path_for(root), e)) from None
+        raise _kept_before_digests(root) or ProjectError("%s: %s" % (path_for(root), e)) from None
     if gen is gens[-1]:
         raise ProjectError("keykeeper has rotated since this project last synced (no next "
                            "generation is announced): run `openmv-ota project keys keykeeper sync`")

@@ -106,15 +106,34 @@ def test_a_key_that_is_not_a_curve_point_fails_the_flash(camera):
         fl.provision_keys(board="OPENMV_RT1060")
 
 
+@pytest.mark.parametrize("line", [
+    "SE-ID 04ab\r\n",                                       # fields missing
+    "SE-ID zz %s 3006 1 cam\r\n" % ("00" * 65),             # not hex
+    "SE-ID 04ab 04ab 3006 2 cam\r\n",                       # made is 0 or 1
+    "SE-ID 04ab 04ab 3006 1 cam\x1b[2J\r\n",               # an id the server would refuse
+    "SE-ID 04a 04ab 3006 1 cam\r\n",                        # half a byte
+])
+def test_a_key_report_that_is_not_one_fails_the_flash_and_shows_it_escaped(camera, line):
+    """A USB device answering for its keys with anything but a key report is refused by name,
+    with its words shown escaped (no traceback, no control reaching the terminal)."""
+    camera(lambda d: line)
+    with pytest.raises(FlashError, match="key report is not one this tool reads") as e:
+        fl.provision_keys(board="OPENMV4")
+    assert "\x1b" not in str(e.value)
+
+
 def test_damaged_keys_fail_the_flash_with_the_camera_s_words(camera):
     camera(lambda d: "SE-ERROR key store: the camera's newest key record is damaged\r\n")
     with pytest.raises(FlashError, match="newest key record is damaged"):
         fl.provision_keys(board="OPENMV4")
 
 
-def test_a_camera_whose_romfs_says_it_has_no_keys_is_fine(camera):
+def test_a_camera_that_says_it_has_no_keys_on_a_board_that_keeps_them_fails_the_flash(camera):
+    """Only a board that keeps keys is asked, so `SE-NONE` means its firmware carries no wiring
+    for them: a camera with no identity to register or sign with, refused by name."""
     camera(lambda d: "SE-NONE\r\n")
-    assert fl.provision_keys(board="OPENMV4") == []
+    with pytest.raises(FlashError, match="says it has no keys, but a OPENMV4 keeps them"):
+        fl.provision_keys(board="OPENMV4")
 
 
 def test_a_camera_that_never_answers_fails_the_flash(camera, monkeypatch):

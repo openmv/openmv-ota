@@ -158,7 +158,9 @@ delivery dl_9f0c2e11a4b37d58 queued again
 ```
 
 `webhook test` queues a `webhook.ping` to one endpoint regardless of its subscription,
-so a new receiver can be checked end to end before anything real happens.
+so a new receiver can be checked end to end before anything real happens. The ping is
+your account's event and reaches only that endpoint; another is refused (429) while the
+first is still waiting to be sent.
 
 ## Running it yourself
 

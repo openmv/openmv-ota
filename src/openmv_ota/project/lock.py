@@ -67,6 +67,11 @@ class Lock:
         )
 
 
+_FIELD_TYPES = {"generated_by": str, "generated_at": str, "config_digest": str, "ota": bool,
+                "firmware": dict, "micropython": dict, "sdk": dict, "toolchain": dict,
+                "submodules": list, "targets": dict}
+
+
 def write(path: Path, lock: Lock) -> None:
     path.write_text(json.dumps(lock.to_dict(), indent=2) + "\n", encoding="utf-8")
 
@@ -78,6 +83,20 @@ def read(path: Path) -> Lock:
         raise ProjectError("no %s found (run `openmv-ota project new` first)" % LOCK_NAME) from None
     except json.JSONDecodeError as e:
         raise ProjectError("%s is corrupt: %s" % (LOCK_NAME, e)) from None
+    except UnicodeDecodeError:
+        raise ProjectError("%s is corrupt: it is not UTF-8 text" % LOCK_NAME) from None
+    # Each field as the tool wrote it, so a lock edited (or merged) into another shape is an
+    # error that names it, not a traceback from wherever that field is first used.
+    if not isinstance(data, dict):
+        raise ProjectError("%s is corrupt: it holds %s, not an object"
+                           % (LOCK_NAME, type(data).__name__))
+    for key, kind in _FIELD_TYPES.items():
+        if key in data and not isinstance(data[key], kind):
+            raise ProjectError("%s is corrupt: %r is %s, not %s"
+                               % (LOCK_NAME, key, type(data[key]).__name__, kind.__name__))
+    resolved = data.get("targets", {}).get("resolved", [])
+    if not isinstance(resolved, list) or not all(isinstance(t, dict) for t in resolved):
+        raise ProjectError("%s is corrupt: 'targets.resolved' is not a list of targets" % LOCK_NAME)
     if data.get("lock_schema_version") != LOCK_SCHEMA_VERSION:
         raise ProjectError(
             "%s has unsupported schema version %r (this tool writes %d)"

@@ -699,7 +699,7 @@ def _write_keys(paths: ProjectPaths, provisioned) -> None:
 KEY_BACKUP_NAME = "keys-backup.bin"
 
 
-def backup_private_keys(root: str | Path) -> Path:
+def backup_private_keys(root: str | Path, on_kept=None) -> Path:
     """Archive every private key file (already encrypted at rest) to
     ``<root>/keys-backup.bin`` -- the operator then moves it off-machine. Raises
     ``ProjectError`` if there are no private keys, or for a ``--dev`` project (its cached
@@ -708,7 +708,15 @@ def backup_private_keys(root: str | Path) -> Path:
 
     That is the signing PEMs **and the payload keys**. They fail differently and both
     fail terminally: without the signing key you cannot sign an update the fleet will
-    accept, and without the board key you cannot encrypt one the fleet can read."""
+    accept, and without the board key you cannot encrypt one the fleet can read.
+
+    A backup never replaces a different one. `project new --force --new-keys` makes new keys,
+    and the backup of the old ones is then the only way left to update the fleet that trusts
+    them: it moves into ``keys/private/`` (which every project's git ignores) as
+    ``keys-backup-<time>.bin``, and ``on_kept`` is told where."""
+    import os
+    import time
+
     from . import keybackup, passphrase
 
     check_project(root)              # the keys read, and the archive written, are its own
@@ -726,7 +734,18 @@ def backup_private_keys(root: str | Path) -> Path:
     if not pems:
         raise ProjectError("no private keys in %s to back up" % pem_dir, exit_code=1)
     out = Path(root) / KEY_BACKUP_NAME
-    write_private(out, keybackup.pack_keys(pems))
+    blob = keybackup.pack_keys(pems)
+    if out.is_file() and not out.is_symlink() and out.read_bytes() != blob:
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        kept = pem_dir / ("keys-backup-%s.bin" % stamp)
+        n = 1
+        while kept.exists():                 # two in one second: neither is lost
+            n += 1
+            kept = pem_dir / ("keys-backup-%s-%d.bin" % (stamp, n))
+        os.replace(out, kept)
+        if on_kept is not None:
+            on_kept(kept)
+    write_private(out, blob)
     return out
 
 

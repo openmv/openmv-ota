@@ -20,7 +20,7 @@ def _lock(**over):
         sdk={"version": "1.6.0"},
         toolchain={"vela": {"version": "5.0.0"}},
         submodules=[{"path": "lib/micropython", "commit": "x"}],
-        targets={"boards": ["OPENMV_N6"], "resolved": {}},
+        targets={"boards": ["OPENMV_N6"], "resolved": []},
     )
     base.update(over)
     return lock_mod.Lock(**base)
@@ -56,6 +56,27 @@ def test_read_corrupt(tmp_path):
     p = tmp_path / lock_mod.LOCK_NAME
     p.write_text("{not json")
     with pytest.raises(ProjectError, match="corrupt"):
+        lock_mod.read(p)
+
+
+@pytest.mark.parametrize("body, said", [
+    ("[]", "it holds list, not an object"),
+    ('{"targets": []}', "'targets' is list, not dict"),
+    ('{"firmware": "abc"}', "'firmware' is str, not dict"),
+    ('{"ota": 1}', "'ota' is int, not bool"),
+    ('{"targets": {"resolved": ["OPENMV4"]}}', "'targets.resolved' is not a list of targets"),
+])
+def test_a_field_of_the_wrong_shape_is_named_not_a_traceback(tmp_path, body, said):
+    p = tmp_path / lock_mod.LOCK_NAME
+    p.write_text(body)
+    with pytest.raises(ProjectError, match="corrupt: " + said.replace("(", r"\(")):
+        lock_mod.read(p)
+
+
+def test_a_lock_that_is_not_utf8_is_corrupt(tmp_path):
+    p = tmp_path / lock_mod.LOCK_NAME
+    p.write_bytes(b'{"generated_by": "\xff"}')
+    with pytest.raises(ProjectError, match="not UTF-8"):
         lock_mod.read(p)
 
 
