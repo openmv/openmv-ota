@@ -361,8 +361,13 @@ def _write_wrapper_manifest(p, repo: Path, name: str,
     shutil.copy2(_BOOT_PY, mods / "boot.py")
     (mods / "_ota_config.py").write_text(_render_ota_config(p, name, payload_keys),
                                          encoding="utf-8")
-    freezes = ['freeze("%s", "boot.py")\n' % mods.as_posix(),
-               'freeze("%s", "_ota_config.py")\n' % mods.as_posix()]
+    # What this tool writes itself is frozen at opt=3, which keeps no line numbers: ~2 KB of the
+    # installer alone, and the OpenMV Cam M4 and H7 ran out of FLASH_TEXT without it. None of it
+    # relies on an assert, which opt=3 also drops (pinned by a test); a traceback out of it names
+    # the function, not the line. The editable device modules are the project's own code, and
+    # keep theirs.
+    owned = 'freeze("%s", "%s", opt=3)\n'
+    freezes = [owned % (mods.as_posix(), "boot.py"), owned % (mods.as_posix(), "_ota_config.py")]
     # Editable device modules (logger + watchdog) frozen so boot.py / the installer / the
     # app share them; prefer the project's copy, fall back to the bundled default.
     networked = not get_board(name).ota_runtime_drops_network
@@ -381,17 +386,17 @@ def _write_wrapper_manifest(p, repo: Path, name: str,
     # inside boot.py.
     if _firmware_makes_key(name):
         shutil.copy2(_DEVICE_DIR / _SLOT_ENGINE_MODULE, mods / _SLOT_ENGINE_MODULE)
-        freezes.append('freeze("%s", "%s")\n' % (mods.as_posix(), _SLOT_ENGINE_MODULE))
+        freezes.append(owned % (mods.as_posix(), _SLOT_ENGINE_MODULE))
     # The installer, frozen as `openmv_installer`. It is the SAME source the romfs ships and
     # openmv_ota.install() exec's into RAM -- one implementation, so a fix cannot land on the
     # normal path and miss the recovery one. The romfs copy stays: on a healthy device it is
     # OTA-updatable, while this one is the floor that a bad update cannot erase.
     shutil.copy2(_DEVICE_DIR / "openmv_ota" / "data" / "installer.py", mods / "openmv_installer.py")
-    freezes.append('freeze("%s", "openmv_installer.py")\n' % mods.as_posix())
+    freezes.append(owned % (mods.as_posix(), "openmv_installer.py"))
     # The camera's keys (openmv_se): frozen, not in the romfs, so recovery -- which runs
     # precisely when the romfs is gone -- signs its check-ins and opens its updates too.
     for rel in _stage_key_package(mods, name):
-        freezes.append('freeze("%s", "%s")\n' % (mods.as_posix(), rel))
+        freezes.append(owned % (mods.as_posix(), rel))
     if core_split:
         # One freeze of the per-core directory replaces the per-file list: for the main core
         # `$(MCU_CORE)` names the directory holding every module above, for the helper core
