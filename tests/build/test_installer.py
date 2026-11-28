@@ -3012,6 +3012,22 @@ def test_the_failure_is_kept_before_the_erase_and_cleared_after_an_install(tmp_p
     assert fresh._hold(_SHA_A, 0, _boot(), _Relax(), path)[0] == 600
 
 
+def test_a_flash_that_did_not_read_back_is_retried():
+    """An erase or a write that did not read back is the flash's fault, not the image's, and no
+    server can cause one: the M7's first erase read back unerased at offset 0, the attempt after
+    it installed, and with only the link's failures retried it reset into an erased slot."""
+    stops, flash = inst("_stops"), inst("_FlashError")
+    for e in (flash("erase verify failed at 0"), flash("write verify failed at 4096"), flash(5)):
+        assert isinstance(e, OSError) and stops(e, 0, 3, "full", None) is False
+        assert stops(e, 2, 3, "full", None) is True          # the last attempt still ends it
+    assert inst("_is_transport_error")(flash("arm verify failed"))      # a delta is kept
+    src = _SRC.read_text()
+    for msg in ("erase verify failed at", "write verify failed at", "arm verify failed",
+                "carried floor verify failed", "image head verify failed"):
+        assert 'raise _FlashError("%s' % msg in src, msg
+    assert "raise OSError(-rc)" not in src
+
+
 def test_a_full_image_that_hashed_wrong_stops_at_once():
     """The retries are for a dropped link: bytes that arrived and hashed wrong hash wrong again,
     and each attempt is a whole-slot erase."""

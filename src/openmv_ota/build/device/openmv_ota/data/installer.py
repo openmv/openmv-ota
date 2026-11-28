@@ -299,6 +299,15 @@ class _TransportError(OSError):
     surface as ``ValueError`` -- so no amount of inspecting the exception can separate them."""
 
 
+
+class _FlashError(_TransportError):
+    """The camera's own flash would not erase, or did not read back what was written to it: a
+    fault of the flash, not a verdict on the image, and nothing whoever answers the check-in
+    sends can cause one. So it is retried as a dropped link is (_stops), and a delta it hit is
+    kept. On the OpenMV Cam M7 the first erase of the slot reads back unerased at offset 0 now
+    and then, and the attempt after it installs: with only the link's failures retried, that
+    one hiccup reset a single-slot camera into an erased slot."""
+
 def _is_transport_error(e):
     """True if ``e`` came from the connection phase (DNS, TCP, the TLS handshake including cert
     validation, or reading the body) rather than from vetting the fetched manifest. run() uses this
@@ -1304,7 +1313,7 @@ def _prepare_slot(write, readback, slot_size, block, feed, floor=0, epoch=0):
         #                                              the window -- which on the N6 is 100 ms.
         n = _CHUNK if slot_size - off >= _CHUNK else slot_size - off
         if not _is_blank(readback(off, n)):
-            raise OSError("erase verify failed at %d" % off)
+            raise _FlashError("erase verify failed at %d" % off)
         off += n
         feed()
 
@@ -1321,7 +1330,7 @@ def _prepare_slot(write, readback, slot_size, block, feed, floor=0, epoch=0):
         floor_at = slot_size - 2 * block + _FLOOR_OFF
         write(floor_at, _pad(entry))
         if readback(floor_at, len(entry)) != entry:
-            raise OSError("carried floor verify failed")
+            raise _FlashError("carried floor verify failed")
         log.debug("install: floor carried")           # HIL path witness (every install, pre-download)
     if epoch:
         # The certificate-epoch floor, carried for the same reason into its own region.
@@ -1329,7 +1338,7 @@ def _prepare_slot(write, readback, slot_size, block, feed, floor=0, epoch=0):
         epoch_at = slot_size - 2 * block + _EPOCH_OFF
         write(epoch_at, _pad(entry))
         if readback(epoch_at, len(entry)) != entry:
-            raise OSError("carried epoch verify failed")
+            raise _FlashError("carried epoch verify failed")
         log.debug("install: epoch carried")           # HIL path witness (installs on a certified fleet)
 
 
@@ -1458,7 +1467,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
             #                                          the slice below never runs on them and the
             #                                          common path stays allocation-free.
             if rb != (chunk if k == n - w else chunk[:k]):
-                raise OSError("write verify failed at %d" % off)
+                raise _FlashError("write verify failed at %d" % off)
         off += n
         _slack_add(n)                                # the image's bytes buy the download its time
         feed()
@@ -1482,7 +1491,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     feed()
     write(0, head)                                   # the held-back first bytes: now it is an image
     if readback(0, _HEAD) != head:
-        raise OSError("image head verify failed")
+        raise _FlashError("image head verify failed")
 
     # ARM, IN THIS ORDER: provenance, then the counter, then PENDING. (The carried floor was
     # already programmed into the status sector's tail right after the blank verify above, so
@@ -1495,7 +1504,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     if repr_marker is not None:                      # record which rep was applied (1->0 only)
         write(status_off + _REPR_OFF, _pad(repr_marker))
         if readback(status_off + _REPR_OFF, len(repr_marker)) != repr_marker:
-            raise OSError("repr marker verify failed")
+            raise _FlashError("repr marker verify failed")
     if counter is not None:
         # The ORDER against the image bytes is what matters here: a half-written image can never
         # carry a valid counter, because the counter is written only once the whole slot has been
@@ -1503,10 +1512,10 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         field = _encode_counter(counter)
         write(status_off + _COUNTER_OFF, _pad(field))
         if readback(status_off + _COUNTER_OFF, len(field)) != field:
-            raise OSError("install counter verify failed")
+            raise _FlashError("install counter verify failed")
     write(status_off, _pad(PENDING))                  # arm the trial, LAST
     if readback(status_off, len(PENDING)) != PENDING:
-        raise OSError("arm verify failed")
+        raise _FlashError("arm verify failed")
 
 
 # --- device entry (wires real socket/ssl/deflate/vfs/machine) ---------------
@@ -2119,10 +2128,11 @@ def _hold_write(data, relax, path=_HOLD):
 
 def _stops(e, attempt, attempts, fmt, alt):
     """Whether a failed attempt past the erase ends the install (the camera resets, the failure
-    kept) rather than trying again. The retries are for the link: a download that could not be
-    opened or kept going (a _TransportError, see _open_body). Anything else -- bytes that failed
-    to inflate, to decrypt or to hash -- fails the same way again, and each try is a whole-slot
-    erase, so it stops at once; a delta is demoted to the full image instead (see run())."""
+    kept) rather than trying again. The retries are for the link and the flash: a download that
+    could not be opened or kept going (a _TransportError, see _open_body), and an erase or a
+    write that did not read back (a _FlashError). Anything else -- bytes that failed to inflate,
+    to decrypt or to hash -- fails the same way again, and each try is a whole-slot erase, so it
+    stops at once; a delta is demoted to the full image instead (see run())."""
     return attempt + 1 >= attempts or not (_is_transport_error(e) or
                                             fmt == _DELTA_FORMAT and alt is not None)
 
@@ -2498,7 +2508,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                         if _dt > worst:
                             worst = _dt  # hil-residual: witnessed transitively -- a non-zero worst= in the progress line proves this ran (it is the only writer)
                         if rc < 0:
-                            raise OSError(-rc)  # hil-residual: bare raise on a negative errno (erase-fault, inject-only)
+                            raise _FlashError(-rc)  # hil-residual: bare raise on a negative errno (erase-fault, inject-only)
                         o += n
                         i += 1
                         erased += 1
@@ -2531,12 +2541,12 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
             with relax():                             # hil-residual: legacy pre-#19348 single-shot erase (unreachable on the patched bench; faults the N6)
                 rc = vfs.rom_ioctl(3, 0, total)  # hil-residual: legacy single-shot erase call (pre-#19348)
                 if rc < 0:  # hil-residual: legacy single-shot errno check (pre-#19348)
-                    raise OSError(-rc)  # hil-residual: bare raise (legacy single-shot erase fault)
+                    raise _FlashError(-rc)  # hil-residual: bare raise (legacy single-shot erase fault)
 
         def write_at(off, data):
             rc = vfs.rom_ioctl(4, 0, off, data)
             if rc < 0:
-                raise OSError(-rc)  # hil-residual: bare raise on a negative errno (write-fault, inject-only)
+                raise _FlashError(-rc)  # hil-residual: bare raise on a negative errno (write-fault, inject-only)
             if log and "w" not in _seen:
                 _seen.add("w")
                 log.debug("install: wrote block XIP")
@@ -2716,10 +2726,10 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     # mid-stream -- a transient transport error, not a bad update. Since the installer
     # already runs from RAM (exec'd before the erase) and re-erase + re-download is
     # idempotent, retry the whole download a bounded number of times before giving up.
-    # Only an EXHAUSTED retry (or a non-transient failure surfacing every attempt)
-    # reboots into the surviving slot -- so one hiccup no longer costs a reboot + a full poll
-    # cycle. Anything raised here (short body, TLS/ECONNRESET/ECONNABORTED/timeout,
-    # verify miscompare) is treated the same: retry, then fall back.
+    # Only an EXHAUSTED retry reboots into the surviving slot -- so one hiccup no longer costs
+    # a reboot + a full poll cycle. What is retried is the link's failures (short body,
+    # TLS/ECONNRESET/ECONNABORTED/timeout) and the flash's (an erase or a write that does not
+    # read back, _FlashError); an image that fails to inflate, decrypt or hash is not (_stops).
     attempts = getattr(cfg, "INSTALL_RETRIES", 3)
     body = None
     from_file = _is_path(image_url)

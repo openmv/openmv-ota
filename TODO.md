@@ -49,6 +49,11 @@ budget for now; these are the free/cheap passes to run first, in order.
 - **Internal red-team passes** — `/security-review`, and `/code-review ultra` on the
   signing/verify/installer/anti-rollback path and the camera-identity path (registration,
   signed check-ins, lockboxes).
+- **The OpenMV Cam M7's first erase reads back unerased** — on openmv master the first erase of
+  its slot reads back unerased at offset 0 (`erase verify failed at 0`), and the attempt after it
+  installs. Flash faults are retried now, so the install goes through, but the cause is not
+  known; a stale D-cache line over the XIP alias (read just before by the blank probe) is the
+  first thing to rule out.
 - **Left from the 2026-11 security review** (low severity, each needs a design call):
   - The install hold writes nothing while a watchdog is armed: its record is a FAT file, and
     on the RT1060 and the N6 the 100 ms watchdog bit inside that write (nothing feeds through

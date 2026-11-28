@@ -137,7 +137,8 @@ hand it (how that's obtained is out of scope here). It:
   signature/hash) and mounts the previous release — the last update that worked; `status()`
   then reports the fallback so you know the update failed.
 - **A failed image waits before the next erase.** A download that cannot be opened or kept
-  going is retried (three attempts); an image that failed to inflate, decrypt or hash is not,
+  going is retried (three attempts), and so is a flash erase or write that does not read back;
+  an image that failed to inflate, decrypt or hash is not,
   since the same bytes fail again (a delta that fails is replaced by the full image, once). The failure is written once, before the first erase, to
   `/flash/openmv-ota-hold.txt` (so a reset or power cut past the erase counts as one): the
   image's sha256 from the manifest and how many installs have failed in a row. That image is
