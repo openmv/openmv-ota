@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from openmv_ota.cli import main
 from openmv_ota.flash import dfu
 from openmv_ota.flash import flash as fl
 from openmv_ota.flash.errors import FlashError
+from tests import built
 
 
 def test_bootloader_argv_address_based_no_reset():
@@ -29,6 +32,7 @@ def bl_project(tmp_path, monkeypatch):
     monkeypatch.setattr(fl.tools, "find_dfu_util", lambda override, sdk_home: override or "DFU")
     monkeypatch.setattr(fl.history, "record", lambda *a, **k: None)
     (tmp_path / "build" / "OPENMV4-bootloader.bin").write_bytes(b"BOOT")
+    built.record(tmp_path, tmp_path / "build" / "OPENMV4-bootloader.bin")   # as built here
     return tmp_path, ran
 
 
@@ -37,8 +41,10 @@ def test_bootloader_flash_via_system_dfu(bl_project, capsys):
     steps = fl.flash_bootloader(str(root), board="OPENMV4")
     # the system DFU id + 0x08000000, and the ST-ROM exit quirk is tolerated
     assert ran[0][0][:4] == ["DFU", "-w", "-d", ",0483:df11"]
-    assert ran[0][0][4:] == ["-a", "0", "-s", "0x08000000", "-D",
-                             str(root / "build/OPENMV4-bootloader.bin")]
+    assert ran[0][0][4:-1] == ["-a", "0", "-s", "0x08000000", "-D"]
+    # ...from a private copy of the bytes it checked, not the file in build/
+    wrote = Path(ran[0][0][-1])
+    assert wrote.name == "OPENMV4-bootloader.bin" and wrote.parent != root / "build"
     assert ran[0][1] == {"tolerate_fail": True}
     assert steps[0].artifact == "bootloader"
     # the manual BOOT0 instruction is shown
@@ -50,6 +56,7 @@ def test_bootloader_warns_it_erases_the_camera_s_own_keys(bl_project, capsys):
     fl.flash_bootloader(str(root), board="OPENMV4", dry_run=True)       # keys in its sector
     assert "erases this camera's keys" in capsys.readouterr().err
     (root / "build" / "ARDUINO_GIGA-bootloader.bin").write_bytes(b"BOOT")
+    built.record(root, root / "build" / "ARDUINO_GIGA-bootloader.bin")
     try:
         fl.flash_bootloader(str(root), board="ARDUINO_GIGA", dry_run=True)  # keys in a chip
     except fl.FlashError:
@@ -107,6 +114,7 @@ def test_rt1060_bootloader_runs_the_sdp_sbl_flow(tmp_path, monkeypatch, capsys):
 def n6_project(tmp_path, monkeypatch):
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "OPENMV_N6-bootloader.bin").write_bytes(b"BL")
+    built.record(tmp_path, tmp_path / "build" / "OPENMV_N6-bootloader.bin")
     ran: list = []
     monkeypatch.setattr(fl.runner, "run", lambda argv, **k: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_cubeprog", lambda sdk_home: "CUBE")
@@ -160,6 +168,16 @@ def test_bootloader_missing_block_is_refused(monkeypatch):
         fl.flash_bootloader(board="SOMEBOARD")
 
 
+def test_a_bootloader_this_machine_did_not_build_is_refused(bl_project):
+    """`flash bootloader` wrote whatever build/ held to the camera's boot sector; it now takes
+    the file only as this machine's `build firmware` wrote it, as `flash factory` does."""
+    root, ran = bl_project
+    (root / "build" / "OPENMV4-bootloader.bin").write_bytes(b"planted")
+    with pytest.raises(FlashError, match="changed since `openmv-ota build firmware` wrote it"):
+        fl.flash_bootloader(str(root), board="OPENMV4")
+    assert ran == []
+
+
 def test_bootloader_cli(bl_project, capsys):
     root, _ran = bl_project
     assert main(["flash", "bootloader", str(root), "-b", "OPENMV4", "--dry-run"]) == 0
@@ -189,3 +207,7 @@ def test_the_ae3_bootloader_flash_blanks_its_key_area(tmp_path):
     assert key_area.read_bytes() == bytes(4096)
     addr = {i["file"]: int(i["addr"], 16) for i in bl["images"]}["key_area.bin"]
     assert addr == load_boards()["OPENMV_AE3"].secure_element["key_area"]
+    # ...and a dry run, which only shows the commands, writes nothing
+    key_area.unlink()
+    assert fl._alif_files("OPENMV_AE3", bl, tmp_path, dry_run=True)["key_area.bin"] == key_area
+    assert not key_area.exists()

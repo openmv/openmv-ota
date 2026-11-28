@@ -747,6 +747,12 @@ _IDENTITY_RECONNECTS = 3  # the camera dropping off USB mid-exchange, survived t
 _IDENTITY_QUIET_S = 1.0  # nothing new this long: a line short of its newline is all there is
 # A whole SE-ID line short of only its newline: an older boot.py print()ed it and the N6 started
 # its app before sending the newline (see boot.py). Taken once nothing more is coming.
+# The fields of an `SE-ID` line, as boot.py writes them: the identity key, the exchange key and
+# the challenge's signature in hex, whether the keys were made just now, and the camera's id
+# (`-` for none; a romfs from before the id was reported leaves it out). Anything else in their
+# place is no key report.
+_SE_ID = re.compile(r" *((?:[0-9a-f]{2})+) ((?:[0-9a-f]{2})+) ((?:[0-9a-f]{2})+) ([01])"
+                    r"(?: ([0-9A-Za-z_.-]{1,64}))? *")
 _UNTERMINATED = re.compile(r"SE-(ID)( [0-9a-f]+ [0-9a-f]+ [0-9a-f]+ [01] [^\s]+)\s*$")
 
 
@@ -920,12 +926,22 @@ def provision_keys(*, board: str, serial: str | None = None, dry_run: bool = Fal
                          "(it listens for %d s); flash it again" % (boot._KEYS_WINDOW_MS // 1000))
     kind, rest = answer.group(1), answer.group(2).split()
     if kind == "NONE":
-        return []
+        # Only a board that keeps keys is asked, so this one should have them: its firmware
+        # carries no wiring for them (openmv_se could not load its board module), and a camera
+        # flashed so has no identity to register or sign a check-in with.
+        raise FlashError("the camera says it has no keys, but a %s keeps them (%s): its firmware "
+                         "is not this project's OTA build -- build firmware and flash it again"
+                         % (board, se["chip"]))
     if kind == "ERROR":
         raise FlashError("the camera's keys: %s" % " ".join(rest))
-    pub, kx, sig = (bytes.fromhex(x) for x in rest[:3])
-    made = rest[3] == "1"
-    device_id = rest[4] if len(rest) > 4 else "-"
+    fields = _SE_ID.fullmatch(answer.group(2))
+    if fields is None:
+        raise FlashError("the camera's key report is not one this tool reads (%r); flash it again, "
+                         "and if it says the same, its factory romfs is not this project's"
+                         % answer.group(2)[:200])
+    pub, kx, sig = (bytes.fromhex(x) for x in fields.group(1, 2, 3))
+    made = fields.group(4) == "1"
+    device_id = fields.group(5) or "-"
     try:
         key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), pub)
         key.verify(sig, digest, ec.ECDSA(Prehashed(hashes.SHA256())))
@@ -1076,14 +1092,22 @@ _ALIF_KEY_AREA = "key_area.bin"
 _KEY_AREA_SIZE = 4096
 
 
-def _alif_files(board: str, bl: dict, out_dir: Path) -> dict[str, Path]:
+def _alif_files(board: str, bl: dict, out_dir: Path, dry_run: bool = False,
+                built=None) -> dict[str, Path]:
+    """The images the Alif tools write, by name. The key area's blank is made here, but not on a
+    dry run, which only shows the commands; the rest are ``build firmware``'s, each taken through
+    ``built`` (see :class:`_Built`)."""
     files = {i["file"]: out_dir / ("%s-%s" % (board, i["file"])) for i in bl["images"]}
     for name, f in files.items():
         if name == _ALIF_KEY_AREA:
+            if dry_run:
+                continue
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(bytes(_KEY_AREA_SIZE))
         elif not f.exists():
             raise FlashError("missing %s -- run `build firmware` first" % f)
+        elif built is not None:
+            files[name] = built.take(f)
     return files
 
 
@@ -1109,18 +1133,24 @@ def _alif_flash(project: str, board: str, bl: dict, *, output: str | None,
     out_dir = _output_dir(project, output)
     toolkit = _alif_toolkit(project, bl, dry_run)
     rev = bl["cfg_rev"]
-    images = alif.images_arg(bl["images"], _alif_files(board, bl, out_dir))   # fail fast
-    se = _alif_se_uart(bl, dry_run)
-    usp = alif.update_system_package_argv(sys.executable, toolkit, se, rev)
+    built = _Built(project, private=not dry_run)
+    try:
+        images = alif.images_arg(bl["images"],                      # fail fast
+                                 _alif_files(board, bl, out_dir, dry_run, built))
+        se = _alif_se_uart(bl, dry_run)
+        usp = alif.update_system_package_argv(sys.executable, toolkit, se, rev)
+        if not dry_run:
+            runner.run(usp)
+            _alif_replug(board)
+            se = _alif_se_uart(bl, dry_run)      # the port may re-enumerate after the replug
+        write = alif.write_bootloader_argv(sys.executable, toolkit, se, rev, images)
+        steps = [alif.AlifStep("update system package", usp),
+                 alif.AlifStep("write bootloader", write)]
+        if not dry_run:
+            runner.run(write)
+    finally:
+        built.close()
     if not dry_run:
-        runner.run(usp)
-        _alif_replug(board)
-        se = _alif_se_uart(bl, dry_run)          # the port may re-enumerate after the replug
-    write = alif.write_bootloader_argv(sys.executable, toolkit, se, rev, images)
-    steps = [alif.AlifStep("update system package", usp),
-             alif.AlifStep("write bootloader", write)]
-    if not dry_run:
-        runner.run(write)
         history.record(project, "flash-bootloader", board=board,
                        steps=[s.label for s in steps])
     return steps
@@ -1171,8 +1201,14 @@ def flash_bootloader(project: str = ".", *, board: str, output: str | None = Non
                           output=output, sdk_home=sdk_home, dry_run=dry_run)
     if backend == "alif":                            # AE3: Alif SE tools (system package + MRAM)
         return _alif_flash(project, board, bl, output=output, dry_run=dry_run)
-    f = _bootloader_bin(project, output, board)
-    if backend == "dfu":
-        return _bootloader_dfu(project, board, bl, f, dfu_util=dfu_util, sdk_home=sdk_home,
-                               serial=serial, dry_run=dry_run)
-    return _bootloader_cubeprog(project, board, bl, f, sdk_home=sdk_home, dry_run=dry_run)
+    # As `build firmware` wrote it, like every binary this flashes (see _Built): `build/` is
+    # the project's, and anything put there since was written to the camera's boot sector.
+    built = _Built(project, private=not dry_run)
+    try:
+        f = built.take(_bootloader_bin(project, output, board))
+        if backend == "dfu":
+            return _bootloader_dfu(project, board, bl, f, dfu_util=dfu_util, sdk_home=sdk_home,
+                                   serial=serial, dry_run=dry_run)
+        return _bootloader_cubeprog(project, board, bl, f, sdk_home=sdk_home, dry_run=dry_run)
+    finally:
+        built.close()

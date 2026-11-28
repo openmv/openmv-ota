@@ -11,6 +11,7 @@ from openmv_ota.flash import alif
 from openmv_ota.flash import flash as fl
 from openmv_ota.flash import tools
 from openmv_ota.flash.errors import FlashError
+from tests import built
 
 Port = namedtuple("Port", "device vid pid serial_number")
 VARIANTS = [{"name": "SBL", "bridge": "0403:6015", "cfg_part": "AE302F80F55D5AE"},
@@ -67,6 +68,7 @@ def ae3_project(tmp_path, monkeypatch):
     out.mkdir()
     (out / "OPENMV_AE3-bootloader.bin").write_bytes(b"BL")
     (out / "OPENMV_AE3-firmware_pad.toc").write_bytes(b"TOC")
+    built.record(out.parent, out / "OPENMV_AE3-bootloader.bin", out / "OPENMV_AE3-firmware_pad.toc")
     ran: list = []
     monkeypatch.setattr(fl.runner, "run", lambda argv, **k: ran.append(argv))
     monkeypatch.setattr(fl.tools, "find_alif_toolkit", lambda project, rel: "/TK")
@@ -113,6 +115,7 @@ def test_ae3_dry_run_shows_both_commands_needs_no_hardware(tmp_path, monkeypatch
     out.mkdir()
     (out / "OPENMV_AE3-bootloader.bin").write_bytes(b"BL")
     (out / "OPENMV_AE3-firmware_pad.toc").write_bytes(b"TOC")
+    built.record(out.parent, out / "OPENMV_AE3-bootloader.bin", out / "OPENMV_AE3-firmware_pad.toc")
     ran: list = []
     monkeypatch.setattr(fl.runner, "run", lambda *a, **k: ran.append(a))
     monkeypatch.setattr(fl.tools, "find_alif_toolkit",       # dry-run tolerates a missing toolkit
