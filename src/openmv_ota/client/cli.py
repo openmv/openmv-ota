@@ -27,7 +27,7 @@ from pathlib import Path
 
 from openmv_ota.server.scopes import ALL_SCOPES, SCOPES
 
-from openmv_ota.project.outdir import output_dir
+from openmv_ota.project.outdir import check_path, output_dir
 
 from . import config
 from .errors import ClientError
@@ -85,21 +85,6 @@ def _when(text: str) -> float:
 
 
 _WHEN = "epoch seconds, 30m/2h/1d/1w ago, or an ISO date (UTC)"
-
-
-def _save(path: Path, data: bytes) -> None:
-    """``data`` as a new file at ``path``, renamed over whatever is there. Written in place, a
-    link at that name (planted in a directory someone else made: these default to the working
-    directory) took the download to wherever it pointed."""
-    tmp = path.with_name(".%s.%d.tmp" % (path.name, os.getpid()))
-    tmp.unlink(missing_ok=True)                    # a crashed save's, or a link: not followed
-    try:
-        with open(tmp, "xb") as fh:
-            fh.write(data)
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 def _emit(args: argparse.Namespace, payload, *lines: str) -> int:
@@ -945,6 +930,9 @@ def cmd_bases(args: argparse.Namespace) -> int:
         cfg = config.resolve(args.server, args.token)
         api = _make_api(cfg)
         out = Path(args.output)
+        # build/bases by default, in a directory someone else may have made: a link on the
+        # way there takes the decrypted bases wherever it points
+        check_path(".", out, ClientError)
         out.mkdir(parents=True, exist_ok=True)
         plain = _BaseDecryptor(args.project, args.board, args.key_passphrase_file)
         if args.fleet:
@@ -959,7 +947,7 @@ def cmd_bases(args: argparse.Namespace) -> int:
         for rel in releases:
             path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX,
                                              _file_part(rel["version"])))
-            _save(path, plain(api.release_image(rel["release_id"]), rel))
+            config.write_private(path, plain(api.release_image(rel["release_id"]), rel))
             got.append({"path": str(path), "release_id": rel["release_id"],
                         "version": rel["version"], "bytes": path.stat().st_size})
             lines.append("%s  (%s, %d bytes)" % (path, rel["version"], path.stat().st_size))
@@ -1011,7 +999,7 @@ def _fleet_bases(args: argparse.Namespace, api, out: Path, plain) -> int:
                   % (row["devices"], row["version"]), file=sys.stderr)
             continue
         path = out / ("%s%s%s.img.gz" % (args.board, BASE_PREFIX, _file_part(rel["version"])))
-        _save(path, data)
+        config.write_private(path, data)
         got.append({"path": str(path), "release_id": rel["release_id"],
                     "version": rel["version"], "devices": row["devices"],
                     "bytes": path.stat().st_size})
@@ -1425,10 +1413,10 @@ def cmd_device_watch(args: argparse.Namespace) -> int:
             counts["frames"] = info["n"]
             if args.out:
                 path = args.out / ("%s-%06d.jpg" % (info["stream"], info["n"]))
-                _save(path, info["data"])
+                config.write_private(path, info["data"])
                 saved.append(str(path))
             if args.latest:
-                _save(args.latest, info["data"])      # a reader never sees half a frame
+                config.write_private(args.latest, info["data"])  # no reader sees half a frame
                 saved.append(str(args.latest))
         elif kind == "console":
             counts["batches"] += 1
@@ -1560,23 +1548,23 @@ def cmd_data_export(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(win, indent=2))
         return 0
-    out = args.out.open("w", newline="", encoding="utf-8") if args.out else sys.stdout
-    try:
-        if args.format == "ndjson":
-            for r in win["records"]:
-                out.write(json.dumps(r) + "\n")
-        else:
-            w = csv.writer(out)
-            w.writerow(["time_utc", "session", "seq", "line"])
-            for r in win["records"]:
-                ts = r.get("ts")
-                w.writerow(_cells([_utc(ts) if isinstance(ts, (int, float)) else "",
-                                   r.get("sid") or "", r.get("seq"),
-                                   _STAMP.sub("", str(r.get("text") or "").rstrip("\n"), count=1)]))
-    finally:
-        if args.out:
-            out.close()
+    import io
+    # The window is in memory already (--limit bounds it), so a file is written as every
+    # download is: opened in place it followed a link at the name and was made under the umask.
+    out = io.StringIO() if args.out else sys.stdout
+    if args.format == "ndjson":
+        for r in win["records"]:
+            out.write(json.dumps(r) + "\n")
+    else:
+        w = csv.writer(out)
+        w.writerow(["time_utc", "session", "seq", "line"])
+        for r in win["records"]:
+            ts = r.get("ts")
+            w.writerow(_cells([_utc(ts) if isinstance(ts, (int, float)) else "",
+                               r.get("sid") or "", r.get("seq"),
+                               _STAMP.sub("", str(r.get("text") or "").rstrip("\n"), count=1)]))
     if args.out:
+        config.write_private(args.out, out.getvalue().encode("utf-8"))
         print("%d record(s) -> %s" % (len(win["records"]), args.out), file=sys.stderr)
     if win.get("truncated"):
         print("note: the window held more than %d records; these are its newest (narrow "
@@ -1673,7 +1661,7 @@ def cmd_release_manifest(args: argparse.Namespace) -> int:
         data = _make_api(config.resolve(args.server, args.token)).release_manifest(
             args.release_id)
         out = Path(args.output or "manifest.bin")
-        _save(out, data)
+        config.write_private(out, data)
         return _emit(args, {"saved": str(out), "bytes": len(data)},
                      "saved %s (%d bytes)" % (out, len(data)))
     except ClientError as e:
@@ -1687,7 +1675,7 @@ def cmd_release_artifact(args: argparse.Namespace) -> int:
         data = _make_api(config.resolve(args.server, args.token)).release_artifact(
             args.release_id, args.filename)
         out = Path(args.output or args.filename)
-        _save(out, data)
+        config.write_private(out, data)
         return _emit(args, {"saved": str(out), "bytes": len(data)},
                      "saved %s (%d bytes)" % (out, len(data)))
     except ClientError as e:
@@ -1700,7 +1688,7 @@ def cmd_release_sbom(args: argparse.Namespace) -> int:
     try:
         data = _make_api(config.resolve(args.server, args.token)).release_sbom(args.release_id)
         if args.output:
-            _save(Path(args.output), data)
+            config.write_private(Path(args.output), data)
             return _emit(args, {"saved": args.output, "bytes": len(data)},
                          "saved %s (%d bytes)" % (args.output, len(data)))
         sys.stdout.write(data.decode("utf-8"))

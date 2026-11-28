@@ -287,6 +287,37 @@ def test_a_board_without_a_network_freezes_no_network_recovery(make_project, mon
         assert mod in manifest
 
 
+def test_what_the_tool_writes_is_frozen_without_line_numbers(make_project, monkeypatch):
+    """boot.py, the generated config, the installer and the keys' package are frozen at opt=3 (no
+    line numbers: the M4 and the H7 ran out of FLASH_TEXT carrying them); the project's editable
+    device modules are its own code and are frozen as they are."""
+    import re
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=True)
+    r = fw.build_firmware(root, firmware=repo, keep_build_dir=True)[0]
+    lines = [ln for ln in (r.build_dir / "manifest.py").read_text().splitlines()
+             if ln.startswith("freeze(")]
+    opt = {re.search(r'"([^"]+)"(, opt=3)?\)$', ln).group(1): ln.endswith(", opt=3)")
+           for ln in lines}
+    for mod in ("boot.py", "_ota_config.py", "openmv_installer.py", "openmv_se/soft.py"):
+        assert opt[mod], mod
+    for mod in ("openmv_log.py", "openmv_wdt.py", "openmv_rtc.py", "openmv_recovery.py"):
+        assert opt[mod] is False, mod
+
+
+def test_nothing_frozen_at_opt_3_relies_on_an_assert():
+    """opt=3 drops every assert and turns __debug__ off: in the modules frozen that way, either
+    would be a check that silently stops running."""
+    import ast
+    dev = Path(fw.__file__).parent / "device"
+    files = [dev / "boot.py", dev / "openmv_ota" / "data" / "installer.py",
+             dev / fw._SLOT_ENGINE_MODULE, *sorted((dev / "openmv_se").rglob("*.py"))]
+    for f in files:
+        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            assert not isinstance(node, ast.Assert), "%s:%d" % (f.name, node.lineno)
+            assert not (isinstance(node, ast.Name) and node.id == "__debug__"), f.name
+
+
 def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     fake = _fake_make(["bin/firmware.bin"])
     monkeypatch.setattr(fw, "_run_make", fake)
@@ -328,6 +359,58 @@ def test_build_firmware_ota_injects_boot(make_project, monkeypatch):
     assert "PRODUCT_ID" in cfg
     assert "ENABLED" in (r.build_dir / "openmv_log.py").read_text()   # the project's copy
     assert "def relax(" in (r.build_dir / "openmv_wdt.py").read_text()
+
+
+@pytest.mark.parametrize("link", ["build", "build/OPENMV_N6", "build/openmv-ota-OPENMV_N6",
+                                  "modules/ecdsa_verify.c", "lib/micropython/mpy-cross/build",
+                                  "build/OPENMV_N6/bin"])
+def test_a_link_where_the_build_writes_in_the_firmware_tree_is_refused(make_project,
+                                                                       monkeypatch, tmp_path,
+                                                                       link):
+    """The tree's build/ is git-ignored, so the clean check does not see a link there: the
+    generated _ota_config.py, with the payload keys, and the frozen modules make compiles it
+    into went wherever it pointed."""
+    import shutil
+    fake = _fake_make(["bin/firmware.bin"])
+    monkeypatch.setattr(fw, "_run_make", fake)
+    monkeypatch.setattr(fw, "_ensure_mpy_cross", lambda repo: None)
+    root, repo, _app = make_project(ota=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    at = Path(repo) / link
+    if at.is_dir():
+        shutil.rmtree(at)
+    at.parent.mkdir(parents=True, exist_ok=True)
+    at.symlink_to(elsewhere)
+    # the build's own guard: the clean check refuses most of these first (a link git does not
+    # ignore is an untracked file), but not one inside the ignored build/
+    from openmv_ota.project import project as proj
+    monkeypatch.setattr(fw, "load_project", lambda project, firmware=None:
+                        proj.load_project(project, firmware, verify=False))
+    with pytest.raises(BuildError, match="is a link"):
+        fw.build_firmware(root, firmware=repo, boards=["OPENMV_N6"])
+    assert list(elsewhere.iterdir()) == [] and fake.calls == []
+
+
+def test_a_link_inside_the_ignored_build_dir_passes_the_clean_check_but_not_the_build(
+        make_project, monkeypatch, tmp_path, git_cmd):
+    from openmv_ota.project import project as proj
+    monkeypatch.setattr(fw, "_run_make", _fake_make(["bin/firmware.bin"]))
+    root, repo, _app = make_project(ota=True)
+    with open(Path(repo) / ".gitignore", "a") as f:
+        f.write("build/\n")
+    git_cmd(repo, "commit", "-qam", "ignore build output")
+    proj.sync_project(root, firmware=repo, install_sdk=False, allow_dirty=False,
+                      sdk_home_override=proj._local_sdk_home(proj.ProjectPaths(root)),
+                      now="2026-01-01T00:00:00Z")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (Path(repo) / "build").mkdir(exist_ok=True)
+    (Path(repo) / "build" / "openmv-ota-OPENMV_N6").symlink_to(elsewhere)
+    assert proj.verify_locked(root, firmware=repo) == []
+    with pytest.raises(BuildError, match="is a link"):
+        fw.build_firmware(root, firmware=repo, boards=["OPENMV_N6"])
+    assert list(elsewhere.iterdir()) == []
 
 
 def test_build_firmware_log_falls_back_to_default(make_project, monkeypatch):

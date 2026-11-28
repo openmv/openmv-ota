@@ -199,7 +199,7 @@ def test_rollout_device_states_and_successor_on_postgres(pg):
     pg.add_rollout(rollout_id="ro_1", release_id="rel_1", product_id=7, cohort="__default__",
                    percent=10, account_id="acct")
     pg.add_rollout(rollout_id="ro_2", release_id="rel_1", product_id=7, cohort="__default__",
-                   percent=10, account_id="acct", display_name="next")
+                   percent=10, account_id="acct", display_name="next", state="paused")
     pg.upsert_device(device_id="d1", product_id=7, current_payload_version=10, account_id="acct")
     pg.upsert_device(device_id="d2", product_id=7, current_payload_version=9, account_id="acct",
                      last_offered_release_id="rel_1")
@@ -216,14 +216,43 @@ def test_a_conditional_rollout_write_and_the_reach_filter_on_postgres(pg):
     it landed), and the reach's filter orders each camera as the offer does."""
     pg.add_rollout(rollout_id="ro_1", release_id="rel_1", product_id=7, cohort="__default__",
                    percent=10, account_id="acct")
-    pg.update_rollout("ro_1", state="paused", pause_reason="superseded")
-    assert pg.update_rollout("ro_1", if_state="active", pause_reason="failure_limit") is False
-    assert pg.get_rollout("ro_1")["pause_reason"] == "superseded"
+    pg.update_rollout("ro_1", state="paused", pause_reason="failure_limit")
+    assert pg.update_rollout("ro_1", if_state="active", pause_reason="operator") is False
+    assert pg.get_rollout("ro_1")["pause_reason"] == "failure_limit"
     assert pg.update_rollout("ro_1", if_state="paused", percent=20) is True
+    pg.update_rollout("ro_1", pause_reason="superseded")
+    assert pg.update_rollout("ro_1", if_state="paused", percent=30) is False
     pg.upsert_device(device_id="v", product_id=0, current_payload_version=1, account_id="acct")
     pg.upsert_device(device_id="s", product_id=0, current_payload_version=9, publish_seq=4,
                      orders_by_seq=True, account_id="acct")
     pg.upsert_device(device_id="s_on", product_id=0, current_payload_version=1, publish_seq=5,
                      orders_by_seq=True, account_id="acct")
-    assert list(pg.device_ids(product_id=0, account_id="acct", before_release=(2, 5))) == ["s", "v"]
-    assert pg.count_devices(product_id=0, account_id="acct", before_release=(2, 5)) == 2
+    assert list(pg.device_ids(product_id=0, account_id="acct", reachable_by=(2, 5, 0))) == \
+        ["s", "v"]
+    assert pg.count_devices(product_id=0, account_id="acct", reachable_by=(2, 5, 0)) == 2
+    # a pin on the device or on its cohort holds it from every rollout; so does a boot stub
+    # older than the release needs
+    pg.set_device_pin("v", "rel_x", account_id="acct")
+    assert list(pg.device_ids(product_id=0, account_id="acct", reachable_by=(2, 5, 0))) == ["s"]
+    assert pg.count_devices(product_id=0, account_id="acct", reachable_by=(2, 5, 3)) == 0
+    pg.set_cohort_pin(0, "__default__", "rel_x", account_id="acct")
+    assert pg.count_devices(product_id=0, account_id="acct", reachable_by=(2, 5, 0)) == 0
+
+
+def test_one_active_rollout_per_cohort_on_postgres(pg):
+    """The partial unique index, its ON CONFLICT and the refused resume, on Postgres; the
+    percent kept by CASE; a deactivated account's token through the LEFT JOIN."""
+    assert pg.add_rollout(rollout_id="ro_a", release_id="r", product_id=7, cohort="c",
+                          percent=10, account_id="acct") is True
+    assert pg.add_rollout(rollout_id="ro_b", release_id="r", product_id=7, cohort="c",
+                          percent=10, account_id="acct") is False
+    assert pg.add_rollout(rollout_id="ro_b", release_id="r", product_id=7, cohort="c",
+                          percent=10, account_id="acct", state="paused") is True
+    assert pg.update_rollout("ro_b", if_state="paused", state="active") is False
+    assert pg.update_rollout("ro_a", percent=5) is True
+    assert pg.get_rollout("ro_a")["percent"] == 10
+    pg.add_account("acct", "A")
+    pg.add_token("h", "t", ["observe"], account_id="acct")
+    assert pg.get_token("h")["account_active"] == 1
+    pg.set_account_active("acct", False)
+    assert pg.get_token("h")["account_active"] == 0

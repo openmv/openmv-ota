@@ -217,6 +217,34 @@ def test_bases_downloads_retained_images_for_the_build_to_diff_against(wired, tm
         project / "build" / "OPENMV_N6-ota.img.gz").read_bytes()
 
 
+def test_bases_refuse_a_link_on_the_way_to_the_output(wired, tmp_path, capsys, monkeypatch):
+    """`build/bases` is relative to the working directory, often a project someone else
+    made: a `build` link there sent the decrypted bases wherever it pointed."""
+    store, _ = wired
+    project = tmp_path / "proj"
+    _build_release(project)
+    assert main(["client", "release", "publish", str(project), "-b", "OPENMV_N6"]) == 0
+    theirs, elsewhere = tmp_path / "theirs", tmp_path / "elsewhere"
+    theirs.mkdir()
+    elsewhere.mkdir()
+    (theirs / "build").symlink_to(elsewhere)
+    monkeypatch.chdir(theirs)
+    capsys.readouterr()
+    for output in ("build/bases", str(theirs / "build" / "bases"), "build/../build/bases"):
+        assert main(["client", "release", "bases", "-b", "OPENMV_N6", "-o", output]) == 2
+        assert "is a link" in capsys.readouterr().err
+    (elsewhere / "bases").mkdir()
+    (theirs / "build").unlink()
+    (theirs / "build").mkdir()
+    (theirs / "build" / "bases").symlink_to(elsewhere / "bases")
+    assert main(["client", "release", "bases", "-b", "OPENMV_N6"]) == 2
+    assert list(elsewhere.rglob("*.gz")) == []
+    # a directory outside the working directory is the user's to name
+    assert main(["client", "release", "bases", "-b", "OPENMV_N6", "-o",
+                 str(elsewhere / "bases")]) == 0
+    assert [p.name for p in elsewhere.rglob("*.gz")] == ["OPENMV_N6-base-2.0.0.img.gz"]
+
+
 def test_bases_reports_when_there_is_no_history_yet(wired, tmp_path, capsys):
     store, _ = wired
     assert main(["client", "release", "bases", "-b", "OPENMV_N6", "-o", str(tmp_path / "b")]) == 2
@@ -537,7 +565,8 @@ def test_forget_device(wired, tmp_path, capsys, monkeypatch):
     assert "removed from the fleet (data kept)" in capsys.readouterr().out
     from openmv_ota.server.datalake import DatalakeAdmin
     monkeypatch.setattr(DatalakeAdmin, "configured", property(lambda self: True))
-    monkeypatch.setattr(DatalakeAdmin, "purge_device", lambda self, a, d: {"deleted": 5, "bytes": 2048})
+    monkeypatch.setattr(DatalakeAdmin, "purge_device",
+                        lambda self, a, p, d: {"deleted": 5, "bytes": 2048})
     store.upsert_device(device_id="d3", product_id=BID)
     assert main(["client", "device", "forget", "--device-id", "d3"]) == 0
     assert "and 5 stored object(s), 2048 bytes, erased" in capsys.readouterr().out
@@ -1276,11 +1305,11 @@ def test_a_download_replaces_a_link_at_its_name_and_writes_nothing_through_it(
     assert main(["client", "release", "manifest", "--release-id", "rel1"]) == 0
     assert victim.read_bytes() == b"mine" and not (work / "manifest.bin").is_symlink()
     assert (work / "manifest.bin").read_bytes() == b"SIGNEDMANIFEST"
-    from openmv_ota.client import cli as client_cli
-    monkeypatch.setattr(client_cli.os, "replace",
+    from openmv_ota.client import config as cfg_mod
+    monkeypatch.setattr(cfg_mod.os, "replace",
                         lambda a, b: (_ for _ in ()).throw(OSError("disk full")))
     with pytest.raises(OSError, match="disk full"):            # a failed save leaves no temp
-        client_cli._save(work / "x.bin", b"data")
+        cfg_mod.write_private(work / "x.bin", b"data")
     assert sorted(p.name for p in work.iterdir()) == ["manifest.bin"]
 
 
@@ -1432,6 +1461,26 @@ def test_bases_decrypt_with_the_projects_key(wired, tmp_path, capsys):
                  "--project", str(project)]) == 0
     # the file a delta build reads is the PLAINTEXT image, exactly as before encryption
     assert (dest / "OPENMV_N6-base-2.0.0.img.gz").read_bytes() == image_gz
+
+
+def test_a_decrypted_base_is_its_owners_alone_whatever_was_at_its_name(wired, tmp_path, capsys):
+    """`release bases` writes the plaintext the payload key protects. It came out under the
+    umask's mode, and over a file already at the name it took that file's 0644."""
+    _store, _ = wired
+    project = tmp_path / "proj"
+    _publish_encrypted(project, _project_with_keys(project))
+    dest = tmp_path / "bases"
+    dest.mkdir()
+    base = dest / "OPENMV_N6-base-2.0.0.img.gz"
+    base.write_bytes(b"stale")
+    base.chmod(0o644)
+    argv = ["client", "release", "bases", "-b", "OPENMV_N6", "-o", str(dest),
+            "--project", str(project)]
+    assert main(argv) == 0
+    assert (base.stat().st_mode & 0o777) == 0o600 and base.read_bytes() != b"stale"
+    base.unlink()
+    assert main(argv) == 0
+    assert (base.stat().st_mode & 0o777) == 0o600
 
 
 def test_bases_say_so_when_this_project_cannot_open_them(wired, tmp_path, capsys):
@@ -1684,6 +1733,23 @@ def test_data_export_ndjson_to_a_file_says_when_the_window_overflowed(wired, mon
     assert [json.loads(x)["seq"] for x in out.read_text().splitlines()] == [7, 0, 2]
     err = capsys.readouterr().err
     assert "3 record(s) -> %s" % out in err and "held more than 2 records" in err
+
+
+def test_data_export_to_a_file_writes_it_as_every_download_is(wired, monkeypatch, tmp_path,
+                                                               capsys):
+    """Opened in place, `--out` followed a link planted at the name (in a directory someone
+    else made) and made the file under the umask: the camera's text in another file of the
+    user's, readable by every user."""
+    import stat
+    _lake(monkeypatch, lambda url, params: _WINDOW)
+    victim = tmp_path / "victim"
+    victim.write_text("mine\n")
+    out = tmp_path / "console.csv"
+    out.symlink_to(victim)
+    assert main(["client", "data", "export", "--device-id", "d1", "--out", str(out)]) == 0
+    assert victim.read_text() == "mine\n" and not out.is_symlink()
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    assert out.read_text(encoding="utf-8").splitlines()[1] == "2026-10-15 08:59:52,aa,7,INFO app: up"
 
 
 def test_data_export_json_and_no_datalake(wired, monkeypatch, capsys):

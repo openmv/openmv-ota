@@ -9,6 +9,7 @@ rollout isn't systematically the canary in the next.
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime
 
 
@@ -56,9 +57,12 @@ def running_body_sha256(slots: list[dict] | None) -> str | None:
     if running is None:
         return None
     sha = running.get("body_sha256")
-    if not isinstance(sha, str) or not sha:
+    # 64 hex digits or unknown: it names the delta base a camera is offered and is shown as
+    # the image it runs, so anything else (a cut one, text of the camera's choosing) is "did
+    # not say", as "" is
+    if not isinstance(sha, str) or not re.fullmatch("[0-9a-fA-F]{64}", sha):
         return None
-    return sha[:64].replace("\x00", "").encode("utf-8", "replace").decode("utf-8")   # hex, no more
+    return sha.lower()
 
 
 def settled(slots: list[dict] | None) -> bool:

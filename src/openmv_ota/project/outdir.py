@@ -59,6 +59,24 @@ def check_project(root: str | Path, error: type = ProjectError) -> None:
         raise error(_MSG % sorted(found)[0])
 
 
+def check_path(top: str | Path, path: str | Path, error: type = ProjectError) -> None:
+    """Refuse a link at ``path`` (relative to ``top``, or absolute), at a directory above it
+    inside ``top``, or anywhere under it: a write there lands wherever the link points. A
+    ``path`` outside ``top`` is not looked at, as one named on purpose.
+
+    It is walked as named, not normalised: ``build/../x`` goes through ``build``."""
+    top = Path(os.path.abspath(top))
+    path = at = top / path
+    if top not in Path(os.path.abspath(path)).parents:
+        return
+    while top in at.parents:
+        if _shared(at):
+            raise error(_MSG % at)
+        at = at.parent
+    for found in _links(path):
+        raise error(_MSG % found)
+
+
 def output_dir(project: str | Path, output: str | Path | None, error: type = ProjectError) -> Path:
     """``output``, or the project's own ``build/``, with the project checked (see
     :func:`check_project`). An output directory named inside the project is the project's

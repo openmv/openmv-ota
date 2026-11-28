@@ -173,6 +173,39 @@ def test_a_relay_frame_of_more_values_than_a_message_has_is_not_parsed(monkeypat
         rt.parse_poll_response(b'{"watch": true, "x": [' + b"1 " * 4000 + b"]}")
 
 
+def test_a_relay_frame_whose_values_follow_a_u_escape_is_not_parsed(monkeypatch):
+    """The parser takes the four bytes after `\\u` unread, a quote or a backslash among them;
+    the count ended the string elsewhere and saw the numbers after it as one string."""
+    s = rt._Session()
+    monkeypatch.setattr(rt.json, "loads", lambda b: pytest.fail("parsed %d bytes" % len(b)))
+    for lead in (b'"\\uabc\\" ', b'"\\u"abc" '):
+        assert s.on_text(b'{"type": "start", "x": [' + lead + b"1 " * 1000 + b"]}") is None
+        with pytest.raises(OSError, match="malformed"):
+            rt.parse_poll_response(b'{"watch": true, "x": [' + lead + b"1 " * 4000 + b"]}")
+    assert s.streaming is False
+
+
+def test_a_poll_body_the_heap_cannot_hold_parsed_is_the_documented_oserror(monkeypatch):
+    """The wake loop catches OSError; a MemoryError out of the parse ended it."""
+    def loads(b):
+        raise MemoryError
+    monkeypatch.setattr(rt.json, "loads", loads)
+    with pytest.raises(OSError, match="malformed"):
+        rt.parse_poll_response(b'{"watch": true, "pad": "' + b"x" * 4000 + b'"}')
+
+
+def test_a_poll_grant_with_a_port_out_of_range_is_the_documented_oserror(monkeypatch):
+    """The port reached the address lookup, which raised OverflowError (lwIP) or TypeError
+    outside the try that makes a bad grant an OSError, and the wake loop ended."""
+    async def never(*a):
+        pytest.fail("looked up %r" % (a,))
+    monkeypatch.setattr(rt, "_open", never)
+    for port in ("99999999999999999999", "65536", "0", "-1"):
+        grant = {"streams": {"0": {"poll_url": "https://relay.example:%s/poll?t=x" % port}}}
+        with pytest.raises(OSError, match="malformed grant"):
+            asyncio.run(rt.poll_watch("0", grant))
+
+
 # --- registry + grant plumbing --------------------------------------------------------
 
 def test_stream_registry_reports_names_and_rejects_duplicates():

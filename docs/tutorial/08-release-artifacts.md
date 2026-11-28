@@ -45,7 +45,9 @@ context comes from the project:
 - **Carries the firmware.** On a board with a boot stub (the N6, the AE3, the RT1062, the H7 Plus, the Pure Thermal and the Arduino boards), the image is
   the filesystem followed by the firmware `build firmware` left in `build/`,
   LZMA-compressed and listed in the trailer as a component the stub installs. Build the firmware
-  before the image; a release is what a camera runs, platform and app together.
+  before the image, on the same machine: only a binary this machine's `build firmware` wrote,
+  from the commit the lock pins, is signed in. A release is what a camera runs, platform and app
+  together.
 - **Identity + provenance stamped in.** `product_id` / `board_name` come from the
   `[targets.<BOARD>]` tables, versions and commits from the lock — exactly the
   `system.json` fields, and the trailer's metadata carries a **verbatim copy of

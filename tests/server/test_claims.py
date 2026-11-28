@@ -217,6 +217,24 @@ def test_registering_is_rate_limited(tmp_path):
     assert _register(c, B, signer_b, account="acctB", device="ARDUINO_GIGA:b").status_code == 429
 
 
+def test_rotating_addresses_in_one_ipv6_64_does_not_reset_the_registration_budget(tmp_path):
+    """The registration limiter counted each address alone: an IPv6 client holds a /64, so
+    every request could come from a fresh address with a fresh budget."""
+    c, _store = _server(tmp_path, rate=2)
+    signers = {"acctA": _desk(c, A), "acctB": _desk(c, B)}
+    codes = []
+    for n, (account, headers, device) in enumerate((
+            ("acctA", A, "ARDUINO_GIGA:a1"), ("acctB", B, "ARDUINO_GIGA:b1"),
+            ("acctA", A, "ARDUINO_GIGA:a2"))):
+        own = TestClient(c.app, client=("2001:db8:1:2::%x" % (n + 1), 1))
+        codes.append(_register(own, headers, signers[account], account=account,
+                               device=device).status_code)
+    assert codes == [200, 200, 429]          # each account and address under 2; the /64 at 3
+    other = TestClient(c.app, client=("2001:db8:1:3::1", 1))      # another /64 is another site
+    assert _register(other, B, signers["acctB"], account="acctB",
+                     device="ARDUINO_GIGA:b2").status_code == 200
+
+
 def test_one_account_cannot_spend_another_s_registration_budget(tmp_path):
     """An account's budget and an address's are counted in one limiter. Behind a proxy that
     passes a client's X-Forwarded-For on, the address is the client's to name: named

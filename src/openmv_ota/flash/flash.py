@@ -28,8 +28,11 @@ in DFU.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,6 +86,59 @@ class FlashStep:                 # a dfu step (an imx step is flash.imx.ImxStep)
 
 def _output_dir(project: str, output: str | None) -> Path:
     return output_dir(project, output, FlashError)
+
+
+class _Built:
+    """The firmware binaries one flash writes, each refused unless this machine's `build
+    firmware` wrote it, for this project, from the commits its lock pins, in the same build as
+    the others (see openmv_ota.build.provenance). A project handed over with one planted in its
+    build/ had it written to the camera. Only the files `build firmware` makes are checked: the
+    romfs images carry their own signatures. The lock is read at the first check, so `flash
+    romfs` needs none.
+
+    What is checked is what is written: each binary is copied as its bytes were checked into a
+    private directory (0700, outside the project, removed by :meth:`close`), and the flashing
+    tool reads it there. Handing it the path in build/, which the tool opens again, wrote
+    whatever was there by then. A dry run copies nothing and names the files in build/."""
+
+    def __init__(self, project: str, private: bool):
+        self._project = project
+        self._lock = None
+        self._builds: list = []
+        self.dir = Path(tempfile.mkdtemp(prefix="openmv-ota-flash-")) if private else None
+
+    def __call__(self, path: Path, data: bytes) -> None:
+        """Refuse ``data``, read from ``path``, unless it is as this machine built it."""
+        from openmv_ota.build import provenance
+        from openmv_ota.project import lock as lock_mod
+        from openmv_ota.project.errors import ProjectError
+        from openmv_ota.project.project import ProjectPaths
+
+        if self._lock is None:
+            try:
+                self._lock = lock_mod.read(ProjectPaths(Path(self._project)).lock)
+            except ProjectError as e:
+                raise FlashError(str(e)) from None
+        entry = provenance.check(path, data, self._lock, self._project, FlashError)
+        if not Path(path).name.endswith("-stub.bin"):    # a stub may be built alone
+            self._builds.append(entry)
+            provenance.one_build(self._builds, FlashError)
+
+    def take(self, path: Path) -> Path:
+        """``path`` checked, and the file the flashing tool is to read it from."""
+        data = path.read_bytes()
+        self(path, data)
+        if self.dir is None:
+            return path
+        dest = self.dir / path.name
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        return dest
+
+    def close(self) -> None:
+        if self.dir is not None:
+            shutil.rmtree(self.dir, ignore_errors=True)
 
 
 _DFU_WAIT_S = 60          # a DFU device to appear (covers a bootloader entered by hand, or an nRST catch)
@@ -142,16 +198,18 @@ def _resolve_dfu_util(dfu_util: str | None, sdk_home: Path | None, dry_run: bool
 
 
 def _dfu_steps(cfg: FlashConfig, board: str, spec: list[tuple[str, str]], tool: str,
-               out_dir: Path, reset: bool) -> list[FlashStep]:
+               out_dir: Path, reset: bool, built: _Built) -> list[FlashStep]:
     """Resolve every artifact + alt (raising before anything runs) and build each step's argv."""
     resolved = []
     for artifact, suffix in spec:
         alt = cfg.alt_of(artifact)                   # the clearest error (unsupported) first
         f = out_dir / ("%s-%s" % (board, cfg.filename(artifact, suffix)))
-        if artifact == "firmware":
-            f = _firmware_image(board, out_dir) or f
+        composed = artifact == "firmware" and _firmware_image(board, out_dir, built)
+        f = composed or f
         if not f.exists():
             raise FlashError("missing artifact %s -- build it first" % f)
+        if artifact in ("firmware", "text2", "coprocessor") and not composed:
+            f = built.take(f)                        # (a composed image's parts were checked)
         if artifact == "text2" and f.stat().st_size == 0:
             continue                                 # the packer moved nothing: nothing to write
         resolved.append((artifact, f, alt))
@@ -173,14 +231,18 @@ def _dfu_flash(project: str, board: str, cfg: FlashConfig, spec: list[tuple[str,
                reset: bool, serial: str | None, enter_bootloader: bool, mpremote: str | None,
                dry_run: bool) -> list[FlashStep]:
     tool = _resolve_dfu_util(dfu_util, sdk_home, dry_run)
-    steps = _dfu_steps(cfg, board, spec, tool, _output_dir(project, output), reset)
-    if dry_run:
-        return steps
-    _prepare(cfg.raw, serial=serial, enter_bootloader=enter_bootloader, mpremote=mpremote,
-             dry_run=dry_run)                    # only now: every precheck has passed
-    _ensure_dfu(tool, cfg.usb, board)
-    for s in steps:
-        runner.run(s.argv)
+    built = _Built(project, private=not dry_run)
+    try:
+        steps = _dfu_steps(cfg, board, spec, tool, _output_dir(project, output), reset, built)
+        if dry_run:
+            return steps
+        _prepare(cfg.raw, serial=serial, enter_bootloader=enter_bootloader, mpremote=mpremote,
+                 dry_run=dry_run)                # only now: every precheck has passed
+        _ensure_dfu(tool, cfg.usb, board)
+        for s in steps:
+            runner.run(s.argv)
+    finally:
+        built.close()
     history.record(project, action, board=board,
                    files=[{"file": s.file.name, "alt": s.alt} for s in steps])
     return steps
@@ -206,15 +268,17 @@ def _loader(name: str, board: str) -> Path:
     return Path(str(files("openmv_ota").joinpath("data/flashloaders", board, name)))
 
 
-def _imx_files(board: str, op: str, raw: dict, out_dir: Path) -> dict[str, Path]:
+def _imx_files(board: str, op: str, raw: dict, out_dir: Path, built: _Built) -> dict[str, Path]:
     sd, bl = raw["sdphost"], raw["blhost"]
     files: dict[str, Path] = {}
+    composed = None
     if op in imx.ROM_OPS:                            # recovery over SDP: the RAM flashloader + the
         files["sdphost_loader"] = _loader(sd["loader"], board)   # bundled secure bootloader (SBL).
         files["blhost_loader"] = _loader(bl["sbl_loader"], board)   # the resident-SBL ops need neither.
     if op in ("firmware", "factory", "provision"):
         # a stub board's composed image goes where the bare firmware went, see _firmware_image
-        files["firmware"] = _firmware_image(board, out_dir) or out_dir / ("%s-firmware.bin" % board)
+        composed = _firmware_image(board, out_dir, built)
+        files["firmware"] = composed or out_dir / ("%s-firmware.bin" % board)
     if op in ("factory", "provision"):
         files["romfs"] = out_dir / ("%s-factory-romfs.img" % board)
     elif op == "romfs":
@@ -222,13 +286,23 @@ def _imx_files(board: str, op: str, raw: dict, out_dir: Path) -> dict[str, Path]
     for f in files.values():
         if not f.exists():
             raise FlashError("missing %s -- build the firmware/romfs first" % f)
+    if "firmware" in files and not composed:
+        files["firmware"] = built.take(files["firmware"])
     return files
 
 
 def _sdk_python(blhost: str) -> str:
     """The python interpreter beside the spsdk tools (blhost is a wrapper that execs it) --
-    used to run the in-process flashloader scan-wait."""
-    return str(Path(blhost).parent / "python3")
+    used to run the in-process flashloader scan-wait. The helpers it runs take ``-P``, which
+    Python has from 3.11: one whose real name says it is older is refused here, where it
+    otherwise failed every helper on the flag and the first said only that the catcher never
+    armed. One whose name says nothing (a shim) is run as it is."""
+    python3 = Path(blhost).parent / "python3"
+    old = re.fullmatch(r"python3\.([0-9]|10)", python3.resolve().name)
+    if old:
+        raise FlashError("%s is Python 3.%s, and the spsdk helpers need 3.11 or newer: install "
+                         "spsdk under a newer Python, or pass --sdk-home" % (python3, old[1]))
+    return str(python3)
 
 
 def _await_line(proc, marker: str, timeout: float) -> bool:
@@ -332,16 +406,21 @@ def _imx_flash(project: str, op: str, board: str, cfg: FlashConfig, action: str,
     sdphost = _resolve_spsdk("sdphost", sdk_home, dry_run) if recovery else ""
     blhost = _resolve_spsdk("blhost", sdk_home, dry_run)
     python3 = _sdk_python(blhost)
-    files = _imx_files(board, op, cfg.raw, out_dir)
-    steps = imx.plan(op, cfg.raw, sdphost, blhost, python3, files)
-    if not dry_run:
+    built = _Built(project, private=not dry_run)
+    try:
+        files = _imx_files(board, op, cfg.raw, out_dir, built)
+        steps = imx.plan(op, cfg.raw, sdphost, blhost, python3, files)
+        if dry_run:
+            return steps
         if not recovery:                         # automatable: enter + CLAIM the resident SBL first
             serial = _prepare(cfg.raw, serial=serial, enter_bootloader=enter_bootloader,
                               mpremote=mpremote, dry_run=dry_run)
             _imx_catch_and_reset(cfg.raw, python3, mpremote, serial, enter_bootloader)
         for s in steps:
             runner.run(s.argv)
-        history.record(project, action, board=board, steps=[s.label for s in steps])
+    finally:
+        built.close()
+    history.record(project, action, board=board, steps=[s.label for s in steps])
     return steps
 
 
@@ -371,11 +450,13 @@ def flash_read(project: str = ".", *, board: str, part: str, file: str,
 
 # --- arduino backend ------------------------------------------------------------------------
 
-def _arduino_files(board: str, op: str, raw: dict, out_dir: Path) -> dict:
+def _arduino_files(board: str, op: str, raw: dict, out_dir: Path, built: _Built) -> dict:
     files: dict = {}
+    composed = None
     if op in ("firmware", "factory"):
         # on a stub board the composed `stub || pad || firmware` image, as on the DFU boards
-        files["firmware"] = _firmware_image(board, out_dir) or out_dir / ("%s-firmware.bin" % board)
+        composed = _firmware_image(board, out_dir, built)
+        files["firmware"] = composed or out_dir / ("%s-firmware.bin" % board)
         if "text2" in raw:                           # the firmware's second text region
             t2 = out_dir / ("%s-firmware-text2.bin" % board)
             if t2.exists() and t2.stat().st_size > 0:
@@ -392,6 +473,13 @@ def _arduino_files(board: str, op: str, raw: dict, out_dir: Path) -> dict:
     for f in to_check:
         if f is not None and not f.exists():
             raise FlashError("missing %s -- build it first" % f)
+    # what `build firmware` wrote (a composed image's parts were checked as it was made)
+    if "text2" in files:
+        files["text2"] = built.take(files["text2"])
+    if "wifi" in files:
+        files["wifi"] = [built.take(f) for f in files["wifi"]]
+    if "firmware" in files and not composed:
+        files["firmware"] = built.take(files["firmware"])
     return files
 
 
@@ -492,11 +580,22 @@ def _arduino_flash(project: str, op: str, board: str, cfg: FlashConfig, action: 
                    ) -> list[arduino.ArduinoStep]:
     out_dir = _output_dir(project, output)
     tool = _resolve_dfu_util(dfu_util, sdk_home, dry_run)
-    files = _arduino_files(board, op, cfg.raw, out_dir)
-    steps = arduino.plan(op, cfg.raw, tool, files, serial=serial)
-    if dry_run:
-        return steps
-    _arduino_enter(board, cfg.raw, tool, serial, enter_bootloader)   # every precheck has passed
+    built = _Built(project, private=not dry_run)
+    try:
+        files = _arduino_files(board, op, cfg.raw, out_dir, built)
+        steps = arduino.plan(op, cfg.raw, tool, files, serial=serial)
+        if dry_run:
+            return steps
+        _arduino_enter(board, cfg.raw, tool, serial, enter_bootloader)   # every precheck passed
+        _arduino_write(board, cfg, tool, serial, steps)
+    finally:
+        built.close()
+    history.record(project, action, board=board, steps=[s.label for s in steps])
+    return steps
+
+
+def _arduino_write(board: str, cfg: FlashConfig, tool: str, serial: str | None,
+                   steps: list) -> None:
     try:
         _arduino_run(steps)
     except FlashError as e:
@@ -509,8 +608,6 @@ def _arduino_flash(project: str, op: str, board: str, cfg: FlashConfig, action: 
         runner.run(arduino.leave_argv(tool, cfg.raw["usb"]), tolerate_fail=True)
         _arduino_enter(board, cfg.raw, tool, serial, True, first_wait=_REBOOT_WAIT_S)
         _arduino_run(steps)
-    history.record(project, action, board=board, steps=[s.label for s in steps])
-    return steps
 
 
 # --- public verbs ---------------------------------------------------------------------------
@@ -522,15 +619,16 @@ def _text2_spec(cfg: FlashConfig) -> list[tuple[str, str]]:
     return [("text2", "firmware-text2.bin")] if cfg.has("text2") else []
 
 
-def _firmware_image(board: str, out_dir: Path) -> Path | None:
+def _firmware_image(board: str, out_dir: Path, built: _Built) -> Path | None:
     """On a board with a boot stub, what goes into the FIRMWARE partition instead of the bare
     firmware: the composed ``stub || pad || firmware`` image (the firmware is linked to run
-    behind the stub, so neither is flashable alone), written here from the build's two
-    artifacts. None on any other board."""
+    behind the stub, so neither is flashable alone), made from the build's two artifacts, each
+    checked by ``built`` as read, and written where the flashing tool reads it (``built.dir``,
+    or build/ for a dry run). None on any other board."""
     from openmv_ota.build import stub as stub_mod
     from openmv_ota.build.errors import BuildError
     try:
-        return stub_mod.combined_image(board, out_dir)
+        return stub_mod.combined_image(board, out_dir, built, built.dir)
     except BuildError as e:
         raise FlashError(str(e)) from None
 

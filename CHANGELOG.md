@@ -170,6 +170,130 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A firmware binary is signed into a release, or flashed, only as this machine's `build
+  firmware` wrote it.** `build romfs`, `build ota-romfs` and `build factory-romfs` signed
+  `build/<board>-firmware.bin` (with the second text region and the AE3's second core) into the
+  image on every boot-stub board with nothing to say where it came from, and `flash firmware` and
+  `flash factory` wrote the same files and the stub beside them: a project handed over as a
+  directory or an archive, or with `build/` committed, had a binary planted there signed with the
+  engineer's keys and put on cameras. `build firmware` and `build stub` now record each binary
+  they write, once the whole board has built (its path, sha256 and size, the lock's firmware and
+  MicroPython commits, the project and the digest of what the build fed the firmware), in the
+  machine's state directory, outside the project. One with no record, one changed since, one
+  built from other commits and one built for another project (two sharing an `-o` directory) are
+  refused by name, as are an image's or a flash's binaries from more than one build (new firmware
+  beside a second core a failed run left); the build names each binary it packs with its sha256,
+  and `flash` hands its tools a private copy of the bytes it checked, not the path in `build/`.
+- **A romfs build sent elsewhere with `-o` reads the firmware there and nowhere else.** With
+  none there it packed the project's own `build/` binary, and no line of its output said so.
+- **An image whose install failed after the erase waits before the camera erases its slot for it
+  again.** Whoever answered the check-in could offer a real signed release newer than the
+  camera's with junk where its image should be: every install erased the slot, streamed the junk
+  and failed its sha256, three times, the reset forgot it, and the boot check-in was offered it
+  again. On the M4, M7 and H7 (one slot of internal flash, TLS not verified) anyone on the path
+  wore the flash out in days. The failure is now written to `/flash/openmv-ota-hold.txt` once
+  per install, before its first erase (so a reset or power cut past it counts too) and emptied
+  when the install works, and that image is refused before the erase, in the app and in
+  recovery alike, until 10 minutes of uptime or 1 boot have passed, doubling with each failure
+  of it up to a day or 64 boots. Uptime is the clock nobody on the path can move, and a boot
+  is counted once, the first time it finds the hold (one small write a boot while held), so a
+  camera that wakes for a minute at a time still installs and one made to reboot erases once in
+  that many boots; once a hold has been in force, the app does not reboot for an offer for the
+  rest of that boot, so new release ids cannot add boots. A different release goes ahead unless
+  releases keep failing one after another, and a record with a count below zero is no record.
+- **Past the erase, only the link's failures are retried.** An image that failed to inflate, to
+  decrypt or to hash was erased, written and checked three times a session; it now stops at once,
+  and a dropped download that cannot be resumed is still retried. A delta that fails is demoted
+  to the full image.
+
+- **A camera's words keep nothing that reads as something else.** A version, slot, stream or
+  fallback reason kept newlines, ANSI escapes and right-to-left overrides, which made a
+  version read as another in the fleet table, a webhook or a terminal. A running image's
+  `body_sha256` is 64 hex digits or unknown (a cut one named a delta base it was not), and a
+  `stub` that is not an object is "did not say" rather than a refused check-in.
+- **A `%` or `_` in a search matches only itself.** They were LIKE's wildcards: a search for
+  `a_b` found `axb`, and one for `%` every camera of the account.
+
+- **NTP sets the camera's clock only from a server's answer to the request it sent.** The
+  request carried a transmit timestamp of 0 and nothing in the reply was checked: ntpd's
+  rate-limit kiss-o'-death echoes that 0, as could any packet reaching the port, and 0 reads
+  as 2036-02-07, a time the build floor trusts and no certificate is valid at. The request's
+  timestamp is random and the reply must carry it as its origin, from the address it went to,
+  as a server with the time (not stratum 0 or 16, nor LI 3, nor a transmit timestamp of 0).
+- **Recovery asks NTP again on each attempt until a verified server has given the time.** It
+  asked only while the clock was untrusted, so a clock NTP put years ahead read as trusted,
+  failed every check-in's TLS, and never got the `Date` that would correct it: a camera with
+  no bootable slot stayed where it was.
+- **A firmware tree passes as clean and as the locked commit only when it is.** In a tree
+  handed over with `--firmware`, `git replace` had the pinned commit read as another, with the
+  other's files; a skip-worktree or assume-unchanged bit, `info/exclude`, `core.excludesFile`,
+  an untracked `.gitignore`, `status.showUntrackedFiles=no`, a submodule's `ignore = all` (in
+  the superproject, or in a submodule for its own), `diff.ignoreSubmodules` and
+  `core.checkStat=minimal` each kept a change out of `git status`, in the tree or in a
+  submodule. Git reads no replaced object, every repository in the tree is asked itself, and
+  a file git ignores is a change unless a build leaves it (`build/`, mpy-cross's `build/`,
+  `__pycache__/`).
+- **`build firmware` refuses a link where it writes in the firmware tree.** The generated
+  `_ota_config.py`, with the payload keys, and the frozen modules make compiles it into went
+  through a `build` link wherever it pointed, and the tree's `build/` is git-ignored.
+- **`project setup` clones over https, ssh or a local path, and updates submodules over https
+  or ssh, with the other git calls' settings.** A lock's remote of the form `helper::url` ran
+  `git-remote-<helper>` from `PATH`, and the clone and update took none of the settings that
+  keep hooks and a filesystem monitor from running.
+- **`client data export --out` writes its file as every download is.** It opened the name in
+  place, so it followed a link planted there and made the file under the umask.
+- **`client release bases` refuses a link on the way to its output inside the working
+  directory.** Its default, `build/bases`, is relative to it, and a `build` link in a
+  directory someone else made sent the decrypted bases wherever it pointed.
+
+- **The camera's JSON caps count a `\u` escape as its parser reads one.** The parser takes the
+  four bytes after `\u` unread, a quote or a backslash among them, and the count did not:
+  `["\uabc\" 1. 1. ...]` (8 KB) counted as two values and built 2,702, past the manifest,
+  check-in, recovery and relay caps alike. A `/poll` body the heap cannot hold parsed is the
+  `OSError` that `poll_watch` documents.
+- **A poll grant whose URL names a port outside 1-65535 raises `OSError`** from `poll_watch`,
+  as any other malformed grant does. The port reached the address lookup, which raised
+  `OverflowError` and ended the app's wake loop.
+- **A download is written for its owner alone (0600).** `client release bases` writes
+  decrypted images, and every download came out under the umask's mode, 0644 on most
+  systems, over a file at its name too.
+- **The changelog no longer says `python -m openmv_ota` imports nothing from the working
+  directory.** Python finds the `openmv_ota` package there before its `__main__` can drop the
+  directory, so a project's own `openmv_ota/` runs in place of the tool: start it as the
+  `openmv-ota` console script or `python -P -m openmv_ota`.
+- **An spsdk beside a Python older than 3.11 is refused, with the reason.** Its helpers run
+  with `-P`, which that Python rejects, and `flash` on an RT1060 said only that the catcher
+  never armed.
+
+- **One rollout is active per product and cohort, however requests interleave.** A create
+  read the cohort's rollouts before superseding them, and a resume or a pause by hand wrote
+  what it decided on an earlier read: two creates at once, or a create landing inside a
+  resume, left two active, and a pause by hand turned `superseded` into `operator`, which a
+  resume let through. The database holds one active rollout per cohort (the migration
+  supersedes all but the newest where a race already left more), and a change to a rollout
+  that changed meanwhile is a 409.
+- **Forgetting a camera with a token limited to some products erases only what it stored
+  under the product it is in now.** The datalake erased the camera's data under every
+  product of the account, a product it was moved from included, which that token cannot
+  read. The purge names the product (`*` for a token for the whole account); the datalake
+  (openmv-cloud) answers in lockstep.
+- **A deactivated account's tokens are refused, and one minted while it was deactivated is
+  revoked.** One issued or rotated while the account was being deactivated was minted after
+  its tokens were revoked, and worked, and a reactivation would have kept it working; a
+  rotate that met a deactivate put the leaked token it was replacing back.
+- **A rollout's percent never goes down, and an auto-raise never rewinds its stage.** The
+  auto-raise wrote what it decided on an earlier read, so a hand raise landing in between
+  went back to the next stage and its percent, and of two raises by hand at once the lower
+  could land last. A percent write keeps the larger value, and an auto-raise lands only at
+  the stage it judged.
+- **The auto-pause floor leaves out the cameras a rollout never offers.** A camera held by a
+  pin, its own or its cohort's, or with a boot stub too old for the image, was counted, so
+  a rollout whose few other cameras all failed never paused.
+- **A viewer grant names its product.** It defaulted to every product of the account, the
+  grant a token limited to one product must not get, for any caller that left it out.
+- **Registrations are limited per IPv6 /64 as well.** Counted per address alone, a client
+  rotating through its /64 had a fresh budget on every request.
+
 - **A helper run with `python -c` does not import from the working directory either.** The
   spsdk scripts `flash` runs with the SDK's Python (`flash factory` and `flash list` on an
   RT1060) used `-c`, which puts the working directory first on the import path as `-m` does:
@@ -183,9 +307,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A datalake reply too big to read in place is delivered only if it says 200.** A proxy's
   error page (kilobytes of HTML) overflowed the read buffer and was taken as delivered, and
   the camera dropped the batch it answered.
-- **`python -m openmv_ota` runs, and imports nothing from the working directory.** There was
-  no `__main__`, and `python -m openmv_ota.cli` imports the CLI's own modules (`argparse`
-  among them) before it can drop the directory.
+- **`python -m openmv_ota` runs, and the CLI's own imports after start-up come from outside
+  the working directory.** There was no `__main__`, and `python -m openmv_ota.cli` imports the
+  CLI's own modules (`argparse` among them) before it can drop the directory. Python finds
+  the `openmv_ota` package itself there first, so in a directory holding an `openmv_ota/`,
+  start the tool as the `openmv-ota` console script or `python -P -m openmv_ota`.
 - **A download replaces a link at its name and writes nothing through it.** `client release
   manifest`, `artifact`, `sbom`, `bases` and `watch` save to the working directory by
   default, and a link planted there took the download to wherever it pointed.

@@ -38,13 +38,16 @@ class DatalakeAdmin:
             raise DatalakeError(f"HTTP {r.status_code}")
         return r.json()
 
-    def purge_device(self, account_id: str, device_id: str) -> dict:
-        """``{"deleted": n, "bytes": b}`` once the datalake has removed everything the
-        device stored under the account. Raises DatalakeError on any failure."""
+    def purge_device(self, account_id: str, product, device_id: str) -> dict:
+        """``{"deleted": n, "bytes": b}`` once the datalake has removed what the device stored
+        under the account and ``product``: a product id, or ``"*"`` for every product (and
+        what it filed under none). Raises DatalakeError on any failure."""
         from .datalog import account_key
-        # (as the datalake files it: the server's own account is "default" there)
-        body = self._call("DELETE",
-                          f"/api/v1/admin/accounts/{account_key(account_id)}/devices/{device_id}")
+        # (as the datalake files it: the server's own account is "default" there, and a
+        # product is its decimal id; anything else there is a 400)
+        product = "*" if product == "*" else "%d" % int(product)
+        body = self._call("DELETE", f"/api/v1/admin/accounts/{account_key(account_id)}"
+                                    f"/products/{product}/devices/{device_id}")
         return {"deleted": int(body.get("deleted") or 0), "bytes": int(body.get("bytes") or 0)}
 
     def account_usage(self, account: str) -> dict:

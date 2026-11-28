@@ -2658,9 +2658,30 @@ def test_every_json_value_count_is_one_count_and_never_short():
     for b in corpus:
         got = {f(b) for f in counts}
         assert len(got) == 1 and got.pop() >= _values(json.loads(b)), b
+    # the parser takes the four bytes after `\u` unread, a quote or a backslash among them
     for b, n in ((b"[1 2 3]", 4), (b'{"a" 1 "b" 2}', 5), (b'["a""b"]', 3),
-                 (b'["\\\\" "\\"" 1.5e-3]', 5), (b"[true false null]", 4), (b'["open', 2)):
+                 (b'["\\\\" "\\"" 1.5e-3]', 5), (b"[true false null]", 4), (b'["open', 2),
+                 (b'["\\u"abc" 1 1]', 4), (b'["\\uabc\\" 1 1]', 4), (b'["\\u00e9\\"" 1]', 3),
+                 (b'["\\u12', 2), (b'["\\', 2)):
         assert {f(b) for f in counts} == {n}, b
+
+
+def _json_values_body(src):
+    """``_json_values`` in a module's source, from the end of its docstring to the next
+    top-level definition: the docstrings say where each copy is used, the code is one."""
+    start = src.index("def _json_values(b):")
+    start = src.index('"""', src.index('"""', start) + 3) + 3
+    return src[start:src.index("\n\n\n", start)]
+
+
+def test_the_four_device_json_value_counts_are_one_text():
+    """Each cap is as good as its copy of the count: a fix made to one copy alone leaves the
+    other three caps open."""
+    device = _SRC.parents[2]
+    texts = {_json_values_body((device / p).read_text(encoding="utf-8"))
+             for p in ("openmv_ota/data/installer.py", "openmv_ota/__init__.py",
+                       "openmv_recovery.py", "openmv_cloud/_lib.py")}
+    assert len(texts) == 1 and "(b[i] == 117)" in texts.pop()
 
 
 def _raw_manifest(body):
@@ -2692,3 +2713,328 @@ def test_a_manifest_body_of_values_without_commas_is_refused_before_it_is_parsed
                  certificate=trust.certificate(generate_private_key(algorithm_for(ES256))))
     with pytest.raises(OtaError, match="values than a camera reads"):
         pack_manifest(m)
+
+
+def test_a_manifest_body_whose_values_follow_a_u_escape_is_refused_before_it_is_parsed(
+        monkeypatch):
+    """The parser takes the four bytes after `\\u` unread, so `"\\uabc\\"` and `"\\u"abc"` are
+    each one string to it. The count took the `\\"` for an escaped quote, or the `"` after
+    `\\u` for the string's end, and counted the 2000 numbers after it as one unended string."""
+    monkeypatch.setattr(_mod.json, "loads",
+                        lambda b: pytest.fail("parsed %d bytes" % len(b)))
+    for lead in (b'"\\uabc\\" ', b'"\\u"abc" '):
+        with pytest.raises(ValueError, match="too many values"):
+            inst("_manifest_parse")(_raw_manifest(b'{"x":[' + lead + b"1 " * 2000 + b"]}"))
+
+
+# --- the hold: an image whose install failed after the erase waits before the next one ---
+# A hostile answer to the check-in (a real signed release, junk image bytes) made every install
+# erase the slot, stream junk and fail its sha256; the reset forgot it, the boot check-in was
+# offered the same release, and on a single-slot board that erased the flash several times a
+# boot, every boot. The installer now writes the failure to /flash and holds the image back.
+
+import types  # noqa: E402
+
+_SHA_A = b"a" * 64
+_SHA_B = b"b" * 64
+
+
+class _Relax:
+    """openmv_wdt.relax() as the installer calls it: counts the writes made under it."""
+
+    def __init__(self):
+        self.entered = 0
+
+    def __call__(self):
+        return self
+
+    def __enter__(self):
+        self.entered += 1
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _boot():
+    """A fresh ``_ota_config`` as a boot leaves it: nothing about the hold remembered."""
+    return types.SimpleNamespace()
+
+
+def _hold(sha, up, path, cfg=None, relax=None):
+    return inst("_hold")(sha, up, cfg if cfg is not None else _boot(), relax or _Relax(), path)
+
+
+def _wait(sha, up, path):
+    """The wait as a check-in that boot has counted already would see it (writes nothing)."""
+    return _hold(sha, up, path, types.SimpleNamespace(hold_seen=1))[0]
+
+
+def _fail(path, sha, up=0):
+    """One install of ``sha`` that fails past the erase: what run() writes before its reset."""
+    _w, line, _rec = _hold(sha, up, path, types.SimpleNamespace(hold_seen=1))
+    inst("_hold_write")(line, _Relax(), path)
+
+
+def test_the_hold_record_lives_on_the_cameras_own_filesystem():
+    import inspect
+    for fn in ("_hold", "_hold_write"):
+        assert inspect.signature(inst(fn)).parameters["path"].default == \
+            "/flash/openmv-ota-hold.txt"
+
+
+def test_a_failed_image_is_held_back_across_boots_with_growing_gaps(tmp_path):
+    """gate_probe's scenario: every boot's first check-in is offered the release again, and the
+    runtime's gate says install on every boot. The installer now waits, longer each time."""
+    import tests.build.test_openmv_ota_runtime as rt_test     # noqa: PLC0415  (the runtime)
+    path = str(tmp_path / "hold.txt")
+    attempts = []                       # the uptime of each boot's install that went ahead
+    for _boot_n in range(12):
+        assert rt_test.rt._InstallGate().plan("rel-42", 5) == "install"
+        cfg, up = _boot(), 0
+        while _hold(_SHA_A, up, path, cfg)[0]:
+            up += 60                    # a check-in a minute, none of them erasing anything
+        attempts.append(up)
+        _fail(path, _SHA_A, up)         # the junk arrives, fails its sha256, the camera resets
+    assert attempts == [0, 600, 1200, 2400, 4800, 9600, 19200, 38400, 76800, 86400, 86400, 86400]
+    assert open(path, "rb").read() == _SHA_A + b" 12 1 0"
+
+
+def test_the_wait_counts_this_boots_uptime(tmp_path):
+    path = str(tmp_path / "hold.txt")
+    _fail(path, _SHA_A)
+    assert [_wait(_SHA_A, up, path) for up in (0, 1, 599, 600, 10 ** 6)] == [600, 599, 1, 0, 0]
+
+
+def test_a_sleepy_camera_retries_after_1_2_4_boots(tmp_path):
+    """A camera that wakes for a minute and sleeps never reaches the uptime: the boots it was held
+    for end the hold instead, more of them after each failure, up to 64."""
+    path = str(tmp_path / "hold.txt")
+    held = []
+    for _failure in range(9):
+        _fail(path, _SHA_A)
+        boots = 0
+        while _hold(_SHA_A, 30, path, _boot())[0]:      # every boot shorter than the wait
+            boots += 1
+        held.append(boots)
+    assert held == [1, 2, 4, 8, 16, 32, 64, 64, 64]
+
+
+def test_a_boot_counts_once_however_many_offers_it_sees(tmp_path):
+    path = str(tmp_path / "hold.txt")
+    _fail(path, _SHA_A)
+    _fail(path, _SHA_A)                                   # held for 1200 s or 2 boots
+    cfg, relax = _boot(), _Relax()
+    assert [_hold(_SHA_A, up, path, cfg, relax)[0] for up in (0, 60, 120)] == [1200, 1140, 1080]
+    assert relax.entered == 1 and open(path, "rb").read() == _SHA_A + b" 2 1 1"
+    cfg, relax = _boot(), _Relax()                        # the next boot is counted, and held on
+    assert [_hold(_SHA_A, up, path, cfg, relax)[0] for up in (0, 60)] == [1200, 1140]
+    assert relax.entered == 1 and open(path, "rb").read() == _SHA_A + b" 2 1 2"
+    assert _hold(_SHA_A, 0, path)[0] == 0                 # the boot after that installs
+
+
+def test_a_held_boot_writes_once_and_a_boot_holding_nothing_writes_nothing(tmp_path):
+    path = str(tmp_path / "hold.txt")
+    relax = _Relax()
+    assert _hold(_SHA_A, 0, path, relax=relax)[0] == 0    # no record
+    _fail(path, _SHA_A)
+    assert _hold(_SHA_B, 0, path, relax=relax)[0] == 0    # another image: nothing held
+    assert _hold(_SHA_A, 600, path, relax=relax)[0] == 0  # this one, once its wait is up
+    assert relax.entered == 0 and open(path, "rb").read() == _SHA_A + b" 1 1 0"
+    assert _hold(_SHA_A, 0, path, relax=relax)[0] == 600 and relax.entered == 1
+
+
+def test_forced_reboots_still_decay(tmp_path):
+    """Whoever can reboot the camera at will counts boots for it: the erases it gets still thin
+    out, one in 2, 3, 5, 9 ... boots (the boot that fails, then the boots held), up to 65."""
+    path = str(tmp_path / "hold.txt")
+    erases = []
+    for boot in range(1, 201):
+        if not _hold(_SHA_A, 0, path)[0]:
+            erases.append(boot)
+            _fail(path, _SHA_A)
+    assert erases == [1, 3, 6, 11, 20, 37, 70, 135, 200]
+
+
+def test_the_hold_record_survives_a_reset(tmp_path):
+    """A reset is a fresh installer: a new module, nothing in RAM, the record still on /flash."""
+    path = str(tmp_path / "hold.txt")
+    _fail(path, _SHA_A)
+    spec = importlib.util.spec_from_file_location("openmv_ota._installer_after_reset", str(_SRC))
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+    wait, line, rec = fresh._hold(_SHA_A, 0, _boot(), _Relax(), path)
+    assert (wait, line, rec) == (600, _SHA_A + b" 2 1 0", _SHA_A + b" 1 1 0")
+
+
+def test_a_different_release_is_not_held_back(tmp_path):
+    """However often one image failed, the next release goes ahead at once."""
+    path = str(tmp_path / "hold.txt")
+    for _ in range(10):
+        _fail(path, _SHA_A)
+    assert _wait(_SHA_A, 0, path) == 86400
+    assert _hold(_SHA_B, 0, path) == (0, _SHA_B + b" 1 2 0", _SHA_A + b" 10 1 0")
+
+
+def test_turning_releases_over_buys_no_more_erases(tmp_path):
+    """Alternating real releases was the way around a hold keyed by one image: from the third
+    image in a row that fails, a new one waits as a repeated one does."""
+    path = str(tmp_path / "hold.txt")
+    waits = []
+    for i in range(8):
+        sha = (_SHA_A, _SHA_B)[i % 2]
+        waits.append(_wait(sha, 0, path))
+        _fail(path, sha)
+    assert waits == [0, 0, 0, 600, 1200, 2400, 4800, 9600]
+
+
+def test_a_good_install_clears_the_record(tmp_path):
+    path = str(tmp_path / "hold.txt")
+    _fail(path, _SHA_A)
+    _fail(path, _SHA_A)
+    relax = _Relax()
+    inst("_hold_write")(b"", relax, path)              # run(), after the slot committed
+    assert relax.entered == 1
+    assert _hold(_SHA_A, 0, path) == (0, _SHA_A + b" 1 1 0", b"")
+    assert _hold(_SHA_B, 0, path)[0] == 0
+
+
+def test_nothing_is_written_under_an_armed_watchdog(tmp_path):
+    """run() hands the hold no relax while a watchdog is armed: a FAT write is one call nothing
+    can feed through, and the RT1060's and the N6's 100 ms watchdog bit inside it, before every
+    install's erase. A record already there still holds; it is neither counted nor emptied."""
+    import os
+    path = str(tmp_path / "hold.txt")
+    inst("_hold_write")(_SHA_A + b" 1 1 0", None, path)
+    assert not os.path.exists(path)
+    _fail(path, _SHA_A)                                  # written by a boot that armed none
+    before = open(path, "rb").read()
+    cfg = _boot()
+    assert inst("_hold")(_SHA_A, 0, cfg, None, path)[0] == 600
+    assert cfg.hold_seen == 1 and open(path, "rb").read() == before
+    inst("_hold_write")(b"", None, path)
+    assert open(path, "rb").read() == before
+
+
+def test_the_record_is_written_under_relax_and_synced(tmp_path, monkeypatch):
+    import os
+    synced = []
+    monkeypatch.setattr(os, "sync", lambda: synced.append(1))
+    relax = _Relax()
+    inst("_hold_write")(_SHA_A + b" 1 1 0", relax, str(tmp_path / "hold.txt"))
+    assert relax.entered == 1 and synced == [1]
+
+
+@pytest.mark.parametrize("record", [
+    b"", b"\xff\xfe\x00\x81 garbage junk more", _SHA_A, _SHA_A + b" 3 1", _SHA_A + b" x 1 0",
+    _SHA_A + b" 1 2 3 4", b"\n".join([_SHA_A + b" 3 1 0"] * 50),
+    _SHA_A + b" " * 100 + b"3 1 0",           # its counts lie past what is read
+    _SHA_A + b" -1000 1 0",                   # below zero, a count turned the hold off for good,
+    b"b" * 64 + b" 1 -100 0",                 # ...or, for another image, as good as
+    _SHA_A + b" 5 1 -99999999999999999999",   # ...or held a sleepy camera until it was deleted
+])
+def test_a_corrupt_record_holds_nothing_back(tmp_path, record):
+    path = tmp_path / "hold.txt"
+    path.write_bytes(record)
+    relax = _Relax()
+    wait, line, rec = _hold(_SHA_A, 0, str(path), relax=relax)
+    assert wait == 0 and line == _SHA_A + b" 1 1 0" and rec == record[:128]
+    assert relax.entered == 0 and path.read_bytes() == record
+
+
+@pytest.mark.parametrize("record, wait", [
+    (_SHA_A + b" " + b"9" * 50 + b" 1 0", 86400),   # a count no camera reaches: a day, no more
+    (_SHA_B + b" 1 99 0", 86400),                   # images in a row: a day too, then it goes
+    (_SHA_A + b" 5 1 " + b"9" * 50, 0),             # boots no camera reaches: it goes at once
+])
+def test_a_hostile_record_is_bounded_by_a_day(tmp_path, record, wait):
+    path = tmp_path / "hold.txt"
+    path.write_bytes(record)
+    assert _wait(_SHA_A, 0, str(path)) == wait
+    assert _wait(_SHA_A, 86400, str(path)) == 0
+
+
+def test_a_record_that_cannot_be_read_or_written_never_fails_the_install(tmp_path):
+    write = inst("_hold_write")
+    assert _hold(_SHA_A, 0, str(tmp_path))[0] == 0                       # a directory
+    assert _hold(_SHA_A, 0, str(tmp_path / "none" / "hold.txt"))[2] == b""
+    assert write(_SHA_A + b" 1 1 0", _Relax(), str(tmp_path / "none" / "hold.txt")) is None
+    assert write(_SHA_A + b" 1 1 0", _Relax(), str(tmp_path)) is None
+
+
+def test_a_transport_error_still_retries():
+    stops = inst("_stops")
+    e = inst("_TransportError")("download failed: OSError(104)")
+    assert [stops(e, a, 3, "full", None) for a in range(3)] == [False, False, True]
+
+
+@pytest.mark.parametrize("e", [OSError(22), OSError("inflate"), ValueError("bad padding"),
+                               MemoryError(4096), OSError(104)])
+def test_junk_that_fails_past_the_erase_stops_at_once(e):
+    """Junk that fails to inflate or decrypt fails the same way again, and each try was a
+    whole-slot erase: only the link's failures, which _open_body and _ResumingBody raise as a
+    _TransportError, are retried. A bare errno is not one: inflate raises those too."""
+    assert inst("_stops")(e, 0, 3, "full", None) is True
+    assert inst("_stops")(e, 0, 3, inst("_DELTA_FORMAT"), ("https://h/full.gz", 0, None)) is False
+
+
+def test_a_download_that_stays_dropped_is_a_transport_error(clock, monkeypatch):
+    monkeypatch.setattr(_mod, "_open", lambda *a, **k: pytest.fail("reopened when out of time"))
+    rb = inst("_ResumingBody")("u", None, None, None, lambda: None, None, None)
+    inst("_slack_start")()
+    clock[0] += inst("_SLOW_MS") + 1
+    with pytest.raises(OSError, match="download failed: .*ECONNRESET") as err:
+        rb._reopen(OSError(104, "ECONNRESET"))
+    assert inst("_is_transport_error")(err.value)
+    assert inst("_stops")(err.value, 0, 3, "full", None) is False
+
+
+def test_the_failure_is_kept_before_the_erase_and_cleared_after_an_install(tmp_path):
+    """A session that dies past the erase -- a watchdog bite in a dripped handshake, a WINC recv,
+    a power cut -- never reached the code after a failure, so it kept nothing and erased again on
+    every boot. run() now writes the failure before the first erase."""
+    src = _SRC.read_text()
+    run = src[src.index("def run(manifest_url"):]
+    kept = run.index("_hold_write(on_fail, hold_relax)")
+    assert kept < run.index("erase(target_off, slot_size)") and run.count("_hold_write(on_fail") == 1
+    assert run.index("if rec or not from_file:\n        _hold_write(b\"\", hold_relax)") > \
+        run.index("_install_stream(source, write")
+    # ...under an armed watchdog none of it is written (see _hold_write), and a file install
+    # reads no record before its erase: the M7's inflate window had no room left after it
+    assert 'hold_relax = None if getattr(openmv_wdt, "_wdt", None) is not None else relax' in run
+    assert "    if not from_file:\n        left, on_fail, rec = _hold(" in run
+    assert run.index("rec = os.stat(_HOLD)") > run.index("_install_stream(source, write")
+    path = str(tmp_path / "hold.txt")
+    _w, on_fail, _rec = _hold(_SHA_A, 0, path)
+    inst("_hold_write")(on_fail, _Relax(), path)          # what run() writes before the erase
+    spec = importlib.util.spec_from_file_location("openmv_ota._installer_after_bite", str(_SRC))
+    fresh = importlib.util.module_from_spec(spec)          # ...then the bite: a new boot
+    spec.loader.exec_module(fresh)
+    assert fresh._hold(_SHA_A, 0, _boot(), _Relax(), path)[0] == 600
+
+
+def test_a_flash_that_did_not_read_back_is_retried():
+    """An erase or a write that did not read back is the flash's fault, not the image's, and no
+    server can cause one: the M7's first erase read back unerased at offset 0, the attempt after
+    it installed, and with only the link's failures retried it reset into an erased slot."""
+    stops, flash = inst("_stops"), inst("_FlashError")
+    for e in (flash("erase verify failed at 0"), flash("write verify failed at 4096"), flash(5)):
+        assert isinstance(e, OSError) and stops(e, 0, 3, "full", None) is False
+        assert stops(e, 2, 3, "full", None) is True          # the last attempt still ends it
+    assert inst("_is_transport_error")(flash("arm verify failed"))      # a delta is kept
+    src = _SRC.read_text()
+    for msg in ("erase verify failed at", "write verify failed at", "arm verify failed",
+                "carried floor verify failed", "image head verify failed"):
+        assert 'raise _FlashError("%s' % msg in src, msg
+    assert "raise OSError(-rc)" not in src
+
+
+def test_a_full_image_that_hashed_wrong_stops_at_once():
+    """The retries are for a dropped link: bytes that arrived and hashed wrong hash wrong again,
+    and each attempt is a whole-slot erase."""
+    stops = inst("_stops")
+    bad = OSError("image sha256 does not match the manifest")
+    assert stops(bad, 0, 3, "full", None) is True
+    alt = ("https://h/full.gz", 0, None)
+    assert stops(bad, 0, 3, inst("_DELTA_FORMAT"), alt) is False   # demoted to the full image
+    assert stops(bad, 0, 3, inst("_DELTA_FORMAT"), None) is True    # nothing to demote to
+    assert stops(bad, 2, 3, inst("_DELTA_FORMAT"), alt) is True     # the last attempt

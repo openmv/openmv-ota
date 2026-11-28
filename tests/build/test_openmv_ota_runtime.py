@@ -605,6 +605,29 @@ def test_gate_counts_failures_per_release():
     assert g.plan("R1", uptime_s=rt._REBOOT_GAP_S) == "install"
 
 
+def test_gate_a_release_the_installer_held_back_is_not_a_failed_install():
+    """The installer holds back an image whose install failed after the erase (installer._hold).
+    Counted as failures, those check-ins would reboot the camera, which starts the wait over."""
+    g = rt._InstallGate()
+    g.plan("R1", uptime_s=8)
+    for _ in range(rt._INPLACE_TRIES + 2):
+        g.failed("R1", OSError("install held back 540s"))
+    assert g._fails == 0
+    assert g.plan("R1", uptime_s=rt._REBOOT_GAP_S) == "install"
+    g.failed("R1", OSError("manifest rejected (version)"))     # anything else still counts
+    assert g._fails == 1
+
+
+def test_gate_never_reboots_once_a_hold_was_in_force_this_boot():
+    """Each boot counts toward a hold's end, so a new release id in every answer -- a fresh-heap
+    reboot each -- would wear a day-long hold down in 64 boots."""
+    g = rt._InstallGate()
+    g.plan("R1", uptime_s=8)
+    g.failed("R1", OSError("install held back 590s"))
+    for key in ("R2", "R3", "R1"):
+        assert g.plan(key, uptime_s=rt._REBOOT_GAP_S) == "install"
+
+
 def test_gate_a_newer_release_after_a_failed_boot_install_reboots():
     g = rt._InstallGate()
     g.plan("R1", uptime_s=8)

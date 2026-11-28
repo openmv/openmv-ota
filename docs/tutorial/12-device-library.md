@@ -136,6 +136,25 @@ hand it (how that's obtained is out of scope here). It:
   A failure *after* the erase reboots, and boot.py rejects the half-written slot (bad
   signature/hash) and mounts the previous release — the last update that worked; `status()`
   then reports the fallback so you know the update failed.
+- **A failed image waits before the next erase.** A download that cannot be opened or kept
+  going is retried (three attempts), and so is a flash erase or write that does not read back;
+  an image that failed to inflate, decrypt or hash is not,
+  since the same bytes fail again (a delta that fails is replaced by the full image, once). The failure is written once, before the first erase, to
+  `/flash/openmv-ota-hold.txt` (so a reset or power cut past the erase counts as one): the
+  image's sha256 from the manifest and how many installs have failed in a row. That image is
+  then refused before the erase (`OSError("install held back <n>s")`, which `run()` and
+  recovery log and retry) until 10 minutes of uptime or 1 boot have passed, doubling with each
+  failure of it, up to a day or 64 boots; each boot that finds the hold is counted once, in the
+  file, and `run()` does not reboot for an offer for the rest of a boot that found one. A
+  different release is not held back unless releases keep failing one after another.
+  The first install that works empties the file; deleting it lifts the hold. While a
+  watchdog is armed (`openmv_wdt`) nothing is written to the file: a FAT write erases flash
+  inside one call that nothing can feed the watchdog through, so on the RT1060 and the N6 it
+  bit there. A record already in the file still holds. It is there
+  because whoever answers the check-in can offer a real signed release with junk in place of
+  its image: with nothing remembered across the reset, the camera erased its slot several
+  times every boot, and a single-slot board's internal flash wears out in days. A file install
+  (`install("/sd/...")`) is never held back.
 
 ```python
 import network, openmv_ota

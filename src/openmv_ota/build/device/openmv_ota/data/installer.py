@@ -299,6 +299,15 @@ class _TransportError(OSError):
     surface as ``ValueError`` -- so no amount of inspecting the exception can separate them."""
 
 
+
+class _FlashError(_TransportError):
+    """The camera's own flash would not erase, or did not read back what was written to it: a
+    fault of the flash, not a verdict on the image, and nothing whoever answers the check-in
+    sends can cause one. So it is retried as a dropped link is (_stops), and a delta it hit is
+    kept. On the OpenMV Cam M7 the first erase of the slot reads back unerased at offset 0 now
+    and then, and the attempt after it installs: with only the link's failures retried, that
+    one hiccup reset a single-slot camera into an erased slot."""
+
 def _is_transport_error(e):
     """True if ``e`` came from the connection phase (DNS, TCP, the TLS handshake including cert
     validation, or reading the body) rather than from vetting the fetched manifest. run() uses this
@@ -706,16 +715,15 @@ def _json_values(b):
         if c == 34:                                  # '"': one value, skipped to its close
             n += 1
             num = False
-            while True:
-                j = b.find(b'"', i)
-                if j < 0:
-                    return n                         # unterminated: the parser refuses it
-                k = j
-                while k > i and b[k - 1] == 92:      # the backslashes just before this quote
-                    k -= 1
-                i = j + 1
-                if not (j - k) & 1:                  # an even run: this quote ends it
+            while i < end:                           # unterminated: the parser refuses it
+                c = b[i]
+                i += 1
+                if c == 34:                          # an unescaped quote ends it
                     break
+                if c == 92 and i < end:
+                    # the parser takes the byte after a `\` as the escape, and four more after
+                    # `\u`, whatever they are: a quote among them does not end the string
+                    i += 1 + 4 * (b[i] == 117)
         elif 48 <= c <= 57 or c == 45 or c == 46:    # digits, '-', '.': one number a run
             if not num:
                 n += 1
@@ -1305,7 +1313,7 @@ def _prepare_slot(write, readback, slot_size, block, feed, floor=0, epoch=0):
         #                                              the window -- which on the N6 is 100 ms.
         n = _CHUNK if slot_size - off >= _CHUNK else slot_size - off
         if not _is_blank(readback(off, n)):
-            raise OSError("erase verify failed at %d" % off)
+            raise _FlashError("erase verify failed at %d" % off)
         off += n
         feed()
 
@@ -1322,7 +1330,7 @@ def _prepare_slot(write, readback, slot_size, block, feed, floor=0, epoch=0):
         floor_at = slot_size - 2 * block + _FLOOR_OFF
         write(floor_at, _pad(entry))
         if readback(floor_at, len(entry)) != entry:
-            raise OSError("carried floor verify failed")
+            raise _FlashError("carried floor verify failed")
         log.debug("install: floor carried")           # HIL path witness (every install, pre-download)
     if epoch:
         # The certificate-epoch floor, carried for the same reason into its own region.
@@ -1330,7 +1338,7 @@ def _prepare_slot(write, readback, slot_size, block, feed, floor=0, epoch=0):
         epoch_at = slot_size - 2 * block + _EPOCH_OFF
         write(epoch_at, _pad(entry))
         if readback(epoch_at, len(entry)) != entry:
-            raise OSError("carried epoch verify failed")
+            raise _FlashError("carried epoch verify failed")
         log.debug("install: epoch carried")           # HIL path witness (installs on a certified fleet)
 
 
@@ -1459,7 +1467,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
             #                                          the slice below never runs on them and the
             #                                          common path stays allocation-free.
             if rb != (chunk if k == n - w else chunk[:k]):
-                raise OSError("write verify failed at %d" % off)
+                raise _FlashError("write verify failed at %d" % off)
         off += n
         _slack_add(n)                                # the image's bytes buy the download its time
         feed()
@@ -1483,7 +1491,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     feed()
     write(0, head)                                   # the held-back first bytes: now it is an image
     if readback(0, _HEAD) != head:
-        raise OSError("image head verify failed")
+        raise _FlashError("image head verify failed")
 
     # ARM, IN THIS ORDER: provenance, then the counter, then PENDING. (The carried floor was
     # already programmed into the status sector's tail right after the blank verify above, so
@@ -1496,7 +1504,7 @@ def _install_stream(source, write, readback, slot_size, block, feed,
     if repr_marker is not None:                      # record which rep was applied (1->0 only)
         write(status_off + _REPR_OFF, _pad(repr_marker))
         if readback(status_off + _REPR_OFF, len(repr_marker)) != repr_marker:
-            raise OSError("repr marker verify failed")
+            raise _FlashError("repr marker verify failed")
     if counter is not None:
         # The ORDER against the image bytes is what matters here: a half-written image can never
         # carry a valid counter, because the counter is written only once the whole slot has been
@@ -1504,10 +1512,10 @@ def _install_stream(source, write, readback, slot_size, block, feed,
         field = _encode_counter(counter)
         write(status_off + _COUNTER_OFF, _pad(field))
         if readback(status_off + _COUNTER_OFF, len(field)) != field:
-            raise OSError("install counter verify failed")
+            raise _FlashError("install counter verify failed")
     write(status_off, _pad(PENDING))                  # arm the trial, LAST
     if readback(status_off, len(PENDING)) != PENDING:
-        raise OSError("arm verify failed")
+        raise _FlashError("arm verify failed")
 
 
 # --- device entry (wires real socket/ssl/deflate/vfs/machine) ---------------
@@ -1695,7 +1703,7 @@ class _ResumingBody(io.IOBase):
         """Replace the dead connection with a Range request at the current offset."""
         self._stalls += 1
         if self._stalls > _RESUME_MAX_STALLS or ticks_diff(ticks_ms(), _SLACK[0]) > _SLACK[1]:
-            raise err                                 # stuck (no new bytes across N re-opens), or out of time
+            raise _TransportError("download failed: %r" % (err,))  # stuck (no new bytes across N re-opens), or out of time
         try:
             self._sock.close()
         except Exception:
@@ -1837,7 +1845,10 @@ def _open_body(image_url, ca_pem, socket, ssl, feed):
     compressed offset already consumed (see _ResumingBody)."""
     if _is_path(image_url):
         return open(image_url, "rb")
-    sock, raw_body = _open(image_url, ca_pem, socket, ssl, feed)  # pragma: no cover  # hil-residual: HTTPS body open, relocated verbatim from run(); witnessed by install.download on every bench install leg
+    try:  # pragma: no cover  # hil-residual: the open is the link's, so its failure is retried (_stops); witnessed by install.download on every bench install leg
+        sock, raw_body = _open(image_url, ca_pem, socket, ssl, feed)  # pragma: no cover  # hil-residual: HTTPS body open, relocated verbatim from run(); witnessed by install.download on every bench install leg
+    except Exception as e:  # pragma: no cover  # hil-residual: a connect or TLS failure right after the erase; no bench leg drops the link there
+        raise _TransportError("download failed: %r" % (e,))  # pragma: no cover  # hil-residual: same arm
     return _ResumingBody(image_url, ca_pem, socket, ssl, feed, sock, raw_body)  # pragma: no cover  # hil-residual: the resume wrapper, relocated verbatim from run(); its resume path is exercised by the bench drop/resume scenario
 
 
@@ -2033,6 +2044,97 @@ def _quiet_past_commit(lg, keep=None):
         handlers[:] = [h for h in handlers if type(h) is keep]
     if not getattr(lg, "handlers", None) and hasattr(lg, "setLevel"):
         lg.setLevel(_SILENT)
+
+
+# THE HOLD: AN IMAGE WHOSE INSTALL FAILED AFTER THE ERASE WAITS BEFORE THE NEXT ONE. Every failed
+# session past the erase costs a whole-slot erase and program, and whoever answers the check-in
+# can make every one fail: a real signed release newer than the camera's, with junk where its
+# image should be. The reset after it forgot the failure, the boot check-in was offered the same
+# release, and on a board with one slot of internal flash that loop wore the flash out in days.
+# So each install writes its failure down before its first erase, as one line on the camera's
+# own filesystem (this installer and recovery both write /flash; the boot stub never reads a
+# filesystem), and empties it once it works: a reset past the erase counts as a failure too. The
+# line names the image by the sha256 its signed manifest gives, counts its failures in a row and
+# the images that have failed in a row since one last installed, and the boots held since. That
+# image waits 600 s after its first failure, twice as long after each one after
+# it, up to a day, so a fault on the server's side heals by itself. Another image is not held
+# back, however often that one failed, unless images keep changing: once three have failed in a
+# row a new one waits 600 s, and twice as long for each image after it, so turning releases
+# over buys no more erases than offering one again. The wait is counted in uptime, the one clock
+# nobody on the path can move: the boards this protects most do not verify TLS, so NTP and the
+# check-in's Date are anyone's there. It also ends after the boots it was in force: 1 after the
+# first failure, twice as many after each one after it, up to 64. Each boot is counted once, the
+# first time it finds the hold (one small write a boot, and none while nothing is held), so a
+# camera that sleeps and wakes for a minute at a time gets there too, while one made to reboot
+# erases its slot once in that many boots. Under an armed watchdog none of it is written (a record
+# already there still holds): see _hold_write.
+_HOLD = "/flash/openmv-ota-hold.txt"
+
+
+def _hold(sha, up, cfg, relax, path=_HOLD):
+    """``(wait, line, rec)`` for an install of the image ``sha`` (hex, bytes): the seconds it
+    waits yet, ``up`` seconds into this boot; the record that says it failed, kept from its first
+    erase until it works; and the record as it stands. A record that does not read as one holds nothing back. The first
+    time a boot finds a hold in force it counts that boot in the record (one write, under
+    ``relax``), and ``cfg`` (``_ota_config``, which lives as long as the boot) remembers it."""
+    rec = b""
+    try:
+        with open(path, "rb") as f:
+            rec = f.read(128)
+    except OSError:
+        pass
+    try:
+        s, n, m, b = rec.split()     # the image that failed last, its failures in a row, how
+        n, m, b = int(n), int(m), int(b)   # many images in a row have failed, boots held since
+        if min(n, m, b) < 0:         # a count below zero would turn the hold off, or hold forever
+            raise ValueError
+    except ValueError:
+        s, n, m, b = b"", 0, 0, 0
+    o = s != sha
+    k = (m - 2 if o else n) - 1
+    wait = 0
+    seen = getattr(cfg, "hold_seen", 0)      # this boot is counted in b already
+    if k >= 0:
+        d = min(600 << min(k, 8), 86400)
+        if up < d and b - seen < 1 << min(k, 6):
+            wait = d - up
+            if not seen:
+                cfg.hold_seen = 1
+                _hold_write(b"%s %d %d %d" % (s, n, m, b + 1), relax, path)
+    return wait, b"%s %d %d 0" % (sha, 1 if o else n + 1, m + o), rec
+
+
+def _hold_write(data, relax, path=_HOLD):
+    """Replace the hold record with ``data`` (empty: nothing held). Never raises: the record only
+    spaces installs out, and a filesystem that will not take it must not keep the install from
+    its reset. A FAT write can erase a flash sector, so it runs under ``relax``.
+
+    ``relax`` None: nothing is written, which run() passes while a watchdog is armed. A FAT write
+    erases and programs sectors inside one call, and relax() cannot feed through a flash erase
+    (see openmv_wdt): on the RT1060 and the N6 the 100 ms watchdog bit inside this write, before
+    every install's erase, and a bite inside one can leave /flash, where the camera keeps its
+    network settings, half written."""
+    if relax is None:
+        return
+    import os
+    try:
+        with relax():
+            with open(path, "wb") as f:
+                f.write(data)
+            os.sync()
+    except Exception:
+        pass
+
+
+def _stops(e, attempt, attempts, fmt, alt):
+    """Whether a failed attempt past the erase ends the install (the camera resets, the failure
+    kept) rather than trying again. The retries are for the link and the flash: a download that
+    could not be opened or kept going (a _TransportError, see _open_body), and an erase or a
+    write that did not read back (a _FlashError). Anything else -- bytes that failed to inflate,
+    to decrypt or to hash -- fails the same way again, and each try is a whole-slot erase, so it
+    stops at once; a delta is demoted to the full image instead (see run())."""
+    return attempt + 1 >= attempts or not (_is_transport_error(e) or
+                                            fmt == _DELTA_FORMAT and alt is not None)
 
 
 def _reset():  # pragma: no cover
@@ -2406,7 +2508,7 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                         if _dt > worst:
                             worst = _dt  # hil-residual: witnessed transitively -- a non-zero worst= in the progress line proves this ran (it is the only writer)
                         if rc < 0:
-                            raise OSError(-rc)  # hil-residual: bare raise on a negative errno (erase-fault, inject-only)
+                            raise _FlashError(-rc)  # hil-residual: bare raise on a negative errno (erase-fault, inject-only)
                         o += n
                         i += 1
                         erased += 1
@@ -2439,12 +2541,12 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
             with relax():                             # hil-residual: legacy pre-#19348 single-shot erase (unreachable on the patched bench; faults the N6)
                 rc = vfs.rom_ioctl(3, 0, total)  # hil-residual: legacy single-shot erase call (pre-#19348)
                 if rc < 0:  # hil-residual: legacy single-shot errno check (pre-#19348)
-                    raise OSError(-rc)  # hil-residual: bare raise (legacy single-shot erase fault)
+                    raise _FlashError(-rc)  # hil-residual: bare raise (legacy single-shot erase fault)
 
         def write_at(off, data):
             rc = vfs.rom_ioctl(4, 0, off, data)
             if rc < 0:
-                raise OSError(-rc)  # hil-residual: bare raise on a negative errno (write-fault, inject-only)
+                raise _FlashError(-rc)  # hil-residual: bare raise on a negative errno (write-fault, inject-only)
             if log and "w" not in _seen:
                 _seen.add("w")
                 log.debug("install: wrote block XIP")
@@ -2624,13 +2726,26 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
     # mid-stream -- a transient transport error, not a bad update. Since the installer
     # already runs from RAM (exec'd before the erase) and re-erase + re-download is
     # idempotent, retry the whole download a bounded number of times before giving up.
-    # Only an EXHAUSTED retry (or a non-transient failure surfacing every attempt)
-    # reboots into the surviving slot -- so one hiccup no longer costs a reboot + a full poll
-    # cycle. Anything raised here (short body, TLS/ECONNRESET/ECONNABORTED/timeout,
-    # verify miscompare) is treated the same: retry, then fall back.
+    # Only an EXHAUSTED retry reboots into the surviving slot -- so one hiccup no longer costs
+    # a reboot + a full poll cycle. What is retried is the link's failures (short body,
+    # TLS/ECONNRESET/ECONNABORTED/timeout) and the flash's (an erase or a write that does not
+    # read back, _FlashError); an image that fails to inflate, decrypt or hash is not (_stops).
     attempts = getattr(cfg, "INSTALL_RETRIES", 3)
     body = None
     from_file = _is_path(image_url)
+    # The hold (see _hold), before the erase. Only a download waits: a file on a card is the
+    # camera's own, and a good copy put there after a bad one must not wait. A file install does
+    # not even read the record here: the OpenMV Cam M7 installs from its card with no heap to
+    # spare, and the open file and the record line left its inflate window no room (MemoryError
+    # before the erase). Once it has installed, it empties a record that is there (below).
+    hold_relax = None if getattr(openmv_wdt, "_wdt", None) is not None else relax  # (see _hold_write)
+    left = 0
+    if not from_file:
+        left, on_fail, rec = _hold(expect_sha.encode(), ticks_ms() // 1000, cfg, hold_relax)  # hil-residual: the download arm, taken by every network install leg; the markers after it are reached by the file arm too, so none dominates it (_hold is host-tested)
+    if left:
+        # Raised to the app with /rom intact, which logs it and does not count it as a failed
+        # install (_InstallGate.failed); recovery logs it and asks again after its backoff.
+        raise OSError("install held back %ds" % left)  # hil-residual: needs a failed install before it, which only the corrupt legs make, and they score the failure, not the check-in after it; _hold is host-tested
     erased = False
     # PREALLOCATE EVERYTHING THE ARMED REGION WILL NEED, BEFORE ARMING. An automatic gc.collect()
     # is one unsplittable pause -- 65-100 ms on the N6's multi-MB heap, i.e. at or past that port's
@@ -2731,10 +2846,15 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                 if primed < (_CHUNK if slot_size >= _CHUNK else slot_size):  # hil-residual: same arm
                     raise ValueError("image file is short")  # hil-residual: same arm; before the erase, where it costs nothing (after it, a single-image board was left with no image)
                 log.debug("install: primed")          # first chunk in RAM, nothing erased yet  # hil-residual: same arm; a print, but not a fleet marker (no classic board can deliver one)
-            if not erased and not from_file and not _heap_fits(_window_bytes(wbits)):
-                # Pre-erase, so it raises to the app like any other pre-flight failure (/rom
-                # intact); run() counts it and escalates to a fresh-heap reboot.
-                raise MemoryError("no room for the inflate window")  # hil-residual: needs a heap too fragmented for the window (the Nicla with its relays up, before the fresh-heap reboot existed); host-tested via _heap_fits
+            if not erased and not from_file:
+                if not _heap_fits(_window_bytes(wbits)):  # hil-residual: the download arm only (a file opens before the erase); the probe is host-tested (_heap_fits) and the arm past it is witnessed by install.start
+                    # Pre-erase, so it raises to the app like any other pre-flight failure (/rom
+                    # intact); run() counts it and escalates to a fresh-heap reboot.
+                    raise MemoryError("no room for the inflate window")  # hil-residual: needs a heap too fragmented for the window (the Nicla with its relays up, before the fresh-heap reboot existed); host-tested via _heap_fits
+                # The failure is kept BEFORE the first erase: a session that never reaches its
+                # end (a watchdog bite in a handshake, a power cut) counts as failed, and the
+                # install that works empties the record again.
+                _hold_write(on_fail, hold_relax)  # hil-residual: a print-less write; its effect (the record) is host-tested
             _quiet_past_commit(log)                   # past here the romfs may be gone
             erased = True                             # from here on every failure reboots
             log.info("install: erasing %s (%d bytes) t=%d" % (target, slot_size, ticks_ms()))
@@ -2784,24 +2904,35 @@ def run(manifest_url, ca_pem, cfg, lockbox=None):  # pragma: no cover
                 # app free to retry later -- rather than spending retries and rebooting for nothing.
                 log.warning("install: failed before erase (%r)" % e)  # hil-residual: pre-erase file-chain failure; needs a heap too fragmented to stage the first chunk (measured on the M4 before this reorder, never on a passing run), so no marker can witness it
                 raise  # hil-residual: bare re-raise to the app (pre-erase, /rom intact; the warning above is the only line on this arm)
-            if attempt + 1 >= attempts:
-                log.error("install: FAILED after %d attempts (%r); rebooting to the other slot"
-                          % (attempts, e))                # %r: show the exception CLASS even when
-                _reset()  # hil-residual: terminal reset to the surviving slot on retry exhaustion (witnessed by install.fallback + install.reboot)
-            log.error("install: attempt %d/%d failed (%r); retrying"   # its message is empty (a bare
-                      % (attempt + 1, attempts, e))                    # deflate OSError) -> legible in the field
             # A delta that fails the INTEGRITY check (not transport) can only fail the same
             # way again -- the patch does not describe the bytes we have. Demote the remaining
             # attempts to the full image instead of burning them on a repeat: one wasted slot
             # write instead of an install that can never succeed (and, across polls, a device
             # that re-picks the same delta forever). Transport failures keep the delta -- a
-            # dropped link says nothing about the patch.
-            if (fmt == _DELTA_FORMAT and alt is not None  # hil-residual: demote gate; needs a wrong-base/corrupt DELTA on the bench (the fleet's corrupt scenario ships a full image) -- the vet + demote pieces are host-tested (test_vet_manifest_hands_back_the_full_fallback...)
-                    and "sha256 does not match" in str(e)):
-                image_url, wbits, enc = alt  # hil-residual: demote to the full rep (host-tested via the vet's alt contract)
-                fmt = "full"  # hil-residual: demote to full (same host-tested path)
-                log.warning("install: delta failed integrity; demoting to the full image")  # hil-residual: witness line for the demote; no fleet scenario corrupts a delta yet
+            # dropped link says nothing about the patch. A full image that fails it stops.
+            if _stops(e, attempt, attempts, fmt, alt):
+                log.error("install: FAILED after %d attempts (%r); rebooting to the other slot"
+                          % (attempt + 1, e))             # %r: show the exception CLASS even when
+                _reset()  # hil-residual: terminal reset to the surviving slot on retry exhaustion (witnessed by install.fallback + install.reboot)
+            # The demote is its own line, not a retry's: a retry is the same image again, after
+            # the link failed, and the fleet's corrupt leg (whose delta is tampered as well as
+            # its full image) tells the two apart.
+            if fmt == _DELTA_FORMAT and alt is not None and not _is_transport_error(e):  # hil-residual: demote gate (witnessed by install.demote on the corrupt leg, whose delta fails to inflate)
+                image_url, wbits, enc = alt  # hil-residual: demote to the full rep (witnessed as above)
+                fmt = "full"  # hil-residual: demote to full (witnessed as above)
+                log.warning("install: delta failed integrity (%r); demoting to the full image" % (e,))
+            else:
+                log.error("install: attempt %d/%d failed (%r); retrying"   # its message is empty (a bare
+                          % (attempt + 1, attempts, e))                    # deflate OSError) -> legible in the field
             if progress is not None:  # hil-residual: progress callback is unused on the bench (install() passes none), so this guard is False
                 progress.reset()  # hil-residual: progress reset (callback unused on the bench)
+    if from_file:
+        import os  # hil-residual: the file arm past the commit; the classic (file) legs have no coverage UART
+        try:  # hil-residual: same arm
+            rec = os.stat(_HOLD)                      # the slot is written: the heap is free again  # hil-residual: same arm
+        except OSError:  # hil-residual: same arm (no record, the usual case)
+            rec = None  # hil-residual: same arm
+    if rec or not from_file:
+        _hold_write(b"", hold_relax)  # hil-residual: an image installed, so what failed before is forgotten; reached on the bench by the first install after a corrupt leg, which scores the install, not this (the removal is host-tested)
     log.info("install: installed + armed; rebooting into the trial")
     _reset()  # hil-residual: terminal reset into the trial on success (witnessed by install.armed + install.reboot)

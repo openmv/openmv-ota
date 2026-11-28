@@ -465,6 +465,21 @@ def _storable(text: str) -> str:
     return text.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
 
 
+# Control characters, the marks that reorder the text around them (U+061C, U+200E/F,
+# U+202A-U+202E, U+2066-U+2069), the line and paragraph separators (U+2028/9, which split a
+# line as a newline does), and the characters that show as nothing (U+200B-D, U+2060-4,
+# U+FEFF), which make two words that read alike different.
+_UNPRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028\u2029"
+                          "\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
+
+
+def _word(text: str) -> str:
+    """A camera's one-line word as the fleet keeps it: storable, and without what would make
+    it read as something else where it is shown -- a newline or an ANSI escape in a log line
+    or a terminal table, a right-to-left override turning ``1.2.3-rc`` around on a page."""
+    return _UNPRINTABLE.sub("", _storable(text))
+
+
 class CheckIn(BaseModel):
     device_id: str
     # The numbers are bounded by what stores them: one past its column was an error from the
@@ -502,7 +517,8 @@ class CheckIn(BaseModel):
     # first, each ``[seq, slot, reason, cause_a, cause_b, events]`` (``ota.boot_journal``) --
     # what the stub decided on the boots that were not ordinary ones. The camera sends them
     # with every check-in; each one new to the server becomes a ``device.boot`` audit event.
-    stub: dict | None = None
+    # (any JSON: one that is not a report reads as "did not say", see _stub_fields)
+    stub: object = None
 
     @field_validator("product", "app_version", "slot", "representation", "fallback_reason")
     @classmethod
@@ -510,12 +526,12 @@ class CheckIn(BaseModel):
         """A camera's words are kept in its fleet row, the audit trail and every webhook they
         reach, and the camera chooses them: each is a short one, cut, never refused (this
         endpoint does not turn a camera away over a cosmetic field)."""
-        return _storable(v)[:_REASON_MAX] if v else v
+        return _word(v)[:_REASON_MAX] if v else v
 
     @field_validator("streams")
     @classmethod
     def _few(cls, v):
-        return [_storable(s)[:_STREAM_MAX] for s in v[:_STREAMS_MAX]]
+        return [_word(s)[:_STREAM_MAX] for s in v[:_STREAMS_MAX]]
 
 
 def _stub_fields(stub) -> tuple[int | None, str | None]:
@@ -713,19 +729,23 @@ def _rollout_reach(ms, ro, rel, account_id, product_id) -> int:
 
     "Behind" is in each camera's own order, the one the offer uses: by payload version, or
     by the account's publish counter for a camera built with PRODUCT_ID 0. By payload
-    version alone, a fleet of those that the rollout was offered to counted as none."""
-    before = (int(rel.get("payload_version", 0) or 0), int(rel.get("publish_seq", 0) or 0))
+    version alone, a fleet of those that the rollout was offered to counted as none. A
+    camera a pin holds, or whose boot stub cannot install the image, is never offered it by
+    the rollout, and is not counted either (see ``reachable_by``). A camera mid-trial is:
+    it is held only until it confirms."""
+    offer = (int(rel.get("payload_version", 0) or 0), int(rel.get("publish_seq", 0) or 0),
+             int(rel.get("min_stub", 0) or 0))
     behind = ms.count_devices(product_id=product_id, account_id=account_id,
-                              cohort=ro["cohort"], before_release=before)
+                              cohort=ro["cohort"], reachable_by=offer)
     base = ro.get("stage_attempted_base", 0)
     # The base is in the key: a resume or a raise to an equal percent moves it and keeps
     # everything else, and a reach counted for the old base gave the new stage a floor of 1.
-    key = (ro["rollout_id"], before, ro["percent"], base, ro["updated"], behind)
+    key = (ro["rollout_id"], offer, ro["percent"], base, ro["updated"], behind)
     if key not in _REACH:
         want = AUTOPAUSE_MIN_ATTEMPTED + base
         reach = ro["updated"]
         for device_id in ms.device_ids(product_id=product_id, account_id=account_id,
-                                       cohort=ro["cohort"], before_release=before):
+                                       cohort=ro["cohort"], reachable_by=offer):
             if reach >= want:
                 break
             reach += staged_in(ro["rollout_id"], device_id, ro["percent"])
@@ -765,12 +785,15 @@ def _ramp_or_autopause(ms, rid, ro):
         action, nxt = ramp_action(*args)
         if action == "pause":
             action, nxt = ramp_action(*args, floor())
-        # The raise, like the pause, is written only while the rollout is still active: a
-        # supersede or a pause by hand can land between the read above and the write.
+        # The raise, like the pause, is written only while the rollout is still active (a
+        # supersede or a pause by hand can land between the read above and the write) and
+        # still at the stage judged: a hand raise past the next stage landing there too was
+        # rewound to the next stage, its percent lowered to that stage's.
         if action == "raise":
-            # never lower the dial: an operator may have raised past the next stage by hand
+            # never lower the dial: an operator may have raised it by hand
             nxt = max(nxt, fresh["percent"])
-            if ms.update_rollout(rid, if_state="active", percent=nxt, stage_index=idx + 1,
+            if ms.update_rollout(rid, if_state="active", if_stage=idx, percent=nxt,
+                                 stage_index=idx + 1,
                                  stage_entered_at=datetime.now(timezone.utc).isoformat(),
                                  stage_attempted_base=fresh["attempted"],
                                  stage_failures_base=fresh["failures"]):
@@ -1258,7 +1281,7 @@ def feedback(report: Feedback, request: Request, raw: bytes = Depends(_raw_body)
         # Not a release of the product this camera runs -- and a camera with no fleet row
         # runs none: it was never offered anything, so it has no install to report.
         return {"ok": False}
-    reason = _storable(report.reason or "")[:_REASON_MAX] or None
+    reason = _word(report.reason or "")[:_REASON_MAX] or None
     ms.record_deployment(device_id=report.device_id, release_id=report.release_id,
                          product_id=rel["product_id"], status=report.status, reason=reason,
                          account_id=account_id)
@@ -1524,7 +1547,13 @@ def create_app(settings, *, storage=None, metastore=None, verifier=None, admin_a
     app.state.admin_auth = admin_auth if admin_auth is not None else TokenAuth(metastore)
     app.state.secret = secret
     app.state.ratelimit = _rate_limiter(settings, metastore)
+    # Registrations per account, and per address with the check-in limiter's IPv6 /64 tier:
+    # without it, one /64 (2**64 addresses) was a fresh address budget a request. The /64
+    # gets the per-address rate: it is one site, and registering is a desk's, not a fleet's.
     app.state.reg_ratelimit = RateLimiter(settings.registration_rate_per_min)
+    app.state.reg_addr_ratelimit = RateLimiter(
+        settings.registration_rate_per_min,
+        per_prefix_per_minute=settings.registration_rate_per_min)
     from .advisor import OsvClient
     app.state.osv = osv if osv is not None else OsvClient()
     from .datalake import DatalakeAdmin

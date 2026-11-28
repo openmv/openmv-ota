@@ -209,7 +209,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         M._MIGRATIONS = full
 
     store = M.SqliteMetadataStore(db)
-    assert store.migrate() == 45                           # the deploy applies 21 onward
+    assert store.migrate() == 46                           # the deploy applies 21 onward
     assert sorted(d["device_id"] for d in store.list_devices()) == [
         "OPENMV_N6:3c0021000c51", "noboard"]               # board-less rows are left alone
     assert store.device_account("OPENMV_N6:3c0021000c51")["account_id"] == "acct"
@@ -217,7 +217,7 @@ def test_migrations_are_append_only_and_v23_rekeys_a_real_database(tmp_path):
         "OPENMV_N6:3c0021000c51"
     store.add_token("h", "t", ["observe"], account_id="acct", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert M.SqliteMetadataStore(db).migrate() == 45        # idempotent
+    assert M.SqliteMetadataStore(db).migrate() == 46        # idempotent
 
 
 def test_parameterless_sql_is_executed_without_a_parameter_sequence():
@@ -470,10 +470,10 @@ def test_migrations_survive_postgres_transaction_semantics(tmp_path):
         M._MIGRATIONS = full
 
     store = _PostgresManners(db)
-    assert store.migrate() == 45             # walks past the orphaned column
+    assert store.migrate() == 46             # walks past the orphaned column
     store.add_token("h", "t", ["observe"], account_id="a", products=[7])
     assert store.get_token("h")["products"] == [7]
-    assert _PostgresManners(db).migrate() == 45        # and is idempotent
+    assert _PostgresManners(db).migrate() == 46        # and is idempotent
 
 
 def test_two_first_checkins_of_one_new_device_do_not_collide(tmp_path):
@@ -675,7 +675,7 @@ def test_device_ids_pages_through_every_device(tmp_path):
                             account_id="a")
     assert list(store.device_ids(product_id=7, account_id="a", page=2)) == \
         ["d0", "d1", "d2", "d3", "d4"]
-    assert list(store.device_ids(product_id=7, account_id="a", before_release=(2, 0), page=2)) == \
+    assert list(store.device_ids(product_id=7, account_id="a", reachable_by=(2, 0, 0), page=2)) == \
         ["d0", "d1"]
     assert list(store.device_ids(product_id=8, account_id="a")) == []
 
@@ -691,5 +691,68 @@ def test_behind_a_release_is_in_the_order_each_camera_is_offered_it(tmp_path):
         store.upsert_device(device_id=dev, product_id=0, current_payload_version=pv,
                             publish_seq=seq, orders_by_seq=by_seq)
     want = ["s_behind", "v_behind", "v_unknown"]
-    assert list(store.device_ids(product_id=0, before_release=(2, 5))) == want
-    assert store.count_devices(product_id=0, before_release=(2, 5)) == len(want)
+    assert list(store.device_ids(product_id=0, reachable_by=(2, 5, 0))) == want
+    assert store.count_devices(product_id=0, reachable_by=(2, 5, 0)) == len(want)
+
+
+def test_a_rollout_reaches_no_camera_a_pin_holds_or_its_stub_cannot_take(tmp_path):
+    """The offer takes a pinned camera (its own pin, or its cohort's) out of every rollout,
+    and offers no camera an image its boot stub cannot install; the reach counted them."""
+    store = ms.SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    for dev, cohort, stub in (("free", "c", (3, None)), ("pinned", "c", (3, None)),
+                              ("old_stub", "c", (2, None)), ("no_stub", "c", (None, None)),
+                              ("in_pinned_cohort", "held", (3, None))):
+        store.upsert_device(device_id=dev, product_id=7, current_payload_version=1,
+                            cohort=cohort, stub=stub, account_id="a")
+    store.set_device_pin("pinned", "rel_x", account_id="a")
+    store.set_device_pin("free", "rel_x", account_id="other")      # another account's pin: none
+    store.set_cohort_pin(7, "held", "rel_x", account_id="a")
+    reach = dict(product_id=7, account_id="a", reachable_by=(2, 0, 3))
+    assert list(store.device_ids(**reach)) == ["free"]
+    assert store.count_devices(**reach) == 1
+    assert sorted(store.device_ids(product_id=7, account_id="a", reachable_by=(2, 0, 0))) == \
+        ["free", "no_stub", "old_stub"]
+
+
+def test_v46_keeps_the_newest_active_rollout_of_each_cohort_and_supersedes_the_rest(
+        tmp_path, monkeypatch):
+    """The unique index on active rollouts must build on a database a race already left
+    with two active for one cohort: the newest is kept, the others superseded, as a create
+    supersedes."""
+    full = ms._MIGRATIONS
+    monkeypatch.setattr(ms, "_MIGRATIONS", full[:45])
+    store = ms.SqliteMetadataStore(str(tmp_path / "ota.db"))
+    store.migrate()
+    for rid, cohort, when, state in (("ro_a", "c", "2026-01-01", "active"),
+                                     ("ro_b", "c", "2026-01-03", "active"),
+                                     ("ro_c", "c", "2026-01-02", "active"),
+                                     ("ro_d", "c", "2026-01-03", "active"),    # ties: by id
+                                     ("ro_e", "c", "2026-01-04", "stopped"),
+                                     ("ro_f", "d", "2026-01-01", "active")):
+        store.add_rollout(rollout_id=rid, release_id="r", product_id=7, cohort=cohort,
+                          percent=5, state=state)
+        store.execute("UPDATE rollouts SET created_at = ? WHERE rollout_id = ?", (when, rid))
+    monkeypatch.setattr(ms, "_MIGRATIONS", full)
+    assert store.migrate() == len(full)
+    got = {r["rollout_id"]: (r["state"], r["pause_reason"]) for r in store.list_rollouts()}
+    assert got == {"ro_a": ("paused", "superseded"), "ro_b": ("paused", "superseded"),
+                   "ro_c": ("paused", "superseded"), "ro_d": ("active", None),
+                   "ro_e": ("stopped", None), "ro_f": ("active", None)}
+    assert store.add_rollout(rollout_id="ro_g", release_id="r", product_id=7, cohort="c",
+                             percent=5) is False
+
+
+def test_a_search_for_a_percent_or_underscore_matches_only_itself(tmp_path):
+    """``%`` and ``_`` are LIKE's wildcards: a search for ``a_b`` found ``axb`` too, and one
+    for ``%`` every camera of the account."""
+    store = SqliteMetadataStore(str(tmp_path / "m.db"))
+    store.migrate()
+    for dev in ("a_b", "axb", "50%", "a\\b", "a!b"):
+        store.upsert_device(device_id=dev, product_id=1)
+    assert store.count_devices(q="a_b") == 1 and store.count_devices(q="%") == 1
+    assert store.count_devices(q="a\\b") == 1 and store.count_devices(q="a!b") == 1
+    assert store.count_devices(q="!") == 1 and store.count_devices(q="a") == 4
+    store.add_account(created_by="ci", account_id="acct_1", name="Under_Score")
+    store.add_account(created_by="ci", account_id="acctx1", name="Underxscore")
+    assert [a["account_id"] for a in store.list_accounts(q="r_s")] == ["acct_1"]

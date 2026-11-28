@@ -312,7 +312,8 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
     stub = get_board(t.name).stub
     if stub is None or t.role != "main":        # a coprocessor romfs is plain: no firmware in it
         return body, []
-    firmware = _build_product(p, t, out_dir, firmware_image_name(t.name))
+    built: list = []                            # the records of what is packed: one build's
+    firmware = _build_product(p, t, out_dir, firmware_image_name(t.name), built)
     if len(firmware) > stub.firmware_max:
         raise BuildError("%s firmware is %d bytes but the boot stub's window holds %d (%d over)"
                          % (t.name, len(firmware), stub.firmware_max,
@@ -321,7 +322,7 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
     if stub.text2_dest is not None:
         # The second text region `build firmware` relinked into the board's spare sector: its
         # own component, since it has its own destination. Empty when nothing was moved.
-        text2 = _build_product(p, t, out_dir, "%s-firmware-text2.bin" % _target_name(t))
+        text2 = _build_product(p, t, out_dir, "%s-firmware-text2.bin" % _target_name(t), built)
         if len(text2) > stub.text2_max:
             raise BuildError("%s second text region is %d bytes but its sector holds %d (%d over)"
                              % (t.name, len(text2), stub.text2_max, len(text2) - stub.text2_max),
@@ -330,30 +331,37 @@ def _pack_firmware(p, t, out_dir: Path, body: bytes) -> tuple[bytes, list]:
             blobs.append((stub.text2_dest, text2))
     if stub.coproc_dest is not None:
         # The second core's image (the AE3's M55_HE): its own partition, so its own component.
-        coproc = _build_product(p, t, out_dir, coprocessor_image_name(t.name))
+        coproc = _build_product(p, t, out_dir, coprocessor_image_name(t.name), built)
         if len(coproc) > stub.coproc_max:
             raise BuildError("%s coprocessor firmware is %d bytes but its window holds %d (%d over)"
                              % (t.name, len(coproc), stub.coproc_max, len(coproc) - stub.coproc_max),
                              exit_code=1)
         blobs.append((stub.coproc_dest, coproc))
+    from . import provenance
+    provenance.one_build(built)
     return components.append(body, blobs)
 
 
-def _build_product(p, t, out_dir: Path, fname: str) -> bytes:
-    """A file `build firmware` left behind, read from the same output dir as this build, else
-    the project's build/ (a romfs build sent elsewhere with --output still packs the project's
-    firmware). Missing means the firmware was never built, which is the error named."""
-    places = [out_dir / fname]
-    if (p.root / "build") != out_dir:
-        places.append(p.root / "build" / fname)
-    for path in places:
-        try:
-            return path.read_bytes()
-        except OSError:
-            continue
-    raise BuildError("%s not found: a %s image carries the firmware its boot stub installs"
-                     " -- run `openmv-ota build firmware` first"
-                     % (" or ".join(str(x) for x in places), t.name), exit_code=1)
+def _build_product(p, t, out_dir: Path, fname: str, built: list) -> bytes:
+    """A file `build firmware` on this machine wrote to this build's output dir, from the commits
+    the lock pins (see :mod:`.provenance`); it is signed into the image, so a binary found there
+    any other way is refused, and the one packed is named with its sha256. Only the output dir
+    is looked in: a romfs build sent elsewhere with --output packed the project's build/ when
+    that dir had none, which no output line said."""
+    from . import provenance
+
+    path = out_dir / fname
+    try:
+        data = path.read_bytes()
+    except OSError:
+        raise BuildError("%s not found: a %s image carries the firmware its boot stub installs"
+                         " -- run `openmv-ota build firmware%s` first"
+                         % (path, t.name, "" if out_dir == p.root / "build" else
+                            " -o %s" % out_dir), exit_code=1) from None
+    entry = provenance.check(path, data, p.lock, p.root)
+    built.append(entry)
+    print("note: %s packs %s (sha256 %s)" % (t.name, path, entry["sha256"]), file=sys.stderr)
+    return data
 
 
 def _signer_epoch(signer: _OtaSigner) -> int:
@@ -997,8 +1005,10 @@ def _gzip_small(data: bytes, wbits: int) -> bytes:
 
 # --- OTA download image (the gzipped slot-sized image a server hosts) --------
 
-SINGLE_WBITS = 12     # 4 KiB inflate window: measured on the bench -- a classic's heap after
-#                        the app + runtime lib cannot give DeflateIO 8 KiB contiguous
+SINGLE_WBITS = 11     # 2 KiB inflate window: a classic's heap after the app + runtime lib cannot
+#                        give DeflateIO 8 KiB contiguous, and on the OpenMV Cam M7 4 KiB fitted by
+#                        ~100 bytes: a few bytes more of the device library and its encrypted
+#                        install was a MemoryError before the erase. 2 KiB costs a little ratio.
 
 
 @dataclass
@@ -1082,7 +1092,7 @@ def build_ota_image(
                               trailer_bytes, block, slot_size)
         single = slot_size == t.partition_size
         if single:
-            # Small-heap boards: an 8 KiB inflate window (wbits 13) instead of the
+            # Small-heap boards: a 2 KiB inflate window (SINGLE_WBITS) instead of the
             # default 32 KiB, recorded in the manifest so the device allocates the same.
             gz = _gzip_small(image, SINGLE_WBITS)
         else:

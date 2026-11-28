@@ -1168,13 +1168,19 @@ class _InstallGate:
     it -- and if that fails, this boot does not reboot for it again until ``_REBOOT_GAP_S`` of
     uptime and ``_INPLACE_TRIES`` failed in-place attempts have passed. The server's offers are
     deterministic per device (rollout percentage by device id), so the boot check-in after the
-    reboot is offered the same release."""
+    reboot is offered the same release.
+
+    What the reset after a failed install does forget is kept by the installer itself, in a small
+    file on /flash: an image that failed after the erase is held back for a while, however many
+    boots come between (installer.py, "THE HOLD"). Not load-bearing: a lost record only means the
+    next install is tried sooner."""
 
     def __init__(self):
         self._answered = False   # a check-in has been answered (un-throttled) this boot
         self._boot_key = None    # the release the boot check-in tried in place, if any
         self._key = None         # the release the failure count below is about
         self._fails = 0          # consecutive failed in-place installs of _key
+        self._held = False       # the installer held a release back this boot
 
     def answered(self):
         """A check-in was answered with no offer: the boot check-in has passed."""
@@ -1186,6 +1192,8 @@ class _InstallGate:
             self._answered = True
             self._boot_key = key
             return "install"
+        if self._held:                       # a hold is in force: each boot counts toward its end,
+            return "install"                 # so whoever answers must not be able to add boots
         if key != self._boot_key:            # offered since boot: reboot, the boot install takes it
             return "reboot"
         if (self._key == key and self._fails >= _INPLACE_TRIES
@@ -1193,8 +1201,14 @@ class _InstallGate:
             return "reboot"                  # the boot install failed, and so has every retry
         return "install"
 
-    def failed(self, key):
-        """An in-place install of ``key`` raised (before the erase -- after it, it reboots)."""
+    def failed(self, key, err=None):
+        """An in-place install of ``key`` raised ``err`` (before the erase -- after it, it
+        reboots). A release the installer held back is not a failure: it is waiting. A hold ends
+        after enough boots as well as uptime, so from then on this boot never reboots for an
+        offer (see plan): a new release id in every answer would otherwise wear the hold down."""
+        if "install held back" in str(err):
+            self._held = True
+            return
         if key != self._key:
             self._key, self._fails = key, 0
         self._fails += 1
@@ -1388,8 +1402,8 @@ async def _poll_forever(server_url, self_test, poll_after_s, ca, ntp_host, recov
                             await _reboot_for_install()  # hil-residual: the witness is the CALLEE's first line (`run: fresh-heap reboot`)
                         try:  # hil-residual: failure-count guard around install(); witnessed by install.start (callee)
                             install(manifest_url, ca, resp.get("lockbox"))  # hil-residual: install() reboots on success (no post-return witness); that it ran is proven by install.start / install.staged
-                        except Exception:  # hil-residual: a pre-erase install failure; witnessed by the caller's `run: cycle failed`
-                            _gate.failed(key)  # hil-residual: counter bookkeeping (host-tested _InstallGate)
+                        except Exception as e:  # hil-residual: a pre-erase install failure; witnessed by the caller's `run: cycle failed`
+                            _gate.failed(key, e)  # hil-residual: counter bookkeeping (host-tested _InstallGate)
                             raise  # hil-residual: bare re-raise to the cycle handler below
             except Exception as e:  # hil-residual: post-check-in failure (a verdict on the release, or an install fault); exercised by corrupt/bad_sig
                 # Retry next poll -- but SAY SO. Swallowed silently, a board that can never install
@@ -1594,16 +1608,15 @@ def _json_values(b):
         if c == 34:                                  # '"': one value, skipped to its close
             n += 1
             num = False
-            while True:
-                j = b.find(b'"', i)
-                if j < 0:
-                    return n                         # unterminated: the parser refuses it
-                k = j
-                while k > i and b[k - 1] == 92:      # the backslashes just before this quote
-                    k -= 1
-                i = j + 1
-                if not (j - k) & 1:                  # an even run: this quote ends it
+            while i < end:                           # unterminated: the parser refuses it
+                c = b[i]
+                i += 1
+                if c == 34:                          # an unescaped quote ends it
                     break
+                if c == 92 and i < end:
+                    # the parser takes the byte after a `\` as the escape, and four more after
+                    # `\u`, whatever they are: a quote among them does not end the string
+                    i += 1 + 4 * (b[i] == 117)
         elif 48 <= c <= 57 or c == 45 or c == 46:    # digits, '-', '.': one number a run
             if not num:
                 n += 1

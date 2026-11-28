@@ -49,7 +49,17 @@ budget for now; these are the free/cheap passes to run first, in order.
 - **Internal red-team passes** — `/security-review`, and `/code-review ultra` on the
   signing/verify/installer/anti-rollback path and the camera-identity path (registration,
   signed check-ins, lockboxes).
+- **The OpenMV Cam M7's first erase reads back unerased** — on openmv master the first erase of
+  its slot reads back unerased at offset 0 (`erase verify failed at 0`), and the attempt after it
+  installs. Flash faults are retried now, so the install goes through, but the cause is not
+  known; a stale D-cache line over the XIP alias (read just before by the blank probe) is the
+  first thing to rule out.
 - **Left from the 2026-11 security review** (low severity, each needs a design call):
+  - The install hold writes nothing while a watchdog is armed: its record is a FAT file, and
+    on the RT1060 and the N6 the 100 ms watchdog bit inside that write (nothing feeds through
+    a flash erase). So an armed camera is not protected from a server that offers junk on
+    every boot. Keep the record in raw flash the installer writes a sector at a time (the
+    target slot's last block, erased first), so it can be written fed.
   - Registration at a desk: the camera signs the desk's challenge and nothing else, so the
     device id and exchange key it reports ride unsigned. A rogue USB device at a desk could
     claim another camera's id. Sign the whole report.
@@ -142,6 +152,33 @@ budget for now; these are the free/cheap passes to run first, in order.
     timeout nor the rate floor counts there. `certs/ca.pem` as a link to the system
     bundle, or `[ota].ca` outside the project, is refused; a `device/<module>` that is a
     directory is a bare error.
+  - Round 22 (host): `flash bootloader` writes `<board>-bootloader.bin` (and the AE3's images
+    and TOC) as `build/` holds them, with no check against what `build firmware` recorded. A
+    bench board that fails three
+    different releases in a row (`corrupt_sha` dispatched alone, again and again) holds the next
+    one for 10 minutes; the regression order puts an install after every corrupt leg, and no
+    scenario looks for `install held back` yet. The `corrupt_sha` and `reinstall` legs now
+    expect `install.fallback` in place of `install.retry`, and `corrupt` no longer expects a
+    retry; all three forbid one, unproven on the fleet. A board build's record binds the inputs
+    `build firmware` fed it, but `build romfs` cannot recompute them, so a project changed since
+    (keys, frozen modules) packs the firmware built before the change. A camera's relay token
+    lives 24 h and the camera reconnects with the grant from its latest check-in, so one whose
+    check-ins are further apart (an outage, or an app `poll_after_s` near a day) is refused by
+    the relay every 5 s per stream, and has no Live, until it checks in again.
+  - Round 21 (host): the camera's JSON caps bound values, not heap. On the M4 (OPENMV2,
+    a 44 KB GC heap) a hostile check-in answer inside the caps (about 455 strings of 16
+    characters, some 24 KB parsed) runs the heap out and the runtime reboots, and the
+    installer holds three copies of a manifest of up to 8 KB (raw, region, body) before it
+    parses one: give each value a byte budget, and parse from memoryviews. `poll_watch` can
+    still raise `MemoryError` from `_read_capped`. In the app, a TLS failure on a clock NTP
+    set does not end the six-hour hold on NTP (Round 15's "minutes to six hours"): a failed
+    check-in does not say whether TLS or the network failed, and dropping the hold on every
+    one would put NTP on the wire every five minutes of an outage. The ignored files a build
+    leaves in the firmware tree (`build/`, mpy-cross's `build/`, `__pycache__/`) are not looked
+    into: a tree handed over with planted objects (`--incremental`) or a byte-code cache whose
+    source's mtime and size it matches runs them, as Round 18's mpy-cross does. Two hosts in
+    separate PID namespaces writing one download name in a shared directory can collide on
+    its temporary name.
   - Round 19 (host): Windows is not a supported host (CI runs Linux and macOS): there,
     `CreateProcess` and `shutil.which` look in the working directory before `PATH`, so a
     `git.exe` or `dfu-util.exe` at a project's top runs; every tool wants resolving to an
@@ -204,6 +241,20 @@ budget for now; these are the free/cheap passes to run first, in order.
     call; a token in account `''` reads every account's `/fleet/bases`.
   - Rounds 8-10 (server): journal entries the audit budget dropped are not audited later; a
     `stale` refusal uses the day's refusal-audit slot.
+  - Round 19 (server): an `accounts` token's customers are filed under its name (`_owner`),
+    which is unique only within its account, so two such tokens with one name share one
+    customer directory (only the server's root mints them). A forgotten camera's ingest
+    token stays valid for up to a day, so its data can arrive again after the erasure. The
+    auto-pause reach still counts a camera mid-trial: the fleet row does not keep the slots
+    the offer's `settled` reads.
+  - Round 20 (server): after a limited token's forget, the whole-account token's forget of
+    the same id answers 404 (the fleet row is gone), so what the camera stored under its other
+    products waits for retention unless it checks in again. A publish token's storage has no
+    per-account cap (an image and 32 deltas of up to 512 MiB each per publish, any count). A
+    create that loses the cohort twice (409) has already audited and webhooked `superseded`
+    naming a rollout that never existed; a PATCH has no stage guard beside an auto-raise; an
+    old instance's create landing between v46's supersede and its index fails that deploy's
+    migration (the next start heals it).
   - Round 18 (server): a rollout's status (`rollout_status.on_release`, `_ROLLOUT_STATE`)
     still orders a camera by payload version alone, so a camera built with `PRODUCT_ID` 0 can
     read as behind or ahead on the dashboard (display only; the offer and the auto-pause

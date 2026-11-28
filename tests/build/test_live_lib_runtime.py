@@ -30,10 +30,19 @@ def test_split_url(url, want):
     assert _lib._split_url(url) == want
 
 
-@pytest.mark.parametrize("bad", ["ftp://x/y", "no-scheme", "https://"])
+@pytest.mark.parametrize("bad", ["ftp://x/y", "no-scheme", "https://", "https://:443/p",
+                                 "https://r:99999999999999999999/p", "wss://r:65536/p",
+                                 "http://r:0/p", "http://r:-1/p", "http://r:x/p"])
 def test_split_url_rejects(bad):
+    """A port out of range is refused here: past this it reached the address lookup, which
+    raised OverflowError or TypeError, not the ValueError every caller handles."""
     with pytest.raises(ValueError):
         _lib._split_url(bad)
+
+
+def test_split_url_takes_the_ends_of_the_port_range():
+    assert _lib._split_url("http://r:1/p")[2] == 1
+    assert _lib._split_url("wss://r:65535/p")[2] == 65535
 
 
 # --- the backscroll contract: session id ------------------------------------

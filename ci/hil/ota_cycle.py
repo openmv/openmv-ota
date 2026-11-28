@@ -301,8 +301,10 @@ CDC_FLASH_TIMEOUT = 420
 NOCDC_FLASH_TIMEOUT = 480
 
 # The device's install-retry budget (installer.py: `getattr(cfg, "INSTALL_RETRIES", 3)`, and no
-# project here overrides it). The reinstall scenario's second phase exhausts this budget on
-# purpose, and each attempt writes a full slot, so it is the multiplier on that phase's window.
+# project here overrides it). Each attempt writes a full slot, so it is the multiplier on the
+# reinstall scenario's second phase. That phase's image fails its sha256, which stops after the
+# first attempt (installer._stops: only the link's failures are retried); the window still
+# allows for a retried dropped link.
 _RETRIES = 3
 
 
@@ -442,6 +444,7 @@ COVERAGE = {
     "install: attempt": "install.retry",
     "install: installed + armed": "install.armed",
     "install: FAILED after": "install.fallback",
+    "install: delta failed integrity": "install.demote",     # a delta that failed: the full image next
     # NB: a dropped download that RESUMES logs "install: resuming at <offset>" -- deliberately NOT a
     # coverage marker. It only fires when the link actually drops mid-transfer, which no scenario can
     # make happen on demand (it is guaranteed on the H7 Plus, whose WINC aborts every transfer at
@@ -681,11 +684,15 @@ SCENARIOS = {
         "forbid": ["install.delta", "install.fallback", "install.reject"],
     },
     "corrupt": {
-        "desc": "tampered image fails integrity -> retries exhausted -> falls back",
+        # Junk that fails to inflate is not retried: only the link's failures are, and each
+        # attempt is a whole-slot erase. Every representation is tampered (see the publish), so
+        # the delta the device picks first fails, is demoted to the full image, and that fails
+        # too: two slot writes, then the fallback reset. A demote is not a retry.
+        "desc": "tampered image fails integrity -> delta demoted, not retried -> falls back",
         "publish": "corrupt", "app": "confirm", "end": "golden",
-        "expect": ["install.start", "install.retry", "install.retry_cleanup", "install.fallback",
-                   "install.reboot", "boot.fallback"],
-        "forbid": ["install.armed", "confirm.promoted"],
+        "expect": ["install.start", "install.demote", "install.retry_cleanup",
+                   "install.fallback", "install.reboot", "boot.fallback"],
+        "forbid": ["install.armed", "confirm.promoted", "install.retry"],
     },
     # THE ONLY SCENARIO THAT STARTS FROM A PROMOTED BOARD, and under v2 it is the one that
     # demonstrates why v2 exists. In v1 the device ran the promoted image with only the FACTORY
@@ -706,11 +713,12 @@ SCENARIOS = {
             # on its provisioned image. Marker-scored, so no end-version is asserted -- and under
             # A/B the honest expectation CHANGED: the device keeps the promoted 1.1.0 rather than
             # losing it, because the slot behind it is that release and not the factory build.
-            "expect": ["install.start", "install.reject_sha", "install.retry"],
+            # A sha256 mismatch is not retried (bytes that hashed wrong hash wrong again): the one
+            # attempt ends in the fallback reset, and the failure is kept on /flash.
+            "expect": ["install.start", "install.reject_sha", "install.fallback"],
             "forbid": ["confirm.promoted"],
-            # Marker-scored: see the note at the phase-2 call site. The retry-exhaust fallback to
-            # golden is `corrupt`'s job and is slot-sized; asserting it here would make this
-            # scenario pass or fail on how big the board's slot is rather than on the gate.
+            # Marker-scored: see the note at the phase-2 call site. The fallback marker comes after
+            # one slot write, as phase 1's install does; settling back on a slot is not waited for.
             "by_marker": True,
         },
     },
@@ -742,15 +750,15 @@ SCENARIOS = {
         # decompress (a bare deflate error, before the integrity check). `corrupt_sha` flips a
         # DECOMPRESSED byte + re-gzips, so the image decompresses cleanly and the failure is the
         # sha256 gate itself (install.reject_sha) -- the actual integrity trust boundary, on HW.
-        # The sha256 GATE (install.reject_sha) is the point. The retry-exhaust -> golden fallback is
-        # `corrupt`'s job and is SLOW here: each attempt writes the FULL image before the sha check
-        # fails (~3x the N6's 12 MiB slot -> past the watch window). So assert the gate fired and the
-        # bad image was retried, never committed -- the device stays on its provisioned VERSION
-        # (it never promotes 1.1.0), which satisfies end="golden".
+        # The sha256 GATE (install.reject_sha) is the point. A mismatch is not retried: bytes that
+        # arrived and hashed wrong hash wrong again, so the one attempt (one full slot write) ends
+        # in the fallback reset, and the device stays on its provisioned VERSION (it never promotes
+        # 1.1.0), which satisfies end="golden". The failure is kept on /flash, so the check-ins
+        # after the reset are refused before the erase ("install held back").
         "desc": "image decompresses but sha256 mismatches -> integrity gate rejects the update",
         "publish": "corrupt_sha", "app": "confirm", "end": "golden",
-        "expect": ["install.start", "install.reject_sha", "install.retry"],
-        "forbid": ["install.armed", "install.committed", "confirm.promoted"],
+        "expect": ["install.start", "install.reject_sha", "install.fallback"],
+        "forbid": ["install.armed", "install.committed", "confirm.promoted", "install.retry"],
     },
     "rollback": {
         # v2 gives a trial MAX_ATTEMPTS boots (default 3), not one, so this scenario now needs
@@ -1636,6 +1644,10 @@ class UartCapture:
 # Bench app (main.py) -- minimal: bring the network up, run the OTA loop against the
 # bench server, and confirm the trial once operational. LAN or WiFi per board.
 # ---------------------------------------------------------------------------
+# This run's golden, by a token its bench app carries (one scenario a process): see bench_main_py.
+_GOLDEN_RUN = os.urandom(4).hex()
+
+
 def bench_main_py(board, net, app="confirm"):
     if net == "wifi":
         # openmv_ota.wifi() picks network.WLAN, or network.WINC on the H7 Plus's ATWINC1500 shield
@@ -1752,6 +1764,30 @@ def bench_main_py(board, net, app="confirm"):
             "            openmv_ota.confirm()\n"
             "        await asyncio.sleep(2)\n"
         )
+    # A FRESH GOLDEN STARTS WITH NO HOLD. The hold record is the camera's own, on /flash, and a
+    # flash of the golden keeps /flash: the corrupt leg's failure held the next leg's install back
+    # ("install held back 594s", the Nicla's and the Portenta's watchdog legs). The first boot of
+    # this run's golden drops it -- before run(), which may arm a watchdog no FAT write can be fed
+    # through -- and the boots after it (the corrupt leg's fallback) keep it.
+    fresh = (
+        "    try:\n"
+        "        import os as _os\n"
+        "        try:\n"
+        "            _run = open('/flash/.hil-golden').read()\n"
+        "        except OSError:\n"
+        "            _run = ''\n"
+        "        if _run != " + repr(_GOLDEN_RUN) + ":\n"
+        "            try:\n"
+        "                _os.remove('/flash/openmv-ota-hold.txt')\n"
+        "            except OSError:\n"
+        "                pass\n"
+        "            with open('/flash/.hil-golden', 'w') as _f:\n"
+        "                _f.write(" + repr(_GOLDEN_RUN) + ")\n"
+        "            _os.sync()\n"
+        "            _blog.info('app: a fresh golden, no hold')\n"
+        "    except Exception as _e:\n"
+        "        _blog.error('app: hold reset FAILED %r' % (_e,))\n"
+    )
     # The app logs its OWN progress to the openmv_ota logger (-> the coverage UART at DEBUG),
     # and wraps the whole run so any crash is VISIBLE there. Without this a trial that boots
     # but faults in the app is invisible: an uncaught exception prints to the USB REPL, not
@@ -1804,6 +1840,7 @@ def bench_main_py(board, net, app="confirm"):
         "        _blog.info('app: sealed data round-trip ok')\n"
         "    except Exception as _e:\n"
         "        _blog.error('app: seal FAILED %r' % (_e,))\n"
+        + fresh +
         "    _blog.info('app: network up, starting run()')\n"
         + start_run +
         trial_policy + "\n\n"

@@ -114,16 +114,15 @@ def json_values(b: bytes) -> int:
         if c == 34:                                  # '"': one value, skipped to its close
             n += 1
             num = False
-            while True:
-                j = b.find(b'"', i)
-                if j < 0:
-                    return n                         # unterminated: the parser refuses it
-                k = j
-                while k > i and b[k - 1] == 92:      # the backslashes just before this quote
-                    k -= 1
-                i = j + 1
-                if not (j - k) & 1:                  # an even run: this quote ends it
+            while i < end:                           # unterminated: the parser refuses it
+                c = b[i]
+                i += 1
+                if c == 34:                          # an unescaped quote ends it
                     break
+                if c == 92 and i < end:
+                    # the camera takes the byte after a `\` as the escape, and four more after
+                    # `\u`, whatever they are: a quote among them does not end the string
+                    i += 1 + 4 * (b[i] == 117)
         elif 48 <= c <= 57 or c == 45 or c == 46:    # digits, '-', '.': one number a run
             if not num:
                 n += 1

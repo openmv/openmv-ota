@@ -19,11 +19,20 @@ from .errors import ProjectError
 GIT = "git"
 
 # The tree is one the project was pointed at, and its own config can name a program for git
-# to run (a filesystem monitor on any read of the index, hooks): read, never run.
-_QUIET = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null")
+# to run (a filesystem monitor on any read of the index, hooks): read, never run. Nor may its
+# config narrow what git looks at: a replaced object (`git replace` has the pinned commit read
+# as another, with the other's files), untracked files left unlisted, or so little of a file's
+# recorded stat checked that a changed file of the same size and mtime (an archive keeps both)
+# is taken as unchanged without being read. These are `-c` settings because git hands those
+# down to the git it runs in a submodule.
+_QUIET = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+          "-c", "core.useReplaceRefs=false", "-c", "status.showUntrackedFiles=all",
+          "-c", "core.checkStat=default")
 # ...and none of these commands fetches. A tree set up as a partial clone has git fetch a
 # missing object on any read, with the transport program its config names for the remote.
-_NO_FETCH = {"GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""}
+# (The git a submodule's status runs drops GIT_NO_REPLACE_OBJECTS; core.useReplaceRefs is
+# what reaches it.)
+_ENV = {"GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": "", "GIT_NO_REPLACE_OBJECTS": "1"}
 
 
 def _env_count() -> int:
@@ -47,7 +56,7 @@ def _filter_names(repo: Path, nested: bool, seen: set[str]) -> None:
         proc = subprocess.run([GIT, *_QUIET, "-C", str(repo), *args], capture_output=True,
                               text=True, env=env)
         return proc.stdout.split("\0") if proc.returncode == 0 else []
-    env = {**os.environ, **_NO_FETCH, "GIT_CONFIG_COUNT": str(_env_count())}
+    env = {**os.environ, **_ENV, "GIT_CONFIG_COUNT": str(_env_count())}
     fields = git("config", "--includes", "--show-scope", "--name-only", "-z",
                  "--get-regexp", r"^filter\.")
     for scope, name in zip(fields[0::2], fields[1::2], strict=False):
@@ -93,7 +102,7 @@ def _no_filters(repo: Path, nested: bool = False) -> dict[str, str]:
     pairs = [(name + key, value) for name in sorted(names) for key, value in
              ((".clean", ""), (".smudge", ""), (".process", ""), (".required", "false"))]
     base = _env_count()
-    env = {**_NO_FETCH, "GIT_CONFIG_COUNT": str(base + len(pairs))}
+    env = {**_ENV, "GIT_CONFIG_COUNT": str(base + len(pairs))}
     for i, (key, value) in enumerate(pairs, base):
         env["GIT_CONFIG_KEY_%d" % i] = key
         env["GIT_CONFIG_VALUE_%d" % i] = value
@@ -132,7 +141,7 @@ def untracked(path: Path) -> bool | None:
     try:
         proc = subprocess.run([GIT, *_QUIET, "-C", str(path.parent), "ls-files",
                                "--error-unmatch", "--", path.name],
-                              capture_output=True, text=True, env={**os.environ, **_NO_FETCH})
+                              capture_output=True, text=True, env={**os.environ, **_ENV})
     except FileNotFoundError:
         return None
     if proc.returncode == 0:
@@ -161,21 +170,68 @@ def describe(repo: Path) -> str:
 
 
 def is_dirty(repo: Path) -> bool:
-    return bool(run_git(repo, "status", "--porcelain"))
+    # every untracked file, and every change in a submodule whatever the tree's config or
+    # .gitmodules says to ignore of it
+    return bool(run_git(repo, "status", "--porcelain", "--untracked-files=all",
+                        "--ignore-submodules=none"))
 
 
 def remote_url(repo: Path) -> str | None:
     return run_git(repo, "remote", "get-url", "origin", check=False)
 
 
+# What a firmware build leaves in the tree for git to ignore: make's output, the host mpy-cross
+# it builds, and Python's byte-code caches. Any other file git ignores is one the tree hides
+# from `git status`: a pattern in its own config (`info/exclude`), or in a `.gitignore` it does
+# not track, keeps a new source file or makefile include out of the list.
+_BUILD_OUTPUT = ("build/", "lib/micropython/mpy-cross/build/")
+
+
 def dirty_paths(repo: Path, limit: int = 5) -> list[str]:
-    """The first few paths `git status --porcelain` reports (nested __pycache__ junk
-    in a submodule counts too) -- so a dirty-checkout refusal can NAME the offenders
-    instead of sending the user spelunking."""
-    out = run_git(repo, "status", "--porcelain", check=False) or ""
-    lines = [line.strip() for line in out.splitlines() if line.strip()]
-    return lines[:limit] + (["... and %d more" % (len(lines) - limit)]
-                            if len(lines) > limit else [])
+    """What keeps ``repo`` from being the commits it is pinned to, in it and in each submodule
+    checked out under it, as the first few -- so a dirty-checkout refusal can NAME the
+    offenders instead of sending the user spelunking. That is what `git status` reports, a
+    file git ignores that no build left, a file the index tells git not to look at
+    (assume-unchanged, skip-worktree) and a replaced object (`git replace`). Empty is clean.
+
+    Each repository is asked itself, and asked of its submodules only whether they moved: the
+    git `status` runs in a submodule reads that submodule's config, which can have it ignore
+    the submodules nested in it."""
+    env = {**os.environ, **_no_filters(repo, True)}
+    found: list[str] = []
+    todo = [(repo, "")]
+    try:
+        while todo:
+            here, pre = todo.pop()
+
+            def git(*args: str, here: Path = here) -> str:
+                proc = subprocess.run([GIT, *_QUIET, "-C", str(here), *args],
+                                      capture_output=True, text=True, env=env)
+                return proc.stdout if proc.returncode == 0 else ""
+            fields = iter(git("status", "--porcelain", "-z", "--untracked-files=all",
+                              "--ignored=matching", "--ignore-submodules=dirty").split("\0"))
+            for entry in fields:
+                if {"R", "C"} & set(entry[:2]):
+                    next(fields, "")                  # a rename's old name
+                path = pre + entry[3:]
+                # (with every untracked file listed, git names each ignored file in a cache,
+                # not the directory: `tools/__pycache__/haar2c.cpython-312.pyc`)
+                if entry and not (entry[:2] == "!!" and (path in _BUILD_OUTPUT or
+                                                         "/__pycache__/" in "/" + path)):
+                    found.append(entry[:3].strip() + " " + path)
+            found += ["%s%s (git is told not to look at it)" % (pre, e[2:])
+                      for e in git("ls-files", "-v", "-z").split("\0")
+                      if e[:1].islower() or e[:1] == "S"]
+            found += ["%s%s (a replaced object)" % (pre, ref)
+                      for ref in git("for-each-ref", "--format=%(refname)", "refs/replace/").split()]
+            for entry in git("ls-files", "-s", "-z").split("\0"):
+                mode, _, path = entry.partition("\t")
+                if mode.startswith("160000") and (here / path / ".git").exists():
+                    todo.append((here / path, pre + path + "/"))
+    except FileNotFoundError:
+        raise ProjectError("git not found on PATH") from None
+    return found[:limit] + (["... and %d more" % (len(found) - limit)]
+                            if len(found) > limit else [])
 
 
 def submodule_remotes(repo: Path) -> dict[str, str]:
@@ -235,19 +291,27 @@ def clone(remote: str, dest: Path, commit: str | None = None) -> None:
     # `--` ends the options: a remote that starts with a dash is a path, never a flag.
     if commit is not None and not re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", commit):
         raise ProjectError("not a commit hash: %r" % commit, exit_code=1)
+    # A clone fetches, over the transports a firmware remote is (a local mirror too): an
+    # `ext::` or remote-helper URL in the lock runs a program. Everything else is as for the
+    # reads above.
+    env = {**os.environ, **_ENV, "GIT_ALLOW_PROTOCOL": "https:ssh:file"}
     try:
-        subprocess.run([GIT, "clone", "--", remote, str(dest)], check=True)
+        subprocess.run([GIT, *_QUIET, "clone", "--", remote, str(dest)], check=True, env=env)
         if commit:
-            subprocess.run([GIT, "-C", str(dest), "checkout", commit], check=True)
+            subprocess.run([GIT, *_QUIET, "-C", str(dest), "checkout", commit], check=True,
+                           env={**os.environ, **_ENV})
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         raise ProjectError("git clone failed: %s" % e, exit_code=1) from None
 
 
 def submodule_update(repo: Path) -> None:
+    # The submodules' URLs are the tree's .gitmodules: not a local path either, which git
+    # itself refuses a submodule since a local clone copies what the path's links name.
+    env = {**os.environ, **_ENV, "GIT_ALLOW_PROTOCOL": "https:ssh"}
     try:
         subprocess.run(
-            [GIT, "-C", str(repo), "submodule", "update", "--init", "--recursive"],
-            check=True,
+            [GIT, *_QUIET, "-C", str(repo), "submodule", "update", "--init", "--recursive"],
+            check=True, env=env,
         )
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         raise ProjectError("git submodule update failed: %s" % e, exit_code=1) from None

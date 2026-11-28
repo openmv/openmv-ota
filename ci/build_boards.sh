@@ -40,7 +40,8 @@
 #
 # Usage:   ci/build_boards.sh <firmware-checkout> <board> [<board> ...]
 # Env:     INSTALL_SDK=1   pass --install-sdk to `project new`
-#          NO_FIRMWARE=1   skip the slow firmware compile (romfs/factory still run)
+#          NO_FIRMWARE=1   skip the slow firmware compile (romfs/factory still run; on a
+#                          boot-stub board they refuse, wanting firmware built on this machine)
 #          WORKDIR=DIR     where projects are created (default: a temp dir)
 #          OPENMV_OTA_BIN  the CLI to invoke (default: openmv-ota)
 
